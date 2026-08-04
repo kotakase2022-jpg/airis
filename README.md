@@ -35,14 +35,38 @@ npm run dev
 - お知らせ（全体/1次店向け、重要フラグ+既読率）、ドキュメント（公開範囲別）
 - CSV入出力（棚卸 / GiGaCC連携 / 監査ログ）、アプリ内通知、監査ログ（最小限）
 
+## メール通知（SMTP）
+
+アプリ内通知と同じタイミング（窓口案件の起票/返信/緊急アラート、承認、お知らせ配信等）でメールも送信される。
+環境変数 `SMTP_HOST` を設定すると有効化（未設定時は自動スキップ）:
+
+| 変数 | 説明 |
+|---|---|
+| `SMTP_HOST` / `SMTP_PORT` | SMTPサーバ（ポート既定587） |
+| `SMTP_USER` / `SMTP_PASS` | SMTP認証情報 |
+| `SMTP_SECURE` | `true` でSMTPS(465) |
+| `MAIL_FROM` | 差出人（省略時はSMTP_USER） |
+| `APP_URL` | メール本文のリンク先（例 `https://airis-nine.vercel.app`） |
+
+## Row-Level Security（RLS）
+
+`prisma/rls.sql` のポリシーで、代理店スコープをDB層でも強制する（アプリ層 `agencyScope()` との多層防御 §3.1）。
+
+- 保護テーブル: SalesStaff / FieldAgentApplication / DailyReport / Submission / Case / CaseMessage / CaseStatusHistory / CaseRead
+- セッション変数 `app.bypass`（SNC系ロール）/ `app.scope`（代理店IDリスト）を、Prisma拡張（`src/lib/prisma.ts`）がクエリ毎に `set_config + クエリ` のトランザクションで注入する
+- コンテキストが無い接続からは保護テーブルは**0件（既定拒否）**
+- 本番はBYPASSRLSを持たない専用ロール **airis_app** で接続（`APP_DATABASE_URL`）。マイグレーション/シードはオーナー接続（`DATABASE_URL`）のまま
+- ポリシー適用: `npm run rls`（Neonへは `RLS_DATABASE_URL=<非プールURL> npm run rls`）
+- 注意: RLS拡張の都合で `prisma.$transaction` は使用しない（逐次実行にする）
+
 ## 未実装（本番リリース前に対応 — SPEC参照）
 
 - MFA（TOTP/Google Authenticator）§4.2
 - パスワード有効期限・履歴24世代 §4.2
-- メール/Slack通知の実送信（現在はアプリ内通知のみ）§3.7
+- Slack通知（不要と確認済み 2026-08-05）
 - 期限切れ案件の自動リマインドバッチ §7.8
 - 個人情報の1年後匿名化バッチ §3.4
-- 監査ログの網羅（閲覧イベント等）§3.3、RLS §3.1
+- 監査ログの網羅（閲覧イベント等）§3.3
 - テスト一式 §13
 
 > デモアカウントのパスワードは `prisma/seed.ts` を参照。**本番運用前に必ず変更すること。**

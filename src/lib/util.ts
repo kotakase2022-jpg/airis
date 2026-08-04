@@ -1,5 +1,6 @@
 import "server-only";
 import { prisma } from "./prisma";
+import { sendMail } from "./mail";
 
 export function today(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); // JST
@@ -23,18 +24,42 @@ export async function audit(actor: string, action: string, target?: string, resu
   }
 }
 
+function mailBody(body?: string, link?: string): string {
+  const appUrl = process.env.APP_URL ?? "";
+  const lines = [body ?? "", link ? `\n詳細: ${appUrl}${link}` : "", "\n--\nAiris 販売代理店支援ポータル（自動送信）"];
+  return lines.filter(Boolean).join("\n");
+}
+
 export async function notify(accountId: string, title: string, body?: string, link?: string) {
   try {
     await prisma.notification.create({ data: { accountId, title, body, link } });
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { email: true, status: true },
+    });
+    if (account?.status === "active" && account.email) {
+      await sendMail(account.email, `【Airis】${title}`, mailBody(body, link));
+    }
   } catch {}
 }
 
 export async function notifyRole(roles: string[], title: string, body?: string, link?: string) {
   const accounts = await prisma.account.findMany({
     where: { role: { in: roles }, status: "active" },
-    select: { id: true },
+    select: { id: true, email: true },
   });
-  await Promise.all(accounts.map((a) => notify(a.id, title, body, link)));
+  // アプリ内通知
+  try {
+    await prisma.notification.createMany({
+      data: accounts.map((a) => ({ accountId: a.id, title, body, link })),
+    });
+  } catch {}
+  // メール（TODO: 大規模配信はキュー化する。速度優先ビルドでは逐次送信）
+  await Promise.allSettled(
+    accounts
+      .filter((a) => a.email)
+      .map((a) => sendMail(a.email!, `【Airis】${title}`, mailBody(body, link)))
+  );
 }
 
 // 履歴イベント追記用

@@ -227,43 +227,42 @@ export async function finalApproveAction(
   const code = staff.agency.code;
   const tempPassword = genTempPassword();
   try {
-    const salesId = await prisma.$transaction(async (tx) => {
-      // 採番: {代理店code}C{連番3桁}
-      // TODO: 高並行時は unique 制約違反で失敗しうる（自動リトライなし・速度優先）
-      const existing = await tx.salesStaff.findMany({
-        where: { salesId: { startsWith: `${code}C` } },
-        select: { salesId: true },
-      });
-      let max = 0;
-      for (const e of existing) {
-        const n = Number(e.salesId?.slice(code.length + 1));
-        if (Number.isFinite(n) && n > max) max = n;
-      }
-      const newId = `${code}C${String(max + 1).padStart(3, "0")}`;
-      // R9（代理店一般）アカウントを同時作成。仮パスワードは保存せず戻り値で一度だけ表示。
-      const account = await tx.account.create({
-        data: {
-          loginId: newId,
-          role: "R9",
-          name: `${staff.lastName} ${staff.firstName}`,
-          email: staff.email,
-          agencyId: staff.agencyId,
-          status: "active",
-          passwordHash: hashPassword(tempPassword),
-          mustChangePassword: true,
-        },
-      });
-      await tx.salesStaff.update({
-        where: { id: staff.id },
-        data: {
-          salesId: newId,
-          status: "registered",
-          accountId: account.id,
-          history: pushHistory(staff.history, "final_approve", user.loginId) as never,
-        },
-      });
-      return newId;
+    // 採番: {代理店code}C{連番3桁}
+    // RLS拡張と干渉するためトランザクションを使わず逐次実行（速度優先）
+    // TODO: 高並行時は unique 制約違反で失敗しうる（自動リトライなし・速度優先）
+    const existing = await prisma.salesStaff.findMany({
+      where: { salesId: { startsWith: `${code}C` } },
+      select: { salesId: true },
     });
+    let max = 0;
+    for (const e of existing) {
+      const n = Number(e.salesId?.slice(code.length + 1));
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+    const newId = `${code}C${String(max + 1).padStart(3, "0")}`;
+    // R9（代理店一般）アカウントを同時作成。仮パスワードは保存せず戻り値で一度だけ表示。
+    const account = await prisma.account.create({
+      data: {
+        loginId: newId,
+        role: "R9",
+        name: `${staff.lastName} ${staff.firstName}`,
+        email: staff.email,
+        agencyId: staff.agencyId,
+        status: "active",
+        passwordHash: hashPassword(tempPassword),
+        mustChangePassword: true,
+      },
+    });
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: {
+        salesId: newId,
+        status: "registered",
+        accountId: account.id,
+        history: pushHistory(staff.history, "final_approve", user.loginId) as never,
+      },
+    });
+    const salesId = newId;
     await audit(user.loginId, "sales_staff_final_approve", `${staff.id}:${salesId}`);
     revalidatePath("/sales-staff");
     return { salesId, tempPassword };

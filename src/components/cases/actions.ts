@@ -204,12 +204,11 @@ export async function changeStatusAction(caseId: string, formData: FormData): Pr
   const toStatus = String(formData.get("status") ?? "");
   if (!(CASE_STATUSES as readonly string[]).includes(toStatus) || toStatus === c.status) return;
 
-  await prisma.$transaction([
-    prisma.case.update({ where: { id: c.id }, data: { status: toStatus } }),
-    prisma.caseStatusHistory.create({
-      data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
-    }),
-  ]);
+  // RLS拡張（クエリ毎にset_configトランザクションで包む）と干渉するため逐次実行（速度優先）
+  await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
+  await prisma.caseStatusHistory.create({
+    data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
 
   await audit(user.loginId, "case_status_change", `${c.caseNo}: ${c.status} → ${toStatus}`);
   revalidateCasePaths(series, c.id);

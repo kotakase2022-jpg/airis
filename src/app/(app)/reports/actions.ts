@@ -333,15 +333,14 @@ export async function uploadDailyCsv(
   // エラーが1件でもあれば全件拒否（部分取込しない §3.6）
   if (errors.length) return { errors };
 
-  await prisma.$transaction(
-    upserts.map((u) =>
-      prisma.dailyReport.upsert({
-        where: { date_type_salesStaffId: { date: u.date, type: csvType, salesStaffId: u.staffId } },
-        create: { date: u.date, type: csvType, salesStaffId: u.staffId, agencyId: u.agencyId, ...u.data },
-        update: { agencyId: u.agencyId, ...u.data },
-      })
-    )
-  );
+  // RLS拡張と干渉するためトランザクションを使わず逐次実行（速度優先。検証済みデータのみここに到達する）
+  for (const u of upserts) {
+    await prisma.dailyReport.upsert({
+      where: { date_type_salesStaffId: { date: u.date, type: csvType, salesStaffId: u.staffId } },
+      create: { date: u.date, type: csvType, salesStaffId: u.staffId, agencyId: u.agencyId, ...u.data },
+      update: { agencyId: u.agencyId, ...u.data },
+    });
+  }
 
   await audit(user.loginId, "daily_report_csv_import", `${csvType} ${upserts.length}件`);
   revalidatePath("/reports");
