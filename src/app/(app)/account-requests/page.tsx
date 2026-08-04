@@ -7,10 +7,10 @@ import {
   REQUEST_STATUS_LABELS,
   ROLE_LABELS,
   ROLE_NUM,
-  SNC_ADMIN_ROLES,
   Role,
 } from "@/lib/roles";
-import { formatHistory } from "@/lib/util";
+import { can, canApproveFirst } from "@/lib/permissions";
+import { formatHistory, requiresAgency } from "@/lib/util";
 import {
   Card,
   StatCard,
@@ -38,13 +38,16 @@ export default async function AccountRequestsPage({
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page) || 1);
 
-  const isSncAdmin = SNC_ADMIN_ROLES.includes(user.role);
+  // §7.2「承認操作権限は申請中レコードの閲覧を内含する」= §5.1「Airisアカウント / 承」（①②③）
+  const isFinalApprover = can(user.role, "airis-account", "approve_final");
+  // 代理店系ロール（⑦=1次承認者 / ⑧=申請元）は自店スコープの申請を参照できる（§3.1 / §7.2）
+  const isAgencyScoped = !isFinalApprover && requiresAgency(user.role);
 
   // 表示スコープ: ①②③=全件 / ⑦⑧=自店スコープ+自分の申請 / ④⑤⑥=自分の申請のみ
   // TODO: ④⑤⑥の閲覧範囲は仕様上明示が無いため「自分が作成した申請のみ」と暫定判断（§7.2）
-  const baseWhere: Prisma.AccountRequestWhereInput = isSncAdmin
+  const baseWhere: Prisma.AccountRequestWhereInput = isFinalApprover
     ? {}
-    : user.role === "R7" || user.role === "R8"
+    : isAgencyScoped
       ? { OR: [{ agencyId: { in: scope ?? [] } }, { createdBy: user.id }] }
       : { createdBy: user.id };
 
@@ -75,9 +78,7 @@ export default async function AccountRequestsPage({
     value: r,
     label: `${ROLE_NUM[r]} ${ROLE_LABELS[r]}`,
   }));
-  const needsAgencyOptions = REQUESTABLE_ROLES[user.role].some(
-    (r) => r === "R7" || r === "R8" || r === "R10"
-  );
+  const needsAgencyOptions = REQUESTABLE_ROLES[user.role].some(requiresAgency);
   let tier1: Option[] = [];
   let tier2: Option[] = [];
   if (!user.dummy && needsAgencyOptions) {
@@ -141,18 +142,23 @@ export default async function AccountRequestsPage({
                 {requests.map((r) => {
                   const agency = r.agencyId ? agencyMap.get(r.agencyId) : undefined;
                   const inScope = !!r.agencyId && (scope ?? []).includes(r.agencyId);
+                  // §5.1「一承」= ⑦のみ（自店スコープ内の pending_first に限る §3.1）
                   const canFirstApprove =
-                    !user.dummy && user.role === "R7" && r.status === "pending_first" && inScope;
+                    !user.dummy &&
+                    canApproveFirst(user.role, "airis-account") &&
+                    r.status === "pending_first" &&
+                    inScope;
                   // 職務分離（§6.1-3 / 要件1-1）: SNC系ロール（①〜⑥）の申請は①②のみ
                   // 最終承認・却下できる（③には該当行のボタンを出さない）
-                  const sncCanApproveTarget = isSncAdmin && canFinalApproveRequest(user.role, r.role);
+                  const sncCanApproveTarget =
+                    isFinalApprover && canFinalApproveRequest(user.role, r.role);
                   const canFinalApprove =
                     !user.dummy && sncCanApproveTarget && r.status === "pending_final";
                   const canReject =
                     !user.dummy &&
                     ((sncCanApproveTarget &&
                       (r.status === "pending_first" || r.status === "pending_final")) ||
-                      (user.role === "R7" && r.status === "pending_first" && inScope));
+                      canFirstApprove);
                   return (
                     <tr key={r.id}>
                       <td className={`${tdCls} whitespace-nowrap font-mono text-xs`}>{r.requestId}</td>

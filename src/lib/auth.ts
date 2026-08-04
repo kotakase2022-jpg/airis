@@ -2,6 +2,7 @@ import "server-only";
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
+import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
 import { prisma } from "./prisma";
 import { PageKey, Role, canAccess, isDummyView } from "./roles";
@@ -13,42 +14,115 @@ export type { CurrentUser } from "./session";
 const ABS_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS ?? 24);
 
 // ===== パスワードハッシュ（§2 / §10.3 / SEC②#42） =====
-// アプリケーションペッパーを環境変数（バージョンID付き）で付与する。
-// 現行バージョンは PASSWORD_PEPPER_V1。未設定時は従来動作（ペッパー無し）なので既存環境と互換。
-// ローテーション時は PASSWORD_PEPPER_V2 を足して CURRENT_PEPPER_KEY を切り替え、
-// ログイン成功時の再ハッシュ（needsRehash）で順次移行する。
-// TODO(§10.3): ハッシュ関数自体の Argon2id 移行は依存追加（argon2）が必要なため未実施。
+// アルゴリズムは Argon2id（§2「パスワードハッシュ: Argon2id（ソルト自動 + アプリケーション
+// ペッパーを環境変数で付与）」/ §10.3）。ソルトは Argon2 が自動生成し、パラメータとともに
+// ハッシュ文字列（$argon2id$v=19$m=19456,t=2,p=1$<salt>$<hash>）へ埋め込まれる。
+// 実装は @node-rs/argon2（Rust実装のNAPIバインディング）。Next.js の serverExternalPackages
+// 既定リストに含まれており、Vercel の Node.js ランタイムでもプリビルドバイナリ
+// （linux-x64-gnu 等が package-lock.json に記録済み）がそのまま利用される。
+// 同期APIを使うのは hashPassword/verifyPassword の呼び出し側（server action・route）が
+// 同期前提で実装されているため。1回あたり十数ms程度。
 const CURRENT_PEPPER_KEY = "PASSWORD_PEPPER_V1";
+
+// OWASP Password Storage Cheat Sheet の推奨（Argon2id: m=19MiB / t=2 / p=1）。
+// algorithm は @node-rs/argon2 の既定値が Argon2id（生成されるハッシュの $argon2id$ で確認可能）。
+// isolatedModules 有効のため ambient const enum（Algorithm）は import できないので既定値に従う。
+const ARGON2_OPTIONS = {
+  memoryCost: 19456, // KiB = 19MiB（>=19MiB）
+  timeCost: 2, // 反復回数（>=2）
+  parallelism: 1, // 並列度
+  outputLen: 32,
+} as const;
 
 function currentPepper(): string {
   return process.env[CURRENT_PEPPER_KEY] ?? "";
 }
 
-// ペッパーの混ぜ方: bcrypt は入力72バイトで切り詰められるため素朴な連結は
-// 長いパスワードを実質的に切り詰めてしまう。OWASP Password Storage Cheat Sheet に従い
-// HMAC-SHA256（鍵=ペッパー）で前段ハッシュしてから bcrypt する（SHA-256はCRYPTREC準拠。
-// §10.3 で禁止された SHA-1/MD5 は使用しない）。
+// ペッパーの混ぜ方: OWASP Password Storage Cheat Sheet に従い HMAC-SHA256（鍵=ペッパー）で
+// 前段ハッシュしてからパスワードハッシュ関数へ渡す（SHA-256はCRYPTREC準拠。§10.3 で
+// 禁止された SHA-1/MD5 は使用しない）。bcrypt時代の72バイト切り詰め回避も兼ねる。
+// 未設定時は従来動作（ペッパー無し）なので既存環境と互換。
+// ローテーション時は PASSWORD_PEPPER_V2 を足して CURRENT_PEPPER_KEY を切り替え、
+// ログイン成功時の再ハッシュ（needsRehash）で順次移行する。
 function prehash(pw: string, pepper: string): string {
   if (!pepper) return pw;
   return crypto.createHmac("sha256", pepper).update(pw, "utf8").digest("hex");
 }
 
-export function hashPassword(pw: string) {
-  return bcrypt.hashSync(prehash(pw, currentPepper()), 10);
+export function hashPassword(pw: string): string {
+  return argon2HashSync(prehash(pw, currentPepper()), ARGON2_OPTIONS);
 }
 
-// ok: パスワード一致 / needsRehash: ペッパー未適用の旧ハッシュだったため再ハッシュ保存が必要
+// ok: パスワード一致
+// needsRehash: 旧アルゴリズム（bcrypt）またはペッパー未適用の旧ハッシュだったため
+//              現行方式（Argon2id + 現行ペッパー）での再ハッシュ保存が必要
 export type PasswordVerification = { ok: boolean; needsRehash: boolean };
+
+function isArgon2Hash(hash: string): boolean {
+  return hash.startsWith("$argon2");
+}
+
+// Argon2id照合。壊れた/未知形式のハッシュでは例外が飛ぶため不一致として扱う。
+function argon2Matches(hash: string, candidate: string): boolean {
+  try {
+    return argon2VerifySync(hash, candidate);
+  } catch {
+    return false;
+  }
+}
+
+// bcrypt照合（旧アルゴリズム互換）。不正な形式では false（例外を伝播させない）。
+function bcryptMatches(hash: string, candidate: string): boolean {
+  try {
+    return bcrypt.compareSync(candidate, hash);
+  } catch {
+    return false;
+  }
+}
 
 export function verifyPassword(pw: string, hash: string): PasswordVerification {
   const pepper = currentPepper();
-  if (pepper && bcrypt.compareSync(prehash(pw, pepper), hash)) {
-    return { ok: true, needsRehash: false };
+  if (isArgon2Hash(hash)) {
+    if (pepper && argon2Matches(hash, prehash(pw, pepper))) {
+      return { ok: true, needsRehash: false };
+    }
+    // ペッパー導入前（または旧バージョンのペッパー）のArgon2idハッシュ → 現行ペッパーで再ハッシュ
+    if (argon2Matches(hash, pw)) return { ok: true, needsRehash: !!pepper };
+    return { ok: false, needsRehash: false };
   }
-  // 既存ハッシュ（ペッパー導入前 / 旧バージョン）との互換検証。
-  // 成功したら呼び出し側で hashPassword() により現行ペッパーで再ハッシュする。
-  if (bcrypt.compareSync(pw, hash)) return { ok: true, needsRehash: !!pepper };
+  // 旧アルゴリズム（bcrypt）ハッシュとの互換検証（§10.3 の Argon2id 段階移行）。
+  // 成功したら呼び出し側で hashPassword() により Argon2id + 現行ペッパーへ再ハッシュする。
+  if (pepper && bcryptMatches(hash, prehash(pw, pepper))) return { ok: true, needsRehash: true };
+  if (bcryptMatches(hash, pw)) return { ok: true, needsRehash: true };
   return { ok: false, needsRehash: false };
+}
+
+// ===== 接続元IPの解決（§10.1 / X-Forwarded-For 偽装対策） =====
+// クライアントは x-forwarded-for を自由に偽装できるため「先頭」を接続元とみなしてはならない
+// （レート制限・IP許可リストの回避に使われる）。
+//  1. Vercel環境では x-vercel-forwarded-for（プラットフォームが付与し、クライアント指定値は
+//     上書きされる）を優先する。
+//  2. それ以外は x-forwarded-for の「末尾から TRUSTED_PROXY_HOPS（既定1）番目」を採用する。
+//     信頼できるプロキシは自分が見た接続元を末尾に追記するため、末尾側はクライアントから
+//     偽装できない。プロキシを多段で挟む構成では TRUSTED_PROXY_HOPS を段数に合わせる。
+const TRUSTED_PROXY_HOPS = Math.max(1, Math.trunc(Number(process.env.TRUSTED_PROXY_HOPS)) || 1);
+
+function pickFromEnd(headerValue: string, hops: number): string | null {
+  const list = headerValue
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (list.length === 0) return null;
+  const idx = Math.max(0, list.length - hops); // 段数が足りない場合は最左（偽装できる要素が無い）
+  return list[idx] ?? null;
+}
+
+export function trustedIpFrom(h: Headers): string {
+  const vercel = h.get("x-vercel-forwarded-for");
+  if (vercel) return pickFromEnd(vercel, 1) ?? "local";
+  const fwd = h.get("x-forwarded-for");
+  if (fwd) return pickFromEnd(fwd, TRUSTED_PROXY_HOPS) ?? "local";
+  return "local";
 }
 
 // 実効ロールの解決（§14-2）: 稼働終了代理店（agency.status=closed）に属する⑦⑧は⑩として扱う。
@@ -96,11 +170,11 @@ export async function requireUser(): Promise<CurrentUser> {
 export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy: boolean }> {
   const user = await requireUser();
   // 管理系画面へのIP許可リスト制御（§10.1 / SEC②#10）。ADMIN_IP_ALLOWLIST未設定時は無効。
-  // 設定はカンマ区切りIPリスト。x-forwarded-for先頭を接続元とみなす（信頼できるプロキシ配下前提）。
+  // 設定はカンマ区切りIPリスト。接続元は trustedIpFrom（偽装できない末尾hop）で判定する。
   if (page === "admin" && process.env.ADMIN_IP_ALLOWLIST) {
     try {
       const h = await headers();
-      const ip = (h.get("x-forwarded-for") ?? "").split(",")[0].trim() || "local";
+      const ip = trustedIpFrom(h);
       const allowed = process.env.ADMIN_IP_ALLOWLIST.split(",").map((s) => s.trim());
       if (!allowed.includes(ip)) {
         await audit(user.loginId, "access_denied", `page=admin ip=${ip} (allowlist)`, "denied");

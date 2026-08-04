@@ -7,7 +7,7 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { agencyScope, hashPassword, requirePage, type CurrentUser } from "@/lib/auth";
-import { SNC_ADMIN_ROLES } from "@/lib/roles";
+import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
 import { audit, notify, notifyRole, pushHistory } from "@/lib/util";
 import { parseCsv } from "@/lib/csv";
@@ -16,6 +16,23 @@ export type ApplyState = { error?: string; success?: string } | undefined;
 export type UpdateState = { error?: string; success?: string } | undefined;
 export type CsvApplyState = { error?: string; errors?: string[]; success?: string } | undefined;
 export type FinalApproveState = { error?: string; salesId?: string; tempPassword?: string } | undefined;
+
+// 行内操作（1次承認・停止・再開・削除・復旧）の結果状態（§3.2）。
+// 権限不足・状態不整合・DB例外をユーザーへ必ず可視化するため、void ではなく状態を返す。
+// ts は「同じ文面が連続したときにも state 変化を検知させる」ためのタイムスタンプ。
+export type RowActionState = { error?: string; success?: string; ts?: number } | undefined;
+
+function rowFail(error: string): RowActionState {
+  return { error, ts: Date.now() };
+}
+
+function rowOk(success: string): RowActionState {
+  return { success, ts: Date.now() };
+}
+
+function statusLabel(status: string): string {
+  return STAFF_STATUS_LABELS[status] ?? status;
+}
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // 権限判定は §5.1 の宣言的マップ（@/lib/permissions）に集約する（§3.2）。
@@ -77,19 +94,26 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
   const agency = await prisma.agency.findUnique({ where: { id: agencyId } });
   if (!agency || (!scope && agency.isDummy)) return { error: "代理店が見つかりません" };
 
-  const staff = await prisma.salesStaff.create({
-    data: {
-      lastName,
-      firstName,
-      birthDate,
-      phone,
-      email: email || null,
-      agencyId,
-      status: "applying",
-      source: "form",
-      history: pushHistory([], "requested", user.loginId) as never,
-    },
-  });
+  // DB例外（接続断・制約違反など）もユーザーへ提示する（§3.2）
+  let staff;
+  try {
+    staff = await prisma.salesStaff.create({
+      data: {
+        lastName,
+        firstName,
+        birthDate,
+        phone,
+        email: email || null,
+        agencyId,
+        status: "applying",
+        source: "form",
+        history: pushHistory([], "requested", user.loginId) as never,
+      },
+    });
+  } catch {
+    await audit(user.loginId, "sales_staff_apply", `${lastName} ${firstName}`, "failure");
+    return { error: "販売員IDの申請登録に失敗しました。時間をおいて再度お試しください" };
+  }
 
   await audit(user.loginId, "sales_staff_apply", staff.id);
   // 対象1次店の⑦（1次承認者）へ通知
@@ -174,14 +198,20 @@ export async function csvBulkApplyAction(_prev: CsvApplyState, formData: FormDat
   // エラーが1件でもあれば全件登録しない（§3.6 全件ロールバック）
   if (errors.length > 0) return { errors };
 
-  await prisma.salesStaff.createMany({
-    data: creates.map((c) => ({
-      ...c,
-      status: "applying",
-      source: "csv",
-      history: pushHistory([], "requested", user.loginId) as never,
-    })),
-  });
+  try {
+    await prisma.salesStaff.createMany({
+      data: creates.map((c) => ({
+        ...c,
+        status: "applying",
+        source: "csv",
+        history: pushHistory([], "requested", user.loginId) as never,
+      })),
+    });
+  } catch {
+    // createMany は単一SQLのため部分登録は発生しない（§3.6 全件ロールバック）
+    await audit(user.loginId, "sales_staff_csv_apply", `${creates.length}件`, "failure");
+    return { error: "CSVの取込に失敗しました（全件登録されていません）。時間をおいて再度お試しください" };
+  }
   await audit(user.loginId, "sales_staff_csv_apply", `${creates.length}件`);
   await notifyRole(
     SNC_ADMIN_ROLES,
@@ -220,23 +250,28 @@ export async function updateStaffAction(
   }
   if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
 
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: {
-      lastName,
-      firstName,
-      birthDate,
-      phone,
-      email: email || null,
-      history: pushHistory(staff.history, "update", user.loginId) as never,
-    },
-  });
-  // 発行済みのR9アカウント（ログインID＝販売員ID）の氏名・メールも同期して齟齬を防ぐ
-  if (staff.accountId) {
-    await prisma.account.update({
-      where: { id: staff.accountId },
-      data: { name: `${lastName} ${firstName}`, email: email || null },
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: {
+        lastName,
+        firstName,
+        birthDate,
+        phone,
+        email: email || null,
+        history: pushHistory(staff.history, "update", user.loginId) as never,
+      },
     });
+    // 発行済みのR9アカウント（ログインID＝販売員ID）の氏名・メールも同期して齟齬を防ぐ
+    if (staff.accountId) {
+      await prisma.account.update({
+        where: { id: staff.accountId },
+        data: { name: `${lastName} ${firstName}`, email: email || null },
+      });
+    }
+  } catch {
+    await audit(user.loginId, "sales_staff_update", staff.id, "failure");
+    return { error: "登録情報の更新に失敗しました。時間をおいて再度お試しください" };
   }
 
   await audit(user.loginId, "sales_staff_update", staff.id);
@@ -245,20 +280,35 @@ export async function updateStaffAction(
 }
 
 // ============ 1次承認（R7=自店配下のみ / R1・R2・R3） ============
-export async function firstApproveAction(formData: FormData): Promise<void> {
+export async function firstApproveAction(
+  _prev: RowActionState,
+  formData: FormData
+): Promise<RowActionState> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !canApproveFirst(user.role, FEATURE)) return;
+  if (user.dummy) return rowFail("閲覧専用アカウントのため操作できません");
+  if (!canApproveFirst(user.role, FEATURE)) {
+    await audit(user.loginId, "sales_staff_first_approve", String(formData.get("staffId") ?? ""), "denied");
+    return rowFail("販売員IDの1次承認権限がありません");
+  }
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
-  if (!staff || staff.status !== "applying") return;
+  if (!staff) return rowFail("対象の販売員が見つかりません（操作可能な代理店の販売員ではありません）");
+  if (staff.status !== "applying") {
+    return rowFail(`申請中の販売員のみ1次承認できます（現在: ${statusLabel(staff.status)}）`);
+  }
 
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: {
-      firstApproved: true,
-      status: "provisional",
-      history: pushHistory(staff.history, "approve_first", user.loginId) as never,
-    },
-  });
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: {
+        firstApproved: true,
+        status: "provisional",
+        history: pushHistory(staff.history, "approve_first", user.loginId) as never,
+      },
+    });
+  } catch {
+    await audit(user.loginId, "sales_staff_first_approve", staff.id, "failure");
+    return rowFail("1次承認の保存に失敗しました。時間をおいて再度お試しください");
+  }
   await audit(user.loginId, "sales_staff_first_approve", staff.id);
   await notifyRole(
     SNC_ADMIN_ROLES,
@@ -267,6 +317,7 @@ export async function firstApproveAction(formData: FormData): Promise<void> {
     "/sales-staff"
   );
   revalidatePath("/sales-staff");
+  return rowOk(`${staff.lastName} ${staff.firstName} さんを1次承認しました（仮登録）`);
 }
 
 // ============ 最終承認（R1・R2・R3。salesId採番 + R9アカウント発行） ============
@@ -330,82 +381,146 @@ export async function finalApproveAction(
 }
 
 // ============ 停止（R1・R2・R3・R7） ============
-export async function suspendStaffAction(formData: FormData): Promise<void> {
+export async function suspendStaffAction(
+  _prev: RowActionState,
+  formData: FormData
+): Promise<RowActionState> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !can(user.role, FEATURE, "suspend")) return;
+  if (user.dummy) return rowFail("閲覧専用アカウントのため操作できません");
+  if (!can(user.role, FEATURE, "suspend")) {
+    await audit(user.loginId, "sales_staff_suspend", String(formData.get("staffId") ?? ""), "denied");
+    return rowFail("販売員IDの停止権限がありません");
+  }
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
-  if (!staff || !["provisional", "registered"].includes(staff.status)) return;
+  if (!staff) return rowFail("対象の販売員が見つかりません（操作可能な代理店の販売員ではありません）");
+  if (!["provisional", "registered"].includes(staff.status)) {
+    return rowFail(`仮登録・本登録の販売員のみ停止できます（現在: ${statusLabel(staff.status)}）`);
+  }
 
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: { status: "suspended", history: pushHistory(staff.history, "suspend", user.loginId) as never },
-  });
-  if (staff.accountId) {
-    await prisma.account.update({ where: { id: staff.accountId }, data: { status: "suspended" } });
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: { status: "suspended", history: pushHistory(staff.history, "suspend", user.loginId) as never },
+    });
+    if (staff.accountId) {
+      await prisma.account.update({ where: { id: staff.accountId }, data: { status: "suspended" } });
+    }
+  } catch {
+    await audit(user.loginId, "sales_staff_suspend", staff.id, "failure");
+    return rowFail("停止処理に失敗しました。時間をおいて再度お試しください");
   }
   await audit(user.loginId, "sales_staff_suspend", staff.id);
   revalidatePath("/sales-staff");
+  return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを停止しました`);
 }
 
 // ============ 再開（R1・R2・R3・R7） ============
-export async function resumeStaffAction(formData: FormData): Promise<void> {
+export async function resumeStaffAction(
+  _prev: RowActionState,
+  formData: FormData
+): Promise<RowActionState> {
   const user = await requirePage("sales-staff");
   // 再開（停止の解除）は停止権限と同一（§5.1「停」）
-  if (user.dummy || !can(user.role, FEATURE, "suspend")) return;
+  if (user.dummy) return rowFail("閲覧専用アカウントのため操作できません");
+  if (!can(user.role, FEATURE, "suspend")) {
+    await audit(user.loginId, "sales_staff_resume", String(formData.get("staffId") ?? ""), "denied");
+    return rowFail("販売員IDの再開権限がありません");
+  }
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
-  if (!staff || staff.status !== "suspended") return;
+  if (!staff) return rowFail("対象の販売員が見つかりません（操作可能な代理店の販売員ではありません）");
+  if (staff.status !== "suspended") {
+    return rowFail(`停止中の販売員のみ再開できます（現在: ${statusLabel(staff.status)}）`);
+  }
 
   // 採番済みなら本登録へ、1次承認済みなら仮登録へ、それ以外は申請中へ戻す
   const next = staff.salesId ? "registered" : staff.firstApproved ? "provisional" : "applying";
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: { status: next, history: pushHistory(staff.history, "resume", user.loginId) as never },
-  });
-  if (staff.accountId) {
-    await prisma.account.update({ where: { id: staff.accountId }, data: { status: "active" } });
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: { status: next, history: pushHistory(staff.history, "resume", user.loginId) as never },
+    });
+    if (staff.accountId) {
+      await prisma.account.update({ where: { id: staff.accountId }, data: { status: "active" } });
+    }
+  } catch {
+    await audit(user.loginId, "sales_staff_resume", staff.id, "failure");
+    return rowFail("再開処理に失敗しました。時間をおいて再度お試しください");
   }
   await audit(user.loginId, "sales_staff_resume", staff.id);
   revalidatePath("/sales-staff");
+  return rowOk(
+    `${staff.lastName} ${staff.firstName} さんの販売員IDを再開しました（${statusLabel(next)}）`
+  );
 }
 
 // ============ 削除（論理削除。R1・R2・R3・R7。Accountはsuspended化） ============
-export async function deleteStaffAction(formData: FormData): Promise<void> {
+export async function deleteStaffAction(
+  _prev: RowActionState,
+  formData: FormData
+): Promise<RowActionState> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !can(user.role, FEATURE, "delete")) return;
+  if (user.dummy) return rowFail("閲覧専用アカウントのため操作できません");
+  if (!can(user.role, FEATURE, "delete")) {
+    await audit(user.loginId, "sales_staff_delete", String(formData.get("staffId") ?? ""), "denied");
+    return rowFail("販売員IDの削除権限がありません");
+  }
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
-  if (!staff || staff.status === "deleted") return;
+  if (!staff) return rowFail("対象の販売員が見つかりません（操作可能な代理店の販売員ではありません）");
+  if (staff.status === "deleted") return rowFail("この販売員IDはすでに削除されています");
 
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: {
-      status: "deleted",
-      deletedAt: new Date(),
-      history: pushHistory(staff.history, "delete", user.loginId) as never,
-    },
-  });
-  if (staff.accountId) {
-    await prisma.account.update({ where: { id: staff.accountId }, data: { status: "suspended" } });
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: {
+        status: "deleted",
+        deletedAt: new Date(),
+        history: pushHistory(staff.history, "delete", user.loginId) as never,
+      },
+    });
+    if (staff.accountId) {
+      await prisma.account.update({ where: { id: staff.accountId }, data: { status: "suspended" } });
+    }
+  } catch {
+    await audit(user.loginId, "sales_staff_delete", staff.id, "failure");
+    return rowFail("削除処理に失敗しました。時間をおいて再度お試しください");
   }
   await audit(user.loginId, "sales_staff_delete", staff.id);
   revalidatePath("/sales-staff");
+  return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを削除しました（1年間保持）`);
 }
 
 // ============ 復旧（R1・R2・R3。deleted → suspended） ============
 // 復旧は §5.1 の操作列に無い管理機能（§3.4 誤削除対応）。既存どおりSNC管理系（①②③）に限定する。
-export async function restoreStaffAction(formData: FormData): Promise<void> {
+export async function restoreStaffAction(
+  _prev: RowActionState,
+  formData: FormData
+): Promise<RowActionState> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;
+  if (user.dummy) return rowFail("閲覧専用アカウントのため操作できません");
+  if (!SNC_ADMIN_ROLES.includes(user.role)) {
+    await audit(user.loginId, "sales_staff_restore", String(formData.get("staffId") ?? ""), "denied");
+    return rowFail("販売員IDの復旧権限がありません（SNC管理系のみ）");
+  }
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
-  if (!staff || staff.status !== "deleted") return;
+  if (!staff) return rowFail("対象の販売員が見つかりません（操作可能な代理店の販売員ではありません）");
+  if (staff.status !== "deleted") {
+    return rowFail(`削除済の販売員IDのみ復旧できます（現在: ${statusLabel(staff.status)}）`);
+  }
 
-  await prisma.salesStaff.update({
-    where: { id: staff.id },
-    data: {
-      status: "suspended",
-      deletedAt: null,
-      history: pushHistory(staff.history, "restore", user.loginId) as never,
-    },
-  });
+  try {
+    await prisma.salesStaff.update({
+      where: { id: staff.id },
+      data: {
+        status: "suspended",
+        deletedAt: null,
+        history: pushHistory(staff.history, "restore", user.loginId) as never,
+      },
+    });
+  } catch {
+    await audit(user.loginId, "sales_staff_restore", staff.id, "failure");
+    return rowFail("復旧処理に失敗しました。時間をおいて再度お試しください");
+  }
   await audit(user.loginId, "sales_staff_restore", staff.id);
   revalidatePath("/sales-staff");
+  return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを復旧しました（停止中）`);
 }

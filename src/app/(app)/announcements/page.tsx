@@ -10,19 +10,12 @@ import {
   EmptyState,
   SectionTitle,
   StatCard,
-  btnDanger,
-  btnOutline,
-  btnPrimary,
   thCls,
   tdCls,
 } from "@/components/ui";
 import { AnnouncementForm } from "./new-form";
 import { AnnouncementEditForm } from "./edit-form";
-import {
-  stopAnnouncementAction,
-  deleteAnnouncementAction,
-  sendAnnouncementAction,
-} from "./actions";
+import { AnnouncementRowActions } from "./row-actions";
 
 const PAGE_SIZE = 50;
 
@@ -228,28 +221,9 @@ async function AdminView({ page }: { page: number }) {
                               important={a.important}
                             />
                           )}
-                          {a.status === "draft" && (
-                            <form action={sendAnnouncementAction}>
-                              <input type="hidden" name="id" value={a.id} />
-                              <button type="submit" className={btnPrimary}>
-                                送信
-                              </button>
-                            </form>
-                          )}
-                          {a.status === "sent" && (
-                            <form action={stopAnnouncementAction}>
-                              <input type="hidden" name="id" value={a.id} />
-                              <button type="submit" className={btnOutline}>
-                                停止
-                              </button>
-                            </form>
-                          )}
-                          <form action={deleteAnnouncementAction}>
-                            <input type="hidden" name="id" value={a.id} />
-                            <button type="submit" className={btnDanger}>
-                              削除
-                            </button>
-                          </form>
+                          {/* 送信・停止・削除は結果状態（権限不足・状態不整合・DB例外）を
+                              その場で表示するクライアントコンポーネントに委譲する（§3.2） */}
+                          <AnnouncementRowActions id={a.id} status={a.status} />
                         </div>
                       </td>
                     </tr>

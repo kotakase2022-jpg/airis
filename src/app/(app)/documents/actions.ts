@@ -3,8 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage } from "@/lib/auth";
-import { SNC_ADMIN_ROLES } from "@/lib/roles";
-import { audit, storeFile } from "@/lib/util";
+import { audit, canManageDocuments, storeFile } from "@/lib/util";
 
 export type DocumentFormState = {
   error?: string;
@@ -17,7 +16,9 @@ export async function uploadDocumentAction(
   formData: FormData
 ): Promise<DocumentFormState> {
   const user = await requirePage("documents");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) {
+  // §7.12「SNC（①②③）がアップロード・整理」／④ダミーは書き込み全面禁止（§3.5）
+  if (user.dummy || !canManageDocuments(user.role)) {
+    await audit(user.loginId, "document.upload", `role=${user.role}`, "denied");
     return { error: "ドキュメントのアップロード権限がありません" };
   }
 
@@ -51,7 +52,11 @@ export async function uploadDocumentAction(
 // ドキュメント削除（SNC ①②③ のみ）
 export async function deleteDocumentAction(formData: FormData): Promise<void> {
   const user = await requirePage("documents");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;
+  // 削除も登録と同じ主体（①②③）に限る（§7.12）。④ダミーは書き込み不可（§3.5）
+  if (user.dummy || !canManageDocuments(user.role)) {
+    await audit(user.loginId, "document.delete", `role=${user.role}`, "denied");
+    return;
+  }
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const doc = await prisma.document.findUnique({ where: { id } });

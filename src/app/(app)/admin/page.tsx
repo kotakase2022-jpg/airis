@@ -40,6 +40,17 @@ type AuditRow = {
   result: string;
 };
 
+// アクセスログ（§3.3 / 要件1-6: ログイン日時・IP・User-Agent をアカウント単位で記録）
+type AccessRow = {
+  id: string;
+  at: string;
+  loginId: string;
+  result: string;
+  ip: string;
+  userAgent: string;
+  reason: string;
+};
+
 // R4（SNC閲覧）用の架空監査ログ（実データへは一切アクセスさせない §3.5）
 function dummyAuditRows(): AuditRow[] {
   const d = today();
@@ -49,6 +60,17 @@ function dummyAuditRows(): AuditRow[] {
     { id: "d3", at: `${d} 09:20`, actor: "airis_snc_ops_0001", action: "final_approve", target: "REQ-990013", result: "success" },
     { id: "d4", at: `${d} 10:02`, actor: "airis_1990001_001", action: "login", target: "", result: "failure" },
     { id: "d5", at: `${d} 10:41`, actor: "airis_snc_adm_001", action: "csv_export", target: "accounts_inventory", result: "success" },
+  ];
+}
+
+// R4（SNC閲覧）用の架空アクセスログ（実データへは一切アクセスさせない §3.5）
+function dummyAccessRows(): AccessRow[] {
+  const d = today();
+  const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
+  return [
+    { id: "a1", at: `${d} 09:12`, loginId: "airis_snc_adm_001", result: "success", ip: "203.0.113.10", userAgent: ua, reason: "" },
+    { id: "a2", at: `${d} 10:02`, loginId: "airis_1990001_001", result: "failure", ip: "203.0.113.44", userAgent: ua, reason: "bad_password" },
+    { id: "a3", at: `${d} 10:03`, loginId: "airis_1990001_001", result: "denied", ip: "203.0.113.44", userAgent: ua, reason: "rate_limit" },
   ];
 }
 
@@ -86,7 +108,7 @@ export default async function AdminPage({
   if (statusFilter) filters.push({ status: statusFilter });
   const where: Prisma.AccountWhereInput = { AND: filters };
 
-  const [grouped, totalCount, accounts, auditLogs] = await Promise.all([
+  const [grouped, totalCount, accounts, auditLogs, accessLogs] = await Promise.all([
     prisma.account.groupBy({ by: ["status"], _count: { _all: true }, where: scopeFilter }),
     prisma.account.count({ where }),
     prisma.account.findMany({
@@ -99,6 +121,9 @@ export default async function AdminPage({
     user.dummy
       ? Promise.resolve([])
       : prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
+    user.dummy
+      ? Promise.resolve([])
+      : prisma.accessLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
 
   const countOf = (s: string) => grouped.find((g) => g.status === s)?._count._all ?? 0;
@@ -125,6 +150,18 @@ export default async function AdminPage({
         action: l.action,
         target: l.target ?? "",
         result: l.result,
+      }));
+
+  const accessRows: AccessRow[] = user.dummy
+    ? dummyAccessRows()
+    : accessLogs.map((l) => ({
+        id: l.id,
+        at: jst(l.createdAt, 16),
+        loginId: l.loginId,
+        result: l.result,
+        ip: l.ip ?? "",
+        userAgent: l.userAgent ?? "",
+        reason: l.reason ?? "",
       }));
 
   return (
@@ -155,14 +192,9 @@ export default async function AdminPage({
       <SectionTitle
         right={
           !user.dummy ? (
-            <span className="flex gap-2">
-              <a href="/admin/csv?type=inventory" className={btnOutline}>
-                棚卸CSV出力
-              </a>
-              <a href="/admin/csv?type=access" className={btnOutline}>
-                アクセスログCSV出力
-              </a>
-            </span>
+            <a href="/admin/csv?type=inventory" className={btnOutline}>
+              棚卸CSV出力
+            </a>
           ) : undefined
         }
       >
@@ -295,6 +327,57 @@ export default async function AdminPage({
             )}
           </div>
         </div>
+      </Card>
+
+      {/* アクセスログ簡易ビューア（§3.3 / 要件1-6: ログイン日時・IP・User-Agent） */}
+      <SectionTitle
+        right={
+          !user.dummy ? (
+            <a href="/admin/csv?type=access" className={btnOutline}>
+              アクセスログCSV出力
+            </a>
+          ) : undefined
+        }
+      >
+        アクセスログ（直近100件）
+      </SectionTitle>
+      <Card className="mb-6">
+        {accessRows.length === 0 ? (
+          <EmptyState message="アクセスログはまだありません。" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[820px]">
+              <thead>
+                <tr>
+                  {/* 見出しは「アカウント」（アカウント一覧テーブルの「ログインID」列と
+                      DOM上で区別できるようにするため。CSVの列名は仕様どおり「ログインID」） */}
+                  <th className={thCls}>日時</th>
+                  <th className={thCls}>アカウント</th>
+                  <th className={thCls}>結果</th>
+                  <th className={thCls}>IP</th>
+                  <th className={thCls}>UserAgent</th>
+                  <th className={thCls}>理由</th>
+                </tr>
+              </thead>
+              <tbody>
+                {accessRows.map((l) => (
+                  <tr key={l.id}>
+                    <td className={`${tdCls} whitespace-nowrap text-xs`}>{l.at}</td>
+                    <td className={`${tdCls} font-mono text-xs`}>{l.loginId}</td>
+                    <td className={tdCls}>
+                      <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
+                    </td>
+                    <td className={`${tdCls} font-mono text-xs`}>{l.ip || "—"}</td>
+                    <td className={`${tdCls} max-w-[280px] truncate text-xs`} title={l.userAgent}>
+                      {l.userAgent || "—"}
+                    </td>
+                    <td className={`${tdCls} text-xs`}>{l.reason || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       {/* 監査ログ簡易ビューア */}

@@ -7,6 +7,8 @@ import { sendMail, mailConfigured } from "@/lib/mail";
 //  1) 期限切れ窓口案件の自動リマインド（SPEC §7.8 / 要件9-2 督促機能）
 //  2) 削除後1年経過データの個人情報匿名化（SPEC §3.4）
 //  3) 不正利用検知アラート（SPEC §3.3 / 要件1-9）
+//     - 日次窓（直近24時間）: 並行ログイン疑い / ログイン失敗の多発 / 複数IPからの成功
+//     - 準リアルタイム窓（直近1時間）: 並行ログイン / 直近成功IPと異なるIPからの成功
 //
 // 認証: Authorization: Bearer ${CRON_SECRET}（Vercel Cronが自動付与）
 // DB: バッチはセッションが無くRLSでfail-closedになるため、
@@ -20,15 +22,32 @@ const CONCURRENT_SESSION_THRESHOLD = 3; // 同一アカウントの有効セッ�
 const FAILED_LOGIN_THRESHOLD = 10; // 失敗ログイン回数
 const DISTINCT_IP_THRESHOLD = 3; // ログイン成功した異なるIP数（普段と異なるIP）
 
-type AbuseKind = "concurrent_sessions" | "failed_logins" | "multiple_ips";
+// 準リアルタイム検知（要件1-9「同一アカウントの並行ログイン・普段と異なるIP」）の評価窓。
+// ログイン成功時の即時検知は認証処理側（(auth)/actions.ts）に手を入れずに実現するため、
+// 「直近1時間に発生した異常」をバッチ側で拾い上げる方式にしている。
+// 日次バッチを短周期（例: 毎時）でも起動できるようにしてあるので、
+// 起動間隔を詰めるだけで検知の遅延を1時間以内に抑えられる（vercel.json のスケジュール変更のみ）。
+const REALTIME_WINDOW_MINUTES = 60;
+
+type AbuseKind =
+  | "concurrent_sessions"
+  | "failed_logins"
+  | "multiple_ips"
+  | "realtime_concurrent_sessions"
+  | "realtime_ip_change";
 
 const ABUSE_LABELS: Record<AbuseKind, string> = {
   concurrent_sessions: "並行ログインの疑い",
   failed_logins: "ログイン失敗の多発",
   multiple_ips: "複数IPからのログイン成功",
+  realtime_concurrent_sessions: "並行ログインの疑い（直近1時間）",
+  realtime_ip_change: "直近の成功IPと異なるIPからのログイン成功（直近1時間）",
 };
 
 type AbuseSignal = { kind: AbuseKind; actor: string; detail: string };
+
+// ログイン成功イベント（アクセスログ §3.3 / 監査ログの login 成功を同一の型に正規化する）
+type LoginSuccess = { actor: string; ip: string; at: Date };
 
 function batchClient() {
   return new PrismaClient({
@@ -110,6 +129,84 @@ async function detectAbuseSignals(db: PrismaClient): Promise<AbuseSignal[]> {
   return signals;
 }
 
+// 直近1時間のログイン成功イベントを AccessLog（§3.3 アクセスログ）と AuditLog（action=login）から
+// 収集し、アカウント単位で時系列に並べて返す。
+// 認証処理側の書き込み先がどちらであっても検知できるよう両方を情報源とする
+// （同一ログインが二重に記録されても、IPが同じなら「IP変化」とは判定されない）。
+async function recentLoginSuccesses(db: PrismaClient, since: Date): Promise<Map<string, LoginSuccess[]>> {
+  const [accessRows, auditRows] = await Promise.all([
+    db.accessLog.findMany({
+      where: { result: "success", createdAt: { gte: since } },
+      select: { loginId: true, ip: true, createdAt: true },
+    }),
+    db.auditLog.findMany({
+      where: { action: "login", result: "success", createdAt: { gte: since } },
+      select: { actor: true, ip: true, createdAt: true },
+    }),
+  ]);
+
+  const events: LoginSuccess[] = [
+    ...accessRows.filter((r) => r.ip).map((r) => ({ actor: r.loginId, ip: r.ip!, at: r.createdAt })),
+    ...auditRows.filter((r) => r.ip).map((r) => ({ actor: r.actor, ip: r.ip!, at: r.createdAt })),
+  ].sort((a, b) => a.at.getTime() - b.at.getTime());
+
+  const byActor = new Map<string, LoginSuccess[]>();
+  for (const e of events) {
+    const list = byActor.get(e.actor) ?? [];
+    list.push(e);
+    byActor.set(e.actor, list);
+  }
+  return byActor;
+}
+
+// 準リアルタイム検知（要件1-9）。日次窓（24時間）より短い「直近1時間」で
+//   (d) 同一アカウントの有効セッションが3つ以上（並行ログイン）
+//   (e) 直近の成功IPと異なるIPからのログイン成功（普段と異なるIP）
+// を検知する。cron/daily の起動間隔を詰めればそのまま即時性が上がる。
+async function detectRealtimeAbuseSignals(db: PrismaClient): Promise<AbuseSignal[]> {
+  const now = new Date();
+  const since = new Date(now.getTime() - REALTIME_WINDOW_MINUTES * 60 * 1000);
+  const signals: AbuseSignal[] = [];
+
+  // (d) 直近1時間に作成された有効セッションが3つ以上（同一アカウントの並行ログイン）
+  const sessionGroups = await db.session.groupBy({
+    by: ["accountId"],
+    where: { createdAt: { gte: since }, expiresAt: { gt: now } },
+    _count: { _all: true },
+  });
+  const concurrent = sessionGroups.filter((g) => g._count._all >= CONCURRENT_SESSION_THRESHOLD);
+  if (concurrent.length > 0) {
+    const accounts = await db.account.findMany({
+      where: { id: { in: concurrent.map((g) => g.accountId) } },
+      select: { id: true, loginId: true },
+    });
+    const loginIdOf = new Map(accounts.map((a) => [a.id, a.loginId]));
+    for (const g of concurrent) {
+      signals.push({
+        kind: "realtime_concurrent_sessions",
+        actor: loginIdOf.get(g.accountId) ?? g.accountId,
+        detail: `有効セッション${g._count._all}件（直近${REALTIME_WINDOW_MINUTES}分）`,
+      });
+    }
+  }
+
+  // (e) 直近の成功IPと異なるIPからのログイン成功
+  const byActor = await recentLoginSuccesses(db, since);
+  for (const [actor, events] of byActor) {
+    for (let i = 1; i < events.length; i++) {
+      if (events[i].ip === events[i - 1].ip) continue;
+      signals.push({
+        kind: "realtime_ip_change",
+        actor,
+        detail: `直近の成功IP ${events[i - 1].ip} と異なる ${events[i].ip} からログイン成功（直近${REALTIME_WINDOW_MINUTES}分）`,
+      });
+      break; // アカウントごとに1件（同一アカウントの連続通知を抑制）
+    }
+  }
+
+  return signals;
+}
+
 export async function GET(req: NextRequest) {
   const secret = process.env.CRON_SECRET;
   if (!secret || req.headers.get("authorization") !== `Bearer ${secret}`) {
@@ -121,7 +218,14 @@ export async function GET(req: NextRequest) {
     overdueCases: 0,
     remindedAccounts: 0,
     anonymized: { accounts: 0, salesStaff: 0, fieldApplications: 0 },
-    abuseSignals: { total: 0, concurrentSessions: 0, failedLogins: 0, multipleIps: 0 },
+    abuseSignals: {
+      total: 0,
+      concurrentSessions: 0,
+      failedLogins: 0,
+      multipleIps: 0,
+      realtimeConcurrentSessions: 0,
+      realtimeIpChange: 0,
+    },
   };
 
   try {
@@ -217,12 +321,21 @@ export async function GET(req: NextRequest) {
     // ============ 3) 不正利用検知アラート（§3.3 / 要件1-9） ============
     // 検知したら SNC管理者アカウント（②=R2）へアプリ内通知＋メール（notifyRole が両チャネル送信）。
     // 日次バッチのため、24時間の評価窓が続く限り翌日も再通知される（見落とし防止を優先）。
-    const abuseSignals = await detectAbuseSignals(db);
+    // 日次窓（24時間）に加えて、直近1時間の異常（並行ログイン・直近成功IPと異なるIP）も
+    // 準リアルタイム検知として評価する（要件1-9）。
+    const abuseSignals = [
+      ...(await detectAbuseSignals(db)),
+      ...(await detectRealtimeAbuseSignals(db)),
+    ];
     summary.abuseSignals = {
       total: abuseSignals.length,
       concurrentSessions: abuseSignals.filter((s) => s.kind === "concurrent_sessions").length,
       failedLogins: abuseSignals.filter((s) => s.kind === "failed_logins").length,
       multipleIps: abuseSignals.filter((s) => s.kind === "multiple_ips").length,
+      realtimeConcurrentSessions: abuseSignals.filter(
+        (s) => s.kind === "realtime_concurrent_sessions"
+      ).length,
+      realtimeIpChange: abuseSignals.filter((s) => s.kind === "realtime_ip_change").length,
     };
     if (abuseSignals.length > 0) {
       const body = abuseSignals

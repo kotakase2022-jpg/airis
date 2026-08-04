@@ -316,6 +316,7 @@ model StoredFile {
 // 通知（アプリ内）
 model Notification {
   id        String    @id @default(cuid())
+  channel   String    @default("inapp") // inapp | mail | slack（§8）
   accountId String
   account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   title     String
@@ -345,4 +346,19 @@ model PasswordHistory {
   createdAt DateTime @default(now())
 
   @@index([accountId, createdAt])
+}
+
+// アクセスログ（§3.3 / 要件1-6, 2-11, 3-9。ログイン日時・IP・UAをアカウント単位で記録）
+model AccessLog {
+  id        String   @id @default(cuid())
+  loginId   String
+  accountId String?
+  result    String // success | failure | denied
+  ip        String?
+  userAgent String?
+  reason    String? // rate_limit | locked など
+  createdAt DateTime @default(now())
+
+  @@index([loginId, createdAt])
+  @@index([createdAt])
 }

@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { SNC_ADMIN_ROLES, type Role } from "@/lib/roles";
+import { type Role } from "@/lib/roles";
+import { can } from "@/lib/permissions";
+import { canManageDocuments } from "@/lib/util";
 import {
   Card,
   Badge,
@@ -33,14 +35,22 @@ const VISIBILITY_TONES: Record<string, string> = {
   snc: "gray",
 };
 
-// 公開範囲による絞り込み（§7.12 / §5.2）
+// 公開範囲による絞り込み（§7.12「表示内容は権限に応じて出し分ける」/ §5.2）
 // SNC系(①②③)=全部 / ⑤⑥=all+snc / ⑦=all+primary / ⑧⑨=allのみ / ④ダミー=all相当（読み取り専用）
+//
+// ロール配列をハードコードせず §5.1 の宣言的マップ（permissions.ts）から導出する（§3.2）:
+//  - 全公開範囲   : ドキュメントの登録主体＝①②③（§7.12。canManageDocuments）
+//  - "primary"    : §5.1「お知らせ（1次店向け）」の閲（①②③⑦）と同じ「1次店まで」の範囲
+//  - "snc"        : SNC側ロール。§5.1 で窓口案件の「作」を持つのは①②③⑤⑥＝SNC側のみ
+//  - "all"        : §5.2 でドキュメントページにアクセスできる全ロール
+// 戻り値 null = 絞り込み無し（全件）
 function visibilityScope(role: Role, dummy: boolean): string[] | null {
-  if (dummy) return ["all"];
-  if (SNC_ADMIN_ROLES.includes(role)) return null;
-  if (role === "R5" || role === "R6") return ["all", "snc"];
-  if (role === "R7") return ["all", "primary"];
-  return ["all"]; // R8, R9
+  if (dummy) return ["all"]; // ④は実データに触れさせない（§3.5。isDummy=true 側で更に分離）
+  if (canManageDocuments(role)) return null;
+  const scope = ["all"];
+  if (can(role, "announcement-primary", "view")) scope.push("primary");
+  if (can(role, "hotline", "create") || can(role, "consumer-center", "create")) scope.push("snc");
+  return scope;
 }
 
 function fmtJst(d: Date): string {
@@ -58,7 +68,8 @@ export default async function DocumentsPage({
   const q = (sp.q ?? "").trim();
   const category = (sp.category ?? "").trim();
 
-  const isSnc = !user.dummy && SNC_ADMIN_ROLES.includes(user.role);
+  // 登録・削除の操作権限（§7.12）。UI層でも同じ判定を使う（§3.2）
+  const isSnc = !user.dummy && canManageDocuments(user.role);
   const scope = visibilityScope(user.role, user.dummy);
 
   // ④ダミー表示はシードの架空データ（isDummy=true）のみ・実データは一切見せない（§3.5）。

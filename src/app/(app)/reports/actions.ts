@@ -7,10 +7,11 @@
 import { revalidatePath } from "next/cache";
 import type { DailyReport } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { requirePage, agencyScope } from "@/lib/auth";
+import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { audit, notify, notifyRole, pushHistory, storeFile, fiscalYearOf } from "@/lib/util";
 import { parseCsv } from "@/lib/csv";
-import { SUBMISSION_KINDS } from "@/lib/roles";
+import { can } from "@/lib/permissions";
+import { SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
 import {
   VISIT_CSV_HEADERS,
   TELE_CSV_HEADERS,
@@ -500,6 +501,46 @@ export async function deleteDailyReport(formData: FormData): Promise<void> {
 // タブ2: 稼働提出物（二段階承認 §6.4）
 // ---------------------------------------------------------------------------
 
+// 提出物ファイルの許可拡張子（§3.8 のホワイトリストのうち稼働提出物で受け付けるもの）
+const SUBMISSION_EXTS = ["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "zip"];
+
+function submissionExtError(file: File): string | null {
+  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+  return SUBMISSION_EXTS.includes(ext)
+    ? null
+    : "許可されていないファイル形式です（xlsx/xls/pdf/png/jpg/zip）";
+}
+
+// 提出（および再提出＝差し替え）時のステータス（§6.4）:
+//  ⑧提出 → pending_first（1次店確認中）
+//  ⑦自身名義 or SNC → pending_snc（SNC確認中）
+//  ⑦が配下2次店名義で提出 → 二次代理店名義は一次承認を経るため pending_first
+function submissionStatusFor(
+  user: CurrentUser,
+  submitterAgencyId: string
+): "pending_first" | "pending_snc" {
+  if (user.role === "R8") return "pending_first";
+  if (user.role === "R7") {
+    return submitterAgencyId === user.agencyId ? "pending_snc" : "pending_first";
+  }
+  return "pending_snc";
+}
+
+// 提出・再提出後の通知（pending_first→1次店管理者 / pending_snc→SNC運用者③）
+async function notifySubmissionRouted(
+  status: string,
+  primaryAgencyId: string,
+  detail: string,
+  firstTitle: string,
+  sncTitle: string
+) {
+  if (status === "pending_first") {
+    await notifyAgencyAccounts(primaryAgencyId, firstTitle, detail, "/reports?tab=submissions");
+  } else {
+    await notifyRole(["R3"], sncTitle, detail, "/reports?tab=submissions");
+  }
+}
+
 export async function createSubmission(
   _prev: SubmissionFormState,
   formData: FormData
@@ -532,22 +573,50 @@ export async function createSubmission(
 
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) return { error: "ファイルを選択してください" };
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-  if (!["xlsx", "xls", "pdf", "png", "jpg", "jpeg", "zip"].includes(ext)) {
-    return { error: "許可されていないファイル形式です（xlsx/xls/pdf/png/jpg/zip）" };
-  }
+  const extError = submissionExtError(file);
+  if (extError) return { error: extError };
   const stored = await storeFile(file, user.loginId);
   if ("error" in stored) return { error: stored.error };
 
-  // 提出時ステータス（§6.4）:
-  //  R8提出 → pending_first（1次店確認中）
-  //  R7自身名義 or SNC → pending_snc（SNC確認中）
-  //  R7が配下2次店名義で提出 → 二次代理店名義は一次承認を経るため pending_first
-  let status: string;
-  if (user.role === "R8") status = "pending_first";
-  else if (user.role === "R7") {
-    status = submitterAgencyId === user.agencyId ? "pending_snc" : "pending_first";
-  } else status = "pending_snc";
+  const status = submissionStatusFor(user, submitterAgencyId);
+  const memo = str(formData.get("memo"));
+
+  // 同一（種別 × 対象月 × 提出元代理店）の再提出は**上書き**（§5.1「変」/ §7.6 の一元管理）。
+  // 新規レコードを増やさず既存の提出物のファイルを差し替え、承認ステータスを提出直後の状態へ戻す。
+  const duplicate = await prisma.submission.findFirst({
+    where: { kind, targetMonth, submitterAgencyId },
+    orderBy: { createdAt: "desc" },
+  });
+  if (duplicate) {
+    // 上書きは「変」に相当するため update 権限で判定する（§5.1: ①②③⑦⑧）
+    if (!can(user.role, "submission", "update")) {
+      await audit(user.loginId, "submission_update", duplicate.id, "denied");
+      return { error: "既存の提出物を上書きする権限がありません" };
+    }
+    await prisma.submission.update({
+      where: { id: duplicate.id },
+      data: {
+        fileId: stored.id,
+        fileName: stored.name,
+        memo,
+        status,
+        rejectReason: null,
+        history: pushHistory(duplicate.history, "resubmit", user.loginId) as never,
+      },
+    });
+    await audit(user.loginId, "submission_update", `${kind} ${targetMonth} (${duplicate.id}) 再提出`);
+    await notifySubmissionRouted(
+      status,
+      primaryAgencyId,
+      `${kind} / ${targetMonth} / ${agency.name}`,
+      "稼働提出物が差し替えられました（1次承認待ち）",
+      "稼働提出物が差し替えられました（SNC確認待ち）"
+    );
+    revalidatePath("/reports");
+    return {
+      success: `「${kind}」（${targetMonth}）を再提出しました（既存の提出物を上書き / ${SUBMISSION_STATUS_LABELS[status]}）`,
+    };
+  }
 
   const sub = await prisma.submission.create({
     data: {
@@ -558,27 +627,90 @@ export async function createSubmission(
       submitterAgencyId,
       fileId: stored.id,
       fileName: stored.name,
-      memo: str(formData.get("memo")),
+      memo,
       status,
       history: pushHistory([], "submitted", user.loginId) as never,
     },
   });
 
   await audit(user.loginId, "submission_create", `${kind} ${targetMonth} (${sub.id})`);
-  if (status === "pending_first") {
-    // 1次代理店管理者へ通知
-    await notifyAgencyAccounts(
-      primaryAgencyId,
-      "稼働提出物が提出されました（1次承認待ち）",
-      `${kind} / ${targetMonth} / ${agency.name}`,
-      "/reports?tab=submissions"
-    );
-  } else {
-    // SNC運用者（エリア営業）へ通知
-    await notifyRole(["R3"], "稼働提出物が提出されました（SNC確認待ち）", `${kind} / ${targetMonth} / ${agency.name}`, "/reports?tab=submissions");
-  }
+  await notifySubmissionRouted(
+    status,
+    primaryAgencyId,
+    `${kind} / ${targetMonth} / ${agency.name}`,
+    "稼働提出物が提出されました（1次承認待ち）",
+    "稼働提出物が提出されました（SNC確認待ち）"
+  );
   revalidatePath("/reports");
   return { success: `「${kind}」（${targetMonth}）を提出しました` };
+}
+
+// 差し替え（§5.1 稼働提出物「変」= ①②③⑦⑧。⑦⑧は自店スコープ内）
+// 既存の提出物（同一 種別 × 対象月 × 提出元代理店）のファイルを差し替え、
+// 承認ステータスを pending_first / pending_snc へ戻し、履歴に resubmit を記録する。
+export async function updateSubmissionAction(
+  _prev: SubmissionFormState,
+  formData: FormData
+): Promise<SubmissionFormState> {
+  const user = await requirePage("reports");
+  if (user.dummy) return { error: "閲覧専用アカウントのため差し替えできません" };
+  // 操作権限は §5.1 の宣言的マップで判定する（§3.2）
+  if (!can(user.role, "submission", "update")) {
+    await audit(user.loginId, "submission_update", `role=${user.role}`, "denied");
+    return { error: "稼働提出物を差し替える権限がありません" };
+  }
+
+  const id = String(formData.get("id") ?? "");
+  const sub = await prisma.submission.findUnique({
+    where: { id },
+    include: { submitterAgency: true },
+  });
+  if (!sub) return { error: "提出物が見つかりません" };
+
+  // 代理店スコープ検証（§3.1。⑦は自店＋配下2次店 / ⑧は自店のみ）
+  const scope = await agencyScope(user);
+  if (scope && !scope.includes(sub.submitterAgencyId)) {
+    await audit(user.loginId, "submission_update", id, "denied");
+    return { error: "この提出物を差し替える権限がありません" };
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: "差し替えるファイルを選択してください" };
+  }
+  const extError = submissionExtError(file);
+  if (extError) return { error: extError };
+  const stored = await storeFile(file, user.loginId);
+  if ("error" in stored) return { error: stored.error };
+
+  // メモは入力があったときのみ更新（空欄は既存メモを維持）
+  const memo = str(formData.get("replaceMemo"));
+  const status = submissionStatusFor(user, sub.submitterAgencyId);
+
+  await prisma.submission.update({
+    where: { id: sub.id },
+    data: {
+      fileId: stored.id,
+      fileName: stored.name,
+      ...(memo === null ? {} : { memo }),
+      status,
+      rejectReason: null,
+      history: pushHistory(sub.history, "resubmit", user.loginId) as never,
+    },
+  });
+
+  await audit(user.loginId, "submission_update", `${sub.kind} ${sub.targetMonth} (${sub.id}) 差し替え`);
+  await notifySubmissionRouted(
+    status,
+    sub.primaryAgencyId,
+    `${sub.kind} / ${sub.targetMonth} / ${sub.submitterAgency.name}`,
+    "稼働提出物が差し替えられました（1次承認待ち）",
+    "稼働提出物が差し替えられました（SNC確認待ち）"
+  );
+  revalidatePath("/reports");
+  return {
+    success: `「${sub.kind}」（${sub.targetMonth}）のファイルを差し替えました（${SUBMISSION_STATUS_LABELS[status]}）`,
+  };
 }
 
 // 1次承認（R7: pending_first → pending_snc）

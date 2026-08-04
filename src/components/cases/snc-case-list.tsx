@@ -10,6 +10,14 @@ import { AgencyOption, NewCaseForm } from "./new-case-form";
 
 const PER_PAGE = 50;
 
+// 停止・削除の状態値（actions.ts と同じ値を保持する。"use server" ファイルからは
+// async 関数以外を export できないため定義を共有できない）
+const CASE_SUSPENDED = "停止";
+const CASE_DELETED = "削除済";
+// SNC側の一覧は停止・削除済の案件も参照できる（論理削除 §3.4 / 復旧のため）。
+// 代理店向けビュー（/agency-cases）からは除外する。
+const CASE_LIFECYCLE_STATUSES = [CASE_SUSPENDED, CASE_DELETED] as const;
+
 export type SearchParams = Record<string, string | string[] | undefined>;
 
 // ホットライン窓口 / 消費者センター窓口 一覧（series="HL"/"CSC" のパラメタ違いで共通化 §7.8/§7.9）
@@ -140,6 +148,12 @@ export async function SncCaseListPage({
         <select name="status" defaultValue={status} className={`${inputCls} w-48`}>
           <option value="">すべてのステータス</option>
           {CASE_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+          {/* 停止・削除済（§5.1 停/削）もSNC側からは絞り込んで参照・復旧できる */}
+          {CASE_LIFECYCLE_STATUSES.map((s) => (
             <option key={s} value={s}>
               {s}
             </option>

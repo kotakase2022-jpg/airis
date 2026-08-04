@@ -4,9 +4,9 @@
 // 年度は対象月から自動計算して表示（4月〜翌3月を同一年度 = fiscalYearOf と同一ロジック）
 
 import { useActionState, useState } from "react";
-import { createSubmission } from "./actions";
+import { createSubmission, updateSubmissionAction } from "./actions";
 import type { SubmissionFormState } from "./defs";
-import { inputCls, labelCls, btnPrimary } from "@/components/ui";
+import { inputCls, labelCls, btnPrimary, btnOutline } from "@/components/ui";
 
 export type AgencyOption = { id: string; label: string };
 
@@ -109,5 +109,40 @@ export function SubmissionForm({
         </button>
       </div>
     </form>
+  );
+}
+
+// 提出物の差し替え（§5.1 稼働提出物「変」= ①②③⑦⑧）
+// 一覧の各行に置く行内フォーム。ファイルを差し替えると承認ステータスが提出直後へ戻る（§6.4）。
+// ※ メモ欄の name は "replaceMemo"（提出フォームの "memo" と衝突させない）
+export function SubmissionReplaceForm({ submissionId }: { submissionId: string }) {
+  const [state, formAction, pending] = useActionState<SubmissionFormState, FormData>(
+    updateSubmissionAction,
+    {}
+  );
+
+  return (
+    <div className="w-full">
+      <form action={formAction} className="flex flex-wrap items-center gap-1">
+        <input type="hidden" name="id" value={submissionId} />
+        <input
+          type="file"
+          name="file"
+          accept=".xlsx,.xls,.pdf,.png,.jpg,.jpeg,.zip"
+          required
+          className="w-40 text-xs text-slate-600 file:mr-2 file:rounded file:border-0 file:bg-blue-50 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-blue-700"
+        />
+        <input
+          name="replaceMemo"
+          placeholder="メモ（任意）"
+          className="w-24 rounded-lg border border-slate-300 px-2 py-1 text-xs"
+        />
+        <button disabled={pending} className={btnOutline}>
+          {pending ? "差し替え中..." : "差し替え"}
+        </button>
+      </form>
+      {state.error && <p className="mt-1 text-xs text-red-600">{state.error}</p>}
+      {state.success && <p className="mt-1 text-xs text-emerald-700">{state.success}</p>}
+    </div>
   );
 }

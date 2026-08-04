@@ -56,17 +56,24 @@ export async function createAgencyAction(
   const dup = await prisma.agency.findUnique({ where: { code } });
   if (dup) return fail(`代理店コード ${code} は既に使用されています。`);
 
-  const created = await prisma.agency.create({
-    data: {
-      code,
-      name,
-      tier,
-      parentId: tier === 2 ? parentId : null,
-      representative: representative || null,
-      status: "active",
-      joinedAt: joinedAt ? new Date(`${joinedAt}T00:00:00+09:00`) : new Date(),
-    },
-  });
+  // DB例外（コードのユニーク制約競合・接続断など）もユーザーへ提示する（§3.2）
+  let created;
+  try {
+    created = await prisma.agency.create({
+      data: {
+        code,
+        name,
+        tier,
+        parentId: tier === 2 ? parentId : null,
+        representative: representative || null,
+        status: "active",
+        joinedAt: joinedAt ? new Date(`${joinedAt}T00:00:00+09:00`) : new Date(),
+      },
+    });
+  } catch {
+    await audit(user.loginId, "agency_create", `${code} ${name}`, "failure");
+    return fail("代理店の登録に失敗しました。代理店コードの重複がないか確認し、再度お試しください。");
+  }
   await audit(user.loginId, "agency_create", `${created.code} ${created.name}`);
   revalidatePath("/agencies");
   return { ok: true, ts: Date.now() };
@@ -96,10 +103,15 @@ export async function updateAgencyAction(
   const scope = await agencyScope(user);
   if (scope && !scope.includes(id)) return fail("この代理店を操作する権限がありません。");
 
-  await prisma.agency.update({
-    where: { id },
-    data: { name, representative: representative || null, status },
-  });
+  try {
+    await prisma.agency.update({
+      where: { id },
+      data: { name, representative: representative || null, status },
+    });
+  } catch {
+    await audit(user.loginId, "agency_update", `${agency.code} ${name}`, "failure");
+    return fail("代理店の更新に失敗しました。時間をおいて再度お試しください。");
+  }
   await audit(
     user.loginId,
     "agency_update",

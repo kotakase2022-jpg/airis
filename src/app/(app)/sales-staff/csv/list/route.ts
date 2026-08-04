@@ -3,14 +3,22 @@ import { agencyScope, requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { csvResponse, toCsv } from "@/lib/csv";
 import { STAFF_STATUS_LABELS } from "@/lib/roles";
-import { audit, today } from "@/lib/util";
+import { isDummyFeature } from "@/lib/permissions";
+import { audit, canViewFeatureInScope, today } from "@/lib/util";
 
 export async function GET() {
-  const user = await requirePage("sales-staff"); // 認可チェック
+  const user = await requirePage("sales-staff"); // 認可チェック（§5.2 ページアクセス）
+  // §5.1「販売員ID」の参照権限をAPI層でも判定する（§3.2 多層防御）。
+  // ①②③⑦=閲 / ⑧=申（自店スコープの申請状況確認 §5.1 補足）/ ④=ダミー（§3.5）
+  if (!canViewFeatureInScope(user.role, "sales-staff")) {
+    await audit(user.loginId, "csv_export_sales_staff_list", `role=${user.role}`, "denied");
+    return new Response("Forbidden", { status: 403 });
+  }
   const scope = await agencyScope(user); // R4(ダミー)はダミー代理店に自動スコープされる
+  const dummy = isDummyFeature(user.role, "sales-staff"); // ④のみ true（§3.5）
 
   const staff = await prisma.salesStaff.findMany({
-    where: scope ? { agencyId: { in: scope } } : { agency: { isDummy: false } },
+    where: scope ? { agencyId: { in: scope } } : { agency: { isDummy: dummy } },
     include: { agency: true },
     orderBy: [{ agency: { code: "asc" } }, { createdAt: "asc" }],
   });

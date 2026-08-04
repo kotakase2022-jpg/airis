@@ -4,12 +4,23 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { hashPassword, requirePage } from "@/lib/auth";
-import { ADMIN_PW_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
-import { audit } from "@/lib/util";
+import { ADMIN_PW_ROLES, REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
+import { can, type Operation } from "@/lib/permissions";
+import { audit, requiresAgency } from "@/lib/util";
 
 export type AdminActionState =
   | { error?: string; message?: string; tempPassword?: string; targetLoginId?: string }
   | undefined;
+
+// 管理画面の操作 → §5.1「Airisアカウント」列の操作の対応（§3.2 宣言的マップ経由で判定する）。
+// §5.1 では 変/停/閲/削 はいずれも①②のみ。§6.1-5「Airisアカウントの停止・削除は①②のみ」。
+const ADMIN_OP_PERMISSION: Record<string, Operation> = {
+  suspend: "suspend", // 停
+  resume: "suspend", // 停止の解除は「停」権限の範囲
+  delete: "delete", // 削（§3.4 論理削除）
+  restore: "delete", // 論理削除の復旧は「削」権限の範囲（§3.4 / 要件1-5）
+  reset_password: "update", // パスワードリセットの管理者代行（§4.2）は「変」の範囲
+};
 
 // 一時パスワード生成（大文字・小文字・数字を必ず含む。紛らわしい文字は除外）
 function generateTempPassword(len: number): string {
@@ -43,6 +54,15 @@ export async function accountAction(
   const id = String(formData.get("id") ?? "");
   const op = String(formData.get("op") ?? "");
   if (!id || !op) return { error: "不正なリクエストです" };
+
+  // §5.1「Airisアカウント」の操作権限（変/停/削=①②）をAPI層でも判定する（§3.2 多層防御）。
+  // 管理画面自体は §5.2 で①②のみ（requirePageで担保）だが、操作単位でも宣言的マップに照会する。
+  const requiredOp = ADMIN_OP_PERMISSION[op];
+  if (!requiredOp) return { error: "不明な操作です" };
+  if (!can(user.role, "airis-account", requiredOp)) {
+    await audit(user.loginId, `account_${op}`, `role=${user.role}`, "denied");
+    return { error: "この操作の権限がありません" };
+  }
 
   const account = await prisma.account.findUnique({ where: { id }, include: { agency: true } });
   if (!account) return { error: "対象アカウントが見つかりません" };
@@ -134,6 +154,11 @@ export async function updateAccountAction(
     await audit(user.loginId, "account_update", undefined, "denied");
     return { error: "閲覧専用アカウントのため操作できません" };
   }
+  // §5.1「Airisアカウント / 変」= ①②（権限変更は要件1-1でSNC課長以上）
+  if (!can(user.role, "airis-account", "update")) {
+    await audit(user.loginId, "account_update", `role=${user.role}`, "denied");
+    return { error: "アカウント変更の権限がありません" };
+  }
 
   const id = String(formData.get("id") ?? "");
   const name = String(formData.get("name") ?? "").trim();
@@ -148,10 +173,14 @@ export async function updateAccountAction(
   if (account.agency?.isDummy) return { error: "サンプルデータのアカウントは操作できません" };
   if (account.role === "R9") return { error: "販売員IDのアカウントは販売員ID管理から変更してください" };
 
-  // ロール変更の許容範囲: 代理店非所属アカウントはSNC系（R1〜R6）内、
-  // 代理店所属アカウントはR7/R8内でのみ変更可能（所属と役割の整合を保つ）
-  const allowedRoles: Role[] = account.agencyId ? ["R7", "R8"] : ["R1", "R2", "R3", "R4", "R5", "R6"];
-  if (!allowedRoles.includes(role as Role)) return { error: "指定できないロールです" };
+  // 付与できるロールの範囲（ハードコード配列を使わず宣言的マップから導出する §3.2）:
+  //  - 操作者自身が申請・発行できるロールに限る（§6.1-1 の REQUESTABLE_ROLES）
+  //  - ⑩は実効ロール（§14-2: Agency.status=closed から解決される）なので直接付与しない
+  //  - 所属と役割の整合を保つ（代理店所属アカウント=⑦⑧ / 非所属=SNC系①〜⑥。§4 のID体系）
+  const assignableRoles = REQUESTABLE_ROLES[user.role].filter(
+    (r) => r !== "R10" && requiresAgency(r) === !!account.agencyId
+  );
+  if (!assignableRoles.includes(role as Role)) return { error: "指定できないロールです" };
 
   // 所属代理店の階層とロールの整合（§3.1 / 申請時の createRequestAction と同一ルール）:
   // ⑦一次代理店管理者は1次代理店、⑧二次代理店管理者は2次代理店に属していなければならない

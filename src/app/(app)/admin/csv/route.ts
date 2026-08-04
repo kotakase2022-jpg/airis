@@ -27,17 +27,19 @@ export async function GET(req: NextRequest) {
   const type = req.nextUrl.searchParams.get("type") ?? "inventory";
 
   if (type === "access") {
-    // アクセスログCSV（§3.3 / 要件1-6）: ログイン監査ログ（action=login）から
-    // 日時・ログインID・結果・IP・User-Agent を出力
-    const logs = await prisma.auditLog.findMany({
-      where: { action: "login" },
-      orderBy: { createdAt: "desc" },
-    });
-    const ua = (target: string | null) =>
-      target?.startsWith("ua=") ? target.slice(3) : target ?? "";
+    // アクセスログCSV（§3.3 / 要件1-6）: AccessLog（ログイン日時・ID・結果・IP・UA・理由）を出力。
+    // 監査ログ（AuditLog）の target へUAを埋め込む方式は廃止し、専用テーブルを情報源とする。
+    const logs = await prisma.accessLog.findMany({ orderBy: { createdAt: "desc" } });
     const csv = toCsv(
-      ["日時", "ログインID", "結果", "IP", "UserAgent"],
-      logs.map((l) => [jst(l.createdAt, 16), l.actor, l.result, l.ip ?? "", ua(l.target)])
+      ["日時", "ログインID", "結果", "IP", "UserAgent", "理由"],
+      logs.map((l) => [
+        jst(l.createdAt, 16),
+        l.loginId,
+        l.result,
+        l.ip ?? "",
+        l.userAgent ?? "",
+        l.reason ?? "",
+      ])
     );
     await audit(user.loginId, "csv_export", "access_logs"); // CSV出力自体も監査対象（§3.6）
     return csvResponse(`アクセスログ_${today()}.csv`, csv);

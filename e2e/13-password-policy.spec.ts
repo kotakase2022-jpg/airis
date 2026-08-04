@@ -9,24 +9,34 @@
  */
 import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
+import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
 import { db } from "./helpers";
 
 const RUN = Date.now();
 const REUSE_ERROR = "過去24世代と同じパスワードは使用できません";
 
-// パスワードのペッパー（§10.3）。サーバ側と同じ値がテストプロセスに与えられていれば
-// ペッパー付きのハッシュ／照合を行う。未設定時は従来どおり素のbcrypt。
-// ※ src/lib/auth.ts と同じ前段ハッシュ（HMAC-SHA256・鍵=ペッパー → bcrypt）
+// パスワードハッシュ（§2 / §10.3）: 現行方式は Argon2id（OWASP推奨 m=19MiB/t=2/p=1）+ ペッパー。
+// ペッパー（PASSWORD_PEPPER_V1）はサーバ側と同じ値がテストプロセスに与えられていれば適用する。
+// ※ src/lib/auth.ts と同じ前段ハッシュ（HMAC-SHA256・鍵=ペッパー）
 const PEPPER = process.env.PASSWORD_PEPPER_V1 ?? "";
+const ARGON2_OPTIONS = { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 };
 function prehash(pw: string): string {
   return PEPPER ? crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex") : pw;
 }
 function hashPw(pw: string): string {
-  return bcrypt.hashSync(prehash(pw), 10);
+  return argon2HashSync(prehash(pw), ARGON2_OPTIONS);
 }
-// ペッパー有効・無効の両方（＝再ハッシュ前後の両方）を許容してパスワード一致を判定する
+// Argon2id / 旧bcrypt、ペッパー有効・無効の全組み合わせ（＝再ハッシュ前後の両方）を
+// 許容してパスワード一致を判定する
 function matchesPw(pw: string, hash: string): boolean {
+  if (hash.startsWith("$argon2")) {
+    try {
+      return argon2VerifySync(hash, prehash(pw)) || argon2VerifySync(hash, pw);
+    } catch {
+      return false;
+    }
+  }
   return bcrypt.compareSync(prehash(pw), hash) || bcrypt.compareSync(pw, hash);
 }
 
@@ -55,8 +65,10 @@ async function createAccount(
 async function removeAccount(loginId: string) {
   // PasswordHistory / Session は onDelete: Cascade で削除される
   await db().account.deleteMany({ where: { loginId } });
-  // 監査ログは Cascade 対象外なので明示的に後始末する
+  // 監査ログ・アクセスログは Cascade 対象外なので明示的に後始末する
+  // （アクセスログはロック判定/レート制限のカウンタ源のため残すと後続テストに影響する）
   await db().auditLog.deleteMany({ where: { actor: loginId } });
+  await db().accessLog.deleteMany({ where: { loginId } });
 }
 
 async function submitLogin(page: Page, loginId: string, password: string) {

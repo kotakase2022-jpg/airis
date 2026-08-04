@@ -11,6 +11,32 @@ export type AnnouncementFormState = {
   success?: string;
 };
 
+// 配信一覧の行内操作（送信・停止・削除）の結果状態（§3.2）。
+// 権限不足・状態不整合・DB例外をユーザーへ必ず可視化するため、void ではなく状態を返す。
+// ts は「同じ文面が連続したときにも state 変化を検知させる」ためのタイムスタンプ。
+export type AnnouncementRowState =
+  | { error?: string; success?: string; ts?: number }
+  | undefined;
+
+function rowFail(error: string): AnnouncementRowState {
+  return { error, ts: Date.now() };
+}
+
+function rowOk(success: string): AnnouncementRowState {
+  return { success, ts: Date.now() };
+}
+
+const ANN_STATUS_LABELS: Record<string, string> = {
+  draft: "下書き",
+  sent: "送信済み",
+  stopped: "停止",
+  deleted: "削除済",
+};
+
+function statusLabel(status: string): string {
+  return ANN_STATUS_LABELS[status] ?? status;
+}
+
 // 権限判定は §5.1 の宣言的マップに集約する（§3.2）。
 // お知らせ（全体向け / 1次店向け）とも 登・送・変・停・削 は①②③のみ、⑦⑧⑨は閲覧のみ。
 
@@ -67,18 +93,25 @@ export async function createAnnouncementAction(
     attachments.push(stored);
   }
 
-  const ann = await prisma.announcement.create({
-    data: {
-      audience,
-      title,
-      body,
-      important,
-      status: isDraft ? "draft" : "sent",
-      sentAt: isDraft ? null : new Date(),
-      fileIds: attachments as never,
-      createdBy: user.loginId,
-    },
-  });
+  // DB例外（接続断・制約違反など）もユーザーへ提示する（§3.2）
+  let ann;
+  try {
+    ann = await prisma.announcement.create({
+      data: {
+        audience,
+        title,
+        body,
+        important,
+        status: isDraft ? "draft" : "sent",
+        sentAt: isDraft ? null : new Date(),
+        fileIds: attachments as never,
+        createdBy: user.loginId,
+      },
+    });
+  } catch {
+    await audit(user.loginId, "announcement.create", title, "failure");
+    return { error: "お知らせの保存に失敗しました。時間をおいて再度お試しください" };
+  }
 
   if (isDraft) {
     // 下書き: 通知は送らない（送信時に notifyAnnouncement を実行）
@@ -120,7 +153,12 @@ export async function updateAnnouncementAction(
   if (!title) return { error: "タイトルを入力してください" };
   if (!body) return { error: "本文を入力してください" };
 
-  await prisma.announcement.update({ where: { id }, data: { title, body, important } });
+  try {
+    await prisma.announcement.update({ where: { id }, data: { title, body, important } });
+  } catch {
+    await audit(user.loginId, "announcement.update", id, "failure");
+    return { error: "お知らせの更新に失敗しました。時間をおいて再度お試しください" };
+  }
   await audit(user.loginId, "announcement.update", id);
   revalidatePath("/announcements");
   revalidatePath(`/announcements/${id}`);
@@ -128,44 +166,89 @@ export async function updateAnnouncementAction(
 }
 
 // 下書きの送信（sentAt を設定して対象ロールへ通知 §7.7）
-export async function sendAnnouncementAction(formData: FormData): Promise<void> {
+export async function sendAnnouncementAction(
+  _prev: AnnouncementRowState,
+  formData: FormData
+): Promise<AnnouncementRowState> {
   const user = await requirePage("announcements");
   const id = String(formData.get("id") ?? "");
-  if (!id) return;
+  if (!id) return rowFail("対象のお知らせが指定されていません");
   const ann = await prisma.announcement.findUnique({ where: { id } });
-  if (!ann || ann.isDummy || ann.status !== "draft") return;
-  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "send")) return;
-  const sent = await prisma.announcement.update({
-    where: { id },
-    data: { status: "sent", sentAt: new Date() },
-  });
+  // ④ダミー表示用データ（§3.5）は実データと分離するため操作させない
+  if (!ann || ann.isDummy) return rowFail("対象のお知らせが見つかりません");
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "send")) {
+    await audit(user.loginId, "announcement.send", id, "denied");
+    return rowFail("お知らせの送信権限がありません");
+  }
+  if (ann.status !== "draft") {
+    return rowFail(`下書きのお知らせのみ送信できます（現在: ${statusLabel(ann.status)}）`);
+  }
+  let sent;
+  try {
+    sent = await prisma.announcement.update({
+      where: { id },
+      data: { status: "sent", sentAt: new Date() },
+    });
+  } catch {
+    await audit(user.loginId, "announcement.send", id, "failure");
+    return rowFail("送信処理に失敗しました。時間をおいて再度お試しください");
+  }
   await audit(user.loginId, "announcement.send", id);
   await notifyAnnouncement(sent);
   revalidatePath("/announcements");
+  // 文面は作成フォームの「お知らせを送信しました」と区別する（同一文面の重複表示を避ける）
+  return rowOk("下書きのお知らせを送信しました");
 }
 
 // 停止（閲覧側から非表示にする）
-export async function stopAnnouncementAction(formData: FormData): Promise<void> {
+export async function stopAnnouncementAction(
+  _prev: AnnouncementRowState,
+  formData: FormData
+): Promise<AnnouncementRowState> {
   const user = await requirePage("announcements");
   const id = String(formData.get("id") ?? "");
-  if (!id) return;
+  if (!id) return rowFail("対象のお知らせが指定されていません");
   const ann = await prisma.announcement.findUnique({ where: { id } });
-  if (!ann || ann.isDummy || ann.status === "deleted") return;
-  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "suspend")) return;
-  await prisma.announcement.update({ where: { id }, data: { status: "stopped" } });
+  if (!ann || ann.isDummy) return rowFail("対象のお知らせが見つかりません");
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "suspend")) {
+    await audit(user.loginId, "announcement.stop", id, "denied");
+    return rowFail("お知らせの停止権限がありません");
+  }
+  if (ann.status === "deleted") return rowFail("削除済のお知らせは停止できません");
+  if (ann.status === "stopped") return rowFail("このお知らせはすでに停止されています");
+  try {
+    await prisma.announcement.update({ where: { id }, data: { status: "stopped" } });
+  } catch {
+    await audit(user.loginId, "announcement.stop", id, "failure");
+    return rowFail("停止処理に失敗しました。時間をおいて再度お試しください");
+  }
   await audit(user.loginId, "announcement.stop", id);
   revalidatePath("/announcements");
+  return rowOk("お知らせを停止しました（閲覧側からは非表示になります）");
 }
 
 // 削除（論理削除）
-export async function deleteAnnouncementAction(formData: FormData): Promise<void> {
+export async function deleteAnnouncementAction(
+  _prev: AnnouncementRowState,
+  formData: FormData
+): Promise<AnnouncementRowState> {
   const user = await requirePage("announcements");
   const id = String(formData.get("id") ?? "");
-  if (!id) return;
+  if (!id) return rowFail("対象のお知らせが指定されていません");
   const ann = await prisma.announcement.findUnique({ where: { id } });
-  if (!ann || ann.isDummy) return;
-  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "delete")) return;
-  await prisma.announcement.update({ where: { id }, data: { status: "deleted" } });
+  if (!ann || ann.isDummy) return rowFail("対象のお知らせが見つかりません");
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "delete")) {
+    await audit(user.loginId, "announcement.delete", id, "denied");
+    return rowFail("お知らせの削除権限がありません");
+  }
+  if (ann.status === "deleted") return rowFail("このお知らせはすでに削除されています");
+  try {
+    await prisma.announcement.update({ where: { id }, data: { status: "deleted" } });
+  } catch {
+    await audit(user.loginId, "announcement.delete", id, "failure");
+    return rowFail("削除処理に失敗しました。時間をおいて再度お試しください");
+  }
   await audit(user.loginId, "announcement.delete", id);
   revalidatePath("/announcements");
+  return rowOk("お知らせを削除しました");
 }

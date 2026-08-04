@@ -3,6 +3,7 @@ import type { Prisma } from "@prisma/client";
 import { requirePage, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS } from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { audit, formatHistory } from "@/lib/util";
 import {
   Card,
@@ -22,6 +23,7 @@ import {
 } from "@/components/ui";
 import { ApplyForm, type StaffOption } from "./apply-form";
 import { CsvBulkForm } from "./csv-bulk-form";
+import { FieldApplicationEditForm, type EditTarget } from "./edit-form";
 import {
   firstApproveAction,
   finalApproveAction,
@@ -52,6 +54,7 @@ export default async function FieldAgentsPage({
   const statusFilter =
     typeof sp.status === "string" && STATUS_OPTIONS.includes(sp.status) ? sp.status : "";
   const page = Math.max(1, Number(sp.page) || 1);
+  const editId = typeof sp.edit === "string" ? sp.edit : "";
 
   const scope = await agencyScope(user); // null=全代理店（SNC系）/ 配列=そのIDのみ
   const isSnc = SNC_ADMIN_ROLES.includes(user.role); // ①②③（R4は含まない）
@@ -63,6 +66,8 @@ export default async function FieldAgentsPage({
   const canFirstApprove = !user.dummy && ["R1", "R2", "R3", "R7"].includes(user.role);
   const canFinalApprove = !user.dummy && isSnc;
   const canManage = !user.dummy && ["R1", "R2", "R3", "R7"].includes(user.role); // 停止/再開/削除/復旧（販売員IDと同権限）
+  // 業務項目の変更（§5.1 訪販員申請「変」= ①②③⑦）。判定は permissions.can（§3.2）
+  const canUpdate = !user.dummy && can(user.role, "field-agent", "update");
 
   // スコープ条件（SNC全域参照時はダミー代理店データを除外）
   const scopeStaffCond: Prisma.SalesStaffWhereInput =
@@ -143,13 +148,62 @@ export default async function FieldAgentsPage({
   }));
 
 
+  // 変更フォーム（?edit=<申請ID>）の対象。スコープ内かつ削除済以外のみ（server action 側でも再検証する §3.1）
+  let editTarget: EditTarget | null = null;
+  if (canUpdate && editId) {
+    const target = await prisma.fieldAgentApplication.findFirst({
+      where: { id: editId, salesStaff: { is: scopeStaffCond }, status: { not: "deleted" } },
+      include: { salesStaff: { include: { agency: true } } },
+    });
+    if (target) {
+      editTarget = {
+        id: target.id,
+        salesId: target.salesStaff.salesId ?? "（未採番）",
+        staffName: `${target.salesStaff.lastName} ${target.salesStaff.firstName}`,
+        agencyName: target.agencyName ?? target.salesStaff.agency.name,
+        statusLabel: STAFF_STATUS_LABELS[target.status] ?? target.status,
+        applicationType: target.applicationType,
+        products: target.products,
+        attribute: target.attribute ?? "社員/契約社員",
+        lastNameKana: target.lastNameKana ?? "",
+        firstNameKana: target.firstNameKana ?? "",
+        identityType: target.identityType ?? "免許証",
+        pledgeNo: target.pledgeNo,
+        startDate: target.startDate ?? "",
+        endDate: target.endDate ?? "",
+        agencyCode1: target.agencyCode1,
+        agencyCode2: target.agencyCode2 ?? "",
+        contractorName: target.contractorName ?? "",
+        contractorAddress: target.contractorAddress ?? "",
+        contractorPhone: target.contractorPhone ?? "",
+      };
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
-  const buildQuery = (p: number) => {
+  const filterParams = () => {
     const params = new URLSearchParams();
     if (q) params.set("q", q);
     if (agencyFilter) params.set("agency", agencyFilter);
     if (statusFilter) params.set("status", statusFilter);
+    return params;
+  };
+  const buildQuery = (p: number) => {
+    const params = filterParams();
     params.set("page", String(p));
+    return `/field-agents?${params.toString()}`;
+  };
+  // 変更リンク / 変更をやめたときの戻り先（絞り込み条件とページを保持する）
+  const listHref = (() => {
+    const params = filterParams();
+    if (page > 1) params.set("page", String(page));
+    const qs = params.toString();
+    return qs ? `/field-agents?${qs}` : "/field-agents";
+  })();
+  const editHref = (appId: string) => {
+    const params = filterParams();
+    if (page > 1) params.set("page", String(page));
+    params.set("edit", appId);
     return `/field-agents?${params.toString()}`;
   };
   const from = count === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
@@ -179,10 +233,22 @@ export default async function FieldAgentsPage({
         <StatCard value={removed} label="抹消・停止" tone="red" />
       </div>
 
-      {/* 申請フォーム（R4ダミーには非表示） */}
-      {canApply && <ApplyForm staff={staffOptions} isSnc={isSnc} />}
-      {/* CSV一括申請（ひな形DL + CSV/誓約書PDF同時アップロード §7.4） */}
-      {canApply && <CsvBulkForm />}
+      {/* 業務項目の変更（§5.1「変」）: ?edit=<申請ID> のときは変更フォームのみを表示する */}
+      {editTarget ? (
+        <FieldApplicationEditForm target={editTarget} backHref={listHref} />
+      ) : (
+        <>
+          {/* 申請フォーム（R4ダミーには非表示） */}
+          {canApply && <ApplyForm staff={staffOptions} isSnc={isSnc} />}
+          {/* CSV一括申請（ひな形DL + CSV/誓約書PDF同時アップロード §7.4） */}
+          {canApply && <CsvBulkForm />}
+        </>
+      )}
+      {canUpdate && editId && !editTarget && (
+        <InfoBanner>
+          変更対象の訪販員申請が見つからないか、操作可能な範囲外・削除済のため変更できません。
+        </InfoBanner>
+      )}
 
       <SectionTitle
         right={
@@ -350,6 +416,12 @@ export default async function FieldAgentsPage({
                       </td>
                       <td className={tdCls}>
                         <div className="flex flex-wrap gap-1">
+                          {/* 業務項目の変更（§5.1「変」= ①②③⑦） */}
+                          {canUpdate && a.status !== "deleted" && (
+                            <Link href={editHref(a.id)} className={btnOutline + btnSm}>
+                              変更
+                            </Link>
+                          )}
                           {a.status === "applying" && canFirstApprove && (
                             <form action={firstApproveAction}>
                               <input type="hidden" name="id" value={a.id} />

@@ -15,6 +15,7 @@
     "test:e2e:prod": "playwright test --config playwright.prod.config.ts"
   },
   "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
     "@prisma/client": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "lucide-react": "^1.28.0",

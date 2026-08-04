@@ -4,8 +4,17 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, hashPassword } from "@/lib/auth";
-import { REQUESTABLE_ROLES, SNC_ADMIN_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
-import { audit, notify, pushHistory, storeFile } from "@/lib/util";
+import { REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
+import { can, canApproveFirst } from "@/lib/permissions";
+import {
+  audit,
+  currentRls,
+  notify,
+  pushHistory,
+  requiresAgency,
+  storeFile,
+  withScopedTransaction,
+} from "@/lib/util";
 import { canFinalApproveRequest, SNC_TARGET_DENIED_MESSAGE } from "./approval-rules";
 
 export type ActionState =
@@ -33,7 +42,12 @@ export async function createRequestAction(
   const email = String(formData.get("email") ?? "").trim();
   const agencyIdInput = String(formData.get("agencyId") ?? "").trim();
 
-  // 申請可能ロールの制限（§6.1）
+  // §5.1「Airisアカウント / 申」の権限（①〜⑧）をAPI層でも判定する（§3.2 多層防御）
+  if (!can(user.role, "airis-account", "apply")) {
+    await audit(user.loginId, "account_request_create", `role=${user.role}`, "denied");
+    return { error: "アカウント申請の権限がありません" };
+  }
+  // 申請可能な対象ロールの制限（§6.1-1）
   if (!REQUESTABLE_ROLES[user.role].includes(role)) {
     return { error: "このロールを申請する権限がありません" };
   }
@@ -42,8 +56,8 @@ export async function createRequestAction(
     return { error: "メールアドレスを正しく入力してください" };
   }
 
-  // 代理店系ロール（⑦⑧⑩）は所属代理店が必須
-  const needsAgency = role === "R7" || role === "R8" || role === "R10";
+  // 代理店系ロール（⑦⑧⑩）は所属代理店が必須（§4 のID体系）
+  const needsAgency = requiresAgency(role);
   let agencyId: string | null = null;
   if (needsAgency) {
     if (!agencyIdInput) return { error: "所属代理店を選択してください" };
@@ -100,7 +114,11 @@ export async function firstApproveAction(
 ): Promise<ActionState> {
   const user = await requirePage("account-requests");
   if (user.dummy) return { error: "閲覧専用アカウントのため操作できません" };
-  if (user.role !== "R7") return { error: "1次承認の権限がありません" };
+  // §5.1「Airisアカウント / 一承」は⑦のみ（canApproveFirst は airis-account では
+  // 最終承認権限の内含を適用しない = §6.1-3 で1次承認者が⑦に限定されるため）
+  if (!canApproveFirst(user.role, "airis-account")) {
+    return { error: "1次承認の権限がありません" };
+  }
 
   const id = String(formData.get("id") ?? "");
   const req = await prisma.accountRequest.findUnique({ where: { id } });
@@ -182,7 +200,10 @@ export async function finalApproveAction(
 ): Promise<ActionState> {
   const user = await requirePage("account-requests");
   if (user.dummy) return { error: "閲覧専用アカウントのため操作できません" };
-  if (!SNC_ADMIN_ROLES.includes(user.role)) return { error: "最終承認の権限がありません" };
+  // §5.1「Airisアカウント / 承」= ①②③
+  if (!can(user.role, "airis-account", "approve_final")) {
+    return { error: "最終承認の権限がありません" };
+  }
 
   const id = String(formData.get("id") ?? "");
   const req = await prisma.accountRequest.findUnique({ where: { id } });
@@ -207,36 +228,50 @@ export async function finalApproveAction(
   const prefix = loginPrefix(req.role, agency ? { code: agency.code, tier: agency.tier } : null);
   if (!prefix) return { error: "所属代理店情報が不足しているためIDを採番できません" };
 
-  // 連番採番: 既存同prefix数+1（③のみ4桁、他は3桁）
-  // TODO: 同時承認による採番競合は速度優先で未対応（unique制約で失敗した場合は再実行で回復）
-  const count = await prisma.account.count({ where: { loginId: { startsWith: prefix } } });
-  const digits = req.role === "R3" ? 4 : 3;
-  const issuedLoginId = prefix + String(count + 1).padStart(digits, "0");
-
   // 一時パスワード: DBにはハッシュのみ保存し、平文は戻り値で承認者に一度だけ表示
   const tempPassword = generateTempPassword();
+  const passwordHash = hashPassword(tempPassword);
 
-  await prisma.account.create({
-    data: {
-      loginId: issuedLoginId,
-      role: req.role,
-      name: req.name,
-      email: req.email,
-      agencyId: req.agencyId,
-      status: "active",
-      passwordHash: hashPassword(tempPassword),
-      mustChangePassword: true,
-    },
-  });
+  // Account 発行 + AccountRequest 更新は**同一トランザクション**で行う（§3.6 / §3.1）。
+  // ID採番（同prefixの件数+1。③のみ4桁、他は3桁）もトランザクション内で行い、
+  // 申請の状態を `pending_final` で条件付き更新することで二重承認・採番競合を防ぐ。
+  const rls = await currentRls();
+  let issuedLoginId: string;
+  try {
+    issuedLoginId = await withScopedTransaction(rls, async (tx) => {
+      const count = await tx.account.count({ where: { loginId: { startsWith: prefix } } });
+      const digits = req.role === "R3" ? 4 : 3;
+      const loginId = prefix + String(count + 1).padStart(digits, "0");
 
-  await prisma.accountRequest.update({
-    where: { id: req.id },
-    data: {
-      status: "approved",
-      issuedLoginId,
-      history: pushHistory(req.history, "final_approve", user.loginId) as never,
-    },
-  });
+      await tx.account.create({
+        data: {
+          loginId,
+          role: req.role,
+          name: req.name,
+          email: req.email,
+          agencyId: req.agencyId,
+          status: "active",
+          passwordHash,
+          mustChangePassword: true,
+        },
+      });
+
+      const updated = await tx.accountRequest.updateMany({
+        where: { id: req.id, status: "pending_final" },
+        data: {
+          status: "approved",
+          issuedLoginId: loginId,
+          history: pushHistory(req.history, "final_approve", user.loginId) as never,
+        },
+      });
+      // 他の承認者が同時に承認済み → 全件ロールバック（アカウントも作られない）
+      if (updated.count !== 1) throw new Error("account_request_conflict");
+      return loginId;
+    });
+  } catch {
+    await audit(user.loginId, "account_request_final_approve", req.requestId, "failure");
+    return { error: "承認処理が競合したため中断しました。一覧を再読み込みして状態を確認してください" };
+  }
 
   await audit(user.loginId, "account_request_final_approve", `${req.requestId} -> ${issuedLoginId}`);
   if (req.createdBy) {
@@ -273,12 +308,12 @@ export async function rejectAction(
 
   let allowed = false;
   let sncTargetDenied = false;
-  if (SNC_ADMIN_ROLES.includes(user.role)) {
+  if (can(user.role, "airis-account", "approve_final")) {
     // 却下も最終承認と同じ職務分離制約（§6.1-3 / 要件1-1）:
     // SNC系ロール（①〜⑥）の申請は①②のみ却下できる（③は⑦⑧⑩に限定）
     allowed = canFinalApproveRequest(user.role, req.role);
     sncTargetDenied = !allowed;
-  } else if (user.role === "R7" && req.status === "pending_first") {
+  } else if (canApproveFirst(user.role, "airis-account") && req.status === "pending_first") {
     const scope = await agencyScope(user);
     allowed = !!req.agencyId && (scope ?? []).includes(req.agencyId);
   }

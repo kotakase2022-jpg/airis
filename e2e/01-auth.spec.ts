@@ -2,6 +2,7 @@
 // データプレフィクス: QA1
 import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
+import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
 import {
   ACCOUNTS,
@@ -37,26 +38,28 @@ const RATE_LIMIT_ERROR = "試行が多すぎます。しばらくしてからお
 const RATE_MAX_FAILURES = 5; // 同一IP+同一IDで1分に5回まで
 const LOCK_THRESHOLD = 10; // 30分間に10回失敗でロック
 
-// 認証失敗の監査ログを直接シードする（ロック判定は AuditLog の直近30分集計で行われる）。
+// 認証失敗のアクセスログを直接シードする（ロック判定は AccessLog の直近30分集計で行われる）。
 // レート制限（直近1分）に掛からないよう、既定で数分前の時刻に打つ。
 async function seedLoginFailures(loginId: string, count: number, minutesAgo: number) {
   const base = Date.now() - minutesAgo * 60 * 1000;
   for (let i = 0; i < count; i++) {
-    await db().auditLog.create({
+    await db().accessLog.create({
       data: {
-        actor: loginId,
-        action: "login",
-        target: "ua=qa1-seed",
+        loginId,
         result: "failure",
         ip: "local",
+        userAgent: "qa1-seed",
+        reason: "bad_password",
         createdAt: new Date(base + i * 1000),
       },
     });
   }
 }
 
+// 監査ログ＋アクセスログの後始末（アクセスログはロック/レート制限のカウンタ源なので必須）
 async function clearLoginAudit(loginId: string) {
   await db().auditLog.deleteMany({ where: { actor: loginId } });
+  await db().accessLog.deleteMany({ where: { loginId } });
 }
 
 // 認証系専用アカウントの作成（シード行を破壊しない）。passwordHash は既存⑧からコピー = PW_GENERAL
@@ -181,6 +184,12 @@ test.describe("ログインのレート制限", () => {
       expect(denied, "レート制限による拒否が監査記録されること").not.toBeNull();
       expect(denied?.target).toContain("blocked=rate_limit");
       expect(denied?.ip).toBeTruthy();
+      // UAは監査ログのtargetへ埋め込まず、AccessLog側に記録される（§3.3）
+      expect(denied?.target).not.toContain("ua=");
+      const deniedAccess = await db().accessLog.findFirst({
+        where: { loginId: RATE_ID, result: "denied" },
+      });
+      expect(deniedAccess?.reason, "アクセスログにも拒否理由が残ること").toBe("rate_limit");
 
       // レート制限はロックではない（失敗5回なのでロック閾値10には達していない）
       const acc = await db().account.findUnique({ where: { loginId: RATE_ID } });
@@ -194,8 +203,8 @@ test.describe("ログインのレート制限", () => {
 
 // ================================================================
 // 4. アカウントロック（30分間に10回失敗 → 30分ロック §4.2 / SEC②#12）
-//    ロック判定は AuditLog（action=login/result=failure）の直近30分集計で行われる。
-//    レート制限（1分5回）があるため、過去分の失敗は監査ログへ直接シードして再現する。
+//    ロック判定は AccessLog（result=failure）の直近30分集計で行われる。
+//    レート制限（1分5回）があるため、過去分の失敗はアクセスログへ直接シードして再現する。
 // ================================================================
 test.describe("アカウントロック（30分スライディングウィンドウ）", () => {
   const LOCK_ID = "QA1_lock_001";
@@ -380,6 +389,8 @@ test.describe("パスワード変更", () => {
     try {
       await submitLogin(page, GEN_ID, PW_GENERAL);
       await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+      // ログイン直後のハッシュ（旧方式なら成功時にArgon2idへ再ハッシュされているため、ここを基準にする）
+      const afterLogin = await db().account.findUnique({ where: { loginId: GEN_ID } });
 
       // 現在パスワード誤り
       await submitPasswordChange(page, "Wrong-Current-123!", "QA1-NewPassword-14aA", "QA1-NewPassword-14aA");
@@ -395,8 +406,7 @@ test.describe("パスワード変更", () => {
 
       // DB: パスワードが変わっていないこと
       const acc = await db().account.findUnique({ where: { loginId: GEN_ID } });
-      const src = await db().account.findUnique({ where: { loginId: ACCOUNTS.R5.loginId } });
-      expect(acc?.passwordHash).toBe(src?.passwordHash);
+      expect(acc?.passwordHash).toBe(afterLogin?.passwordHash);
     } finally {
       await removeTestAccount(GEN_ID);
     }
@@ -477,24 +487,38 @@ test.describe("/api/cron/daily 認証", () => {
 });
 
 // ================================================================
-// 9. パスワードのペッパー（§2 / §10.3 / SEC②#42）
-//    ペッパーは環境変数 PASSWORD_PEPPER_V1。サーバ側と同じ値をテストプロセスにも
-//    与えた場合のみ実行する（未設定＝従来動作なのでスキップ）。
-//      DATABASE_URL=... PASSWORD_PEPPER_V1=<値> npx next dev -p 3301
-//      QA_BASE_URL=http://localhost:3301 PASSWORD_PEPPER_V1=<値> npx playwright test e2e/01-auth.spec.ts
+// 9. パスワードハッシュ: Argon2id + ペッパー（§2 / §10.3 / SEC②#42）
+//    ハッシュ関数は Argon2id（OWASP推奨 m=19MiB/t=2/p=1）。ペッパーは環境変数
+//    PASSWORD_PEPPER_V1（HMAC-SHA256 前段）。サーバ側と同じ値をテストプロセスにも
+//    与えた場合のみ実行する（未設定＝ペッパー無効なのでスキップ）。
+//      DATABASE_URL=... PASSWORD_PEPPER_V1=<値> npx next dev -p 3401
+//      QA_BASE_URL=http://localhost:3401 PASSWORD_PEPPER_V1=<値> npx playwright test e2e/01-auth.spec.ts
 // ================================================================
-test.describe("パスワードのペッパー", () => {
+test.describe("パスワードハッシュ（Argon2id + ペッパー）", () => {
   const PEPPER = process.env.PASSWORD_PEPPER_V1 ?? "";
   const PEPPER_ID = "QA1_pepper_001";
-  // src/lib/auth.ts と同じ前段ハッシュ（HMAC-SHA256・鍵=ペッパー → bcrypt）
-  const pepperedHash = (pw: string) =>
-    bcrypt.hashSync(crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex"), 10);
-  const matchesPeppered = (pw: string, hash: string) =>
-    bcrypt.compareSync(crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex"), hash);
+  // src/lib/auth.ts と同じ前段ハッシュ（HMAC-SHA256・鍵=ペッパー）
+  const prehash = (pw: string) =>
+    crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex");
+  // src/lib/auth.ts と同じ Argon2id パラメータ（OWASP推奨）
+  const ARGON2_OPTIONS = { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 };
+  const argon2Peppered = (pw: string) => argon2HashSync(prehash(pw), ARGON2_OPTIONS);
+  const bcryptPeppered = (pw: string) => bcrypt.hashSync(prehash(pw), 10);
+  const argon2Matches = (pw: string, hash: string) => {
+    try {
+      return argon2VerifySync(hash, pw);
+    } catch {
+      return false;
+    }
+  };
+  // 現行方式（Argon2id + ペッパー）で検証できること
+  const matchesCurrent = (pw: string, hash: string) => argon2Matches(prehash(pw), hash);
+  // Argon2idの識別子とOWASPパラメータがハッシュ文字列に含まれること
+  const ARGON2ID_PREFIX = "$argon2id$v=19$m=19456,t=2,p=1$";
 
   test.skip(!PEPPER, "PASSWORD_PEPPER_V1 未設定（ペッパー無効）のためスキップ");
 
-  test("ペッパー未適用の既存ハッシュでもログインでき、成功時にペッパー付きへ再ハッシュされる", async ({
+  test("旧bcryptハッシュ（ペッパー無し）でもログインでき、成功時にArgon2id+ペッパーへ再ハッシュされる", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -505,33 +529,41 @@ test.describe("パスワードのペッパー", () => {
       data: {
         loginId: PEPPER_ID,
         role: "R5",
-        name: "QA1 ペッパー移行試験用",
+        name: "QA1 ハッシュ移行試験用",
         status: "active",
-        passwordHash: bcrypt.hashSync(PW, 10), // 旧方式（ペッパー無し）
+        passwordHash: bcrypt.hashSync(PW, 10), // 旧方式（bcrypt・ペッパー無し）
         mustChangePassword: false,
       },
     });
     try {
       const before = await prisma.account.findUnique({ where: { loginId: PEPPER_ID } });
+      expect(before!.passwordHash.startsWith("$2")).toBe(true); // bcrypt形式
       // 旧ハッシュでもログインできる（互換検証）
       await submitLogin(page, PEPPER_ID, PW);
       await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
 
-      // 成功時にペッパー付きへ再ハッシュされている
+      // 成功時に Argon2id（OWASPパラメータ）+ ペッパー付きへ再ハッシュされている
       const after = await prisma.account.findUnique({ where: { loginId: PEPPER_ID } });
       expect(after!.passwordHash).not.toBe(before!.passwordHash);
-      expect(matchesPeppered(PW, after!.passwordHash), "ペッパー付きで検証できること").toBe(true);
       expect(
-        bcrypt.compareSync(PW, after!.passwordHash),
+        after!.passwordHash.startsWith(ARGON2ID_PREFIX),
+        `Argon2id（m=19MiB/t=2/p=1）で保存されること: ${after!.passwordHash.slice(0, 40)}`
+      ).toBe(true);
+      expect(matchesCurrent(PW, after!.passwordHash), "Argon2id+ペッパーで検証できること").toBe(
+        true
+      );
+      expect(
+        argon2Matches(PW, after!.passwordHash),
         "ペッパー無しでは検証できないこと（ペッパーが実効していること）"
       ).toBe(false);
       // 有効期限の起点は変えない（§4.2）
       expect(after!.passwordUpdatedAt.getTime()).toBe(before!.passwordUpdatedAt.getTime());
-      // 鍵交換の監査証跡（SEC②#42）
+      // 鍵交換・アルゴリズム移行の監査証跡（SEC②#42 / §10.3）
       const log = await prisma.auditLog.findFirst({
         where: { actor: PEPPER_ID, action: "password_rehash" },
       });
       expect(log, "再ハッシュが監査記録されること").not.toBeNull();
+      expect(log!.target).toContain("argon2id");
 
       // 再ハッシュ後も同じパスワードでログインできる
       await page.getByRole("button", { name: "ログアウト" }).click();
@@ -543,7 +575,38 @@ test.describe("パスワードのペッパー", () => {
     }
   });
 
-  test("ペッパー付きハッシュのアカウントはそのままログインでき、誤パスワードは拒否される", async ({
+  test("bcrypt+ペッパーの既存ハッシュもログイン成功時にArgon2idへ移行される", async ({ page }) => {
+    test.setTimeout(240_000);
+    const prisma = db();
+    const ID = "QA1_argon_migrate_001";
+    const PW = "QA1-Bcrypt-Peppered-2026c";
+    await prisma.account.deleteMany({ where: { loginId: ID } });
+    await prisma.account.create({
+      data: {
+        loginId: ID,
+        role: "R5",
+        name: "QA1 アルゴリズム移行試験用",
+        status: "active",
+        passwordHash: bcryptPeppered(PW), // ペッパーは適用済みだがアルゴリズムが旧（bcrypt）
+        mustChangePassword: false,
+      },
+    });
+    try {
+      await submitLogin(page, ID, PW);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+      const after = await prisma.account.findUnique({ where: { loginId: ID } });
+      expect(after!.passwordHash.startsWith(ARGON2ID_PREFIX)).toBe(true);
+      expect(matchesCurrent(PW, after!.passwordHash)).toBe(true);
+      const log = await prisma.auditLog.findFirst({
+        where: { actor: ID, action: "password_rehash" },
+      });
+      expect(log, "アルゴリズム移行が監査記録されること").not.toBeNull();
+    } finally {
+      await removeAuthTestAccount(ID);
+    }
+  });
+
+  test("Argon2id+ペッパーのアカウントはそのままログインでき、誤パスワードは拒否される", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -555,22 +618,71 @@ test.describe("パスワードのペッパー", () => {
       data: {
         loginId: ID,
         role: "R5",
-        name: "QA1 ペッパー現行試験用",
+        name: "QA1 現行ハッシュ試験用",
         status: "active",
-        passwordHash: pepperedHash(PW),
+        passwordHash: argon2Peppered(PW),
         mustChangePassword: false,
       },
     });
     try {
+      const before = await prisma.account.findUnique({ where: { loginId: ID } });
       await submitLogin(page, ID, `${PW}x`);
       await expect(page.getByText(GENERIC_LOGIN_ERROR)).toBeVisible();
       await submitLogin(page, ID, PW);
       await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
-      // 既にペッパー付きなので再ハッシュは発生しない
+      // 既に現行方式（Argon2id + ペッパー）なので再ハッシュは発生しない
+      const after = await prisma.account.findUnique({ where: { loginId: ID } });
+      expect(after!.passwordHash).toBe(before!.passwordHash);
       const log = await prisma.auditLog.findFirst({
         where: { actor: ID, action: "password_rehash" },
       });
       expect(log).toBeNull();
+    } finally {
+      await removeAuthTestAccount(ID);
+    }
+  });
+
+  test("パスワード変更で保存されるハッシュもArgon2id+ペッパーになる", async ({ page }) => {
+    test.setTimeout(240_000);
+    const prisma = db();
+    const ID = "QA1_argon_change_001";
+    const PW = "QA1-Argon-Change-2026d";
+    const NEW_PW = "QA1-Argon-Changed-2026e";
+    await prisma.account.deleteMany({ where: { loginId: ID } });
+    await prisma.account.create({
+      data: {
+        loginId: ID,
+        role: "R5",
+        name: "QA1 変更後ハッシュ試験用",
+        status: "active",
+        passwordHash: argon2Peppered(PW),
+        mustChangePassword: false,
+      },
+    });
+    try {
+      await submitLogin(page, ID, PW);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+
+      await page.goto("/password");
+      await page.locator('input[name="current"]').fill(PW);
+      await page.locator('input[name="next"]').fill(NEW_PW);
+      await page.locator('input[name="confirm"]').fill(NEW_PW);
+      const resp = page.waitForResponse((r) => r.request().method() === "POST", {
+        timeout: 15_000,
+      });
+      await page.getByRole("button", { name: "変更する" }).click();
+      await resp;
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+
+      const after = await prisma.account.findUnique({ where: { loginId: ID } });
+      expect(after!.passwordHash.startsWith(ARGON2ID_PREFIX)).toBe(true);
+      expect(matchesCurrent(NEW_PW, after!.passwordHash)).toBe(true);
+
+      // 新パスワードで再ログインできる
+      await page.getByRole("button", { name: "ログアウト" }).click();
+      await page.waitForURL(/\/login/, { timeout: 15_000 });
+      await submitLogin(page, ID, NEW_PW);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
     } finally {
       await removeAuthTestAccount(ID);
     }

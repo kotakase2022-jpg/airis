@@ -12,6 +12,19 @@ type Series = "HL" | "CSC";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+// 窓口案件の「停」「削」用ステータス（§5.1 停=suspend / 削=delete）。
+// スキーマ（Case.status）は自由文字列で、roles.ts の CASE_STATUSES（未対応〜完了）は
+// 「案件の対応状況」マスタなので拡張せず、停止・論理削除はこの2値で表現する（§3.4 論理削除）。
+// ※ 同じ2値を snc-case-list.tsx / snc-case-detail.tsx でも定義している（"use server" ファイルは
+//    async 関数以外を export できないため。値を変える場合は3ファイルを同時に更新すること）
+const CASE_SUSPENDED = "停止";
+const CASE_DELETED = "削除済";
+
+// 停止・削除済の案件は「対応中の案件」ではないため、返信・編集・ステータス変更を受け付けない
+function isInactive(status: string): boolean {
+  return status === CASE_SUSPENDED || status === CASE_DELETED;
+}
+
 export type CreateCaseState = { error?: string } | undefined;
 export type ReplyState = { error?: string; ok?: boolean } | undefined;
 // ステータス変更・緊急アラートの実行結果（権限不足・不正状態をユーザーへ表示するため）
@@ -146,6 +159,11 @@ export async function replyCaseAction(
   if (!can(user.role, caseFeature(series), "send")) {
     return { error: "この案件への返信権限がありません。" };
   }
+  // 停止・削除済の案件はやりとりを終了しているため返信できない（§5.1 停/削）
+  if (isInactive(c.status)) {
+    await audit(user.loginId, "case_reply", `${c.caseNo} status=${c.status}`, "denied");
+    return { error: `この案件は「${c.status}」のため返信できません。` };
+  }
   const isAgencySide = user.role === "R7" || user.role === "R10";
   if (isAgencySide) {
     if (!canAccess(user.role, "agency-cases")) return { error: "この案件への返信権限がありません。" };
@@ -216,6 +234,11 @@ export async function updateCaseAction(caseId: string, formData: FormData): Prom
   if (!c) return;
   const series = c.series as Series;
   const user = await requireSncCaseUser(series, "update");
+  // 停止・削除済の案件は復旧してからでないと編集できない（§3.4 論理削除の一貫性）
+  if (isInactive(c.status)) {
+    await audit(user.loginId, "case_update", `${c.caseNo}: status=${c.status}`, "denied");
+    return;
+  }
 
   const title = String(formData.get("title") ?? "").trim();
   const deadlineRaw = String(formData.get("deadline") ?? "").trim();
@@ -268,6 +291,10 @@ async function changeStatus(caseId: string, formData: FormData): Promise<CaseAct
   const auth = await sncCaseOperator(series, "update", "case_status_change", c.caseNo);
   if ("error" in auth) return auth;
   const user = auth.user;
+  if (isInactive(c.status)) {
+    await audit(user.loginId, "case_status_change", `${c.caseNo}: status=${c.status}`, "denied");
+    return { error: `この案件は「${c.status}」です。復旧してからステータスを変更してください。` };
+  }
 
   const toStatus = String(formData.get("status") ?? "");
   if (!(CASE_STATUSES as readonly string[]).includes(toStatus)) {
@@ -305,6 +332,75 @@ async function urgentAlert(caseId: string): Promise<CaseActionState> {
   await audit(user.loginId, "case_urgent_alert", c.caseNo);
   revalidateCasePaths(series, c.id);
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// 停止（§5.1「停」）/ 削除（§5.1「削」）/ 復旧
+// 権限は can(role, caseFeature(series), 'suspend'|'delete') = ①②③ + 担当窓口（HL=⑤ / 消セン=⑥）。
+// 代理店（⑦⑩）は返信のみのため実施できない。
+// Case には status 以外の停止・削除フラグが無いため、status="停止" / "削除済" による論理削除とし、
+// 遷移は CaseStatusHistory に記録して案件画面から追跡できるようにする（§3.4 / 要件9-4）。
+// ---------------------------------------------------------------------------
+
+async function changeCaseState(
+  caseId: string,
+  op: Operation,
+  toStatus: string,
+  action: string
+): Promise<CaseActionState> {
+  const c = await prisma.case.findUnique({ where: { id: caseId } });
+  if (!c) return { error: "案件が見つかりません。" };
+  const series = c.series as Series;
+  const auth = await sncCaseOperator(series, op, action, c.caseNo);
+  if ("error" in auth) return auth;
+  const user = auth.user;
+  if (c.status === toStatus) return { error: `すでに「${toStatus}」です。` };
+
+  // RLS拡張と干渉するためトランザクションを使わず逐次実行（他のステータス変更と同方針）
+  await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
+  await prisma.caseStatusHistory.create({
+    data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
+  await audit(user.loginId, action, `${c.caseNo}: ${c.status} → ${toStatus}`);
+  revalidateCasePaths(series, c.id);
+  return { ok: true };
+}
+
+// 停止（①②③＋担当窓口）: 代理店側の一覧・詳細からは除外される
+export async function suspendCaseAction(caseId: string): Promise<void> {
+  await changeCaseState(caseId, "suspend", CASE_SUSPENDED, "case_suspend");
+}
+
+// 削除（①②③＋担当窓口・論理削除 §3.4）
+export async function deleteCaseAction(caseId: string): Promise<void> {
+  await changeCaseState(caseId, "delete", CASE_DELETED, "case_delete");
+}
+
+// 復旧（停止解除・誤削除の復旧）。停止前／削除前のステータスへ戻す。
+// 権限は元の状態に対応する操作（停止=停 / 削除済=削）で判定する。
+export async function restoreCaseAction(caseId: string): Promise<void> {
+  const c = await prisma.case.findUnique({ where: { id: caseId } });
+  if (!c || !isInactive(c.status)) return;
+  const series = c.series as Series;
+  const op: Operation = c.status === CASE_DELETED ? "delete" : "suspend";
+  const auth = await sncCaseOperator(series, op, "case_restore", c.caseNo);
+  if ("error" in auth) return;
+  const user = auth.user;
+
+  // 停止・削除へ遷移したときの fromStatus を履歴から引き当てる（無ければ「未対応」へ戻す）
+  const last = await prisma.caseStatusHistory.findFirst({
+    where: { caseId: c.id, toStatus: c.status },
+    orderBy: { changedAt: "desc" },
+  });
+  const toStatus =
+    last && !isInactive(last.fromStatus) ? last.fromStatus : (CASE_STATUSES[0] as string);
+
+  await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
+  await prisma.caseStatusHistory.create({
+    data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
+  await audit(user.loginId, "case_restore", `${c.caseNo}: ${c.status} → ${toStatus}`);
+  revalidateCasePaths(series, c.id);
 }
 
 // --- server action エントリポイント -----------------------------------------

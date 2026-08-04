@@ -8,6 +8,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS, type Role } from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { parseCsv } from "@/lib/csv";
 import { audit, notify, notifyRole, pushHistory, storeFile, today } from "@/lib/util";
 import { FIELD_AGENT_CSV_HEADERS, pledgePdfName } from "./csv-columns";
@@ -828,6 +829,133 @@ export async function restoreAction(formData: FormData): Promise<void> {
   });
   await audit(user.loginId, "訪販員申請復旧", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
+}
+
+// ============================================================
+// 業務項目の変更（§5.1 訪販員申請「変」= ①②③⑦。⑦は自店配下のみ）
+// 対象: 申請区分 / 取扱商材 / 属性 / フリガナ / 本人性種別 / 誓約書No /
+//       稼働開始日・終了日 / 使用代理店コード1・2 / 業務委託会社3項目（§7.4 列仕様）
+// §7.4 のバリデーション（マルチ→2枠必須・業務委託社員→3項目必須）を再適用し、
+// history に update を積み、監査ログに変更前後の値を残す（§3.3）。
+// ============================================================
+export async function updateFieldApplicationAction(
+  _prev: FormState,
+  formData: FormData
+): Promise<FormState> {
+  const user = await requirePage("field-agents");
+  const id = String(formData.get("id") ?? "");
+  if (user.dummy) return { error: "閲覧専用アカウントのため変更できません。" };
+  // 操作権限は §5.1 の宣言的マップで判定する（§3.2）
+  if (!can(user.role, "field-agent", "update")) {
+    await audit(user.loginId, "訪販員申請変更", `fieldAgentApplication:${id}`, "denied");
+    return { error: "訪販員申請を変更する権限がありません。" };
+  }
+  const app = await appInScope(user, id);
+  if (!app) {
+    await audit(user.loginId, "訪販員申請変更", `fieldAgentApplication:${id}`, "denied");
+    return { error: "対象の訪販員申請が見つからないか、操作可能な代理店の範囲外です。" };
+  }
+  if (app.status === "deleted") {
+    return { error: "削除済の訪販員申請は変更できません。復旧してから変更してください。" };
+  }
+
+  const str = (k: string) => String(formData.get(k) ?? "").trim();
+  const applicationType = str("applicationType");
+  const products = str("products");
+  const attribute = str("attribute");
+  const lastNameKana = str("lastNameKana");
+  const firstNameKana = str("firstNameKana");
+  const identityType = str("identityType");
+  const pledgeNo = str("pledgeNo");
+  const startDate = str("startDate");
+  const endDate = str("endDate");
+  const agencyCode1 = str("agencyCode1");
+  const agencyCode2 = str("agencyCode2");
+  const contractorName = str("contractorName");
+  const contractorAddress = str("contractorAddress");
+  const contractorPhone = str("contractorPhone");
+
+  // --- バリデーション（§7.4 列仕様。申請フォームと同一ルール） ---
+  if (!APPLICATION_TYPES.includes(applicationType)) return { error: "申請区分を選択してください。" };
+  if (!PRODUCTS.includes(products)) return { error: "取扱商材を選択してください。" };
+  if (!ATTRIBUTES.includes(attribute)) return { error: "属性を選択してください。" };
+  if (!lastNameKana || !firstNameKana) return { error: "フリガナ（姓・名）を入力してください。" };
+  if (!IDENTITY_TYPES.includes(identityType)) return { error: "本人性種別を選択してください。" };
+  if (!pledgeNo) return { error: "誓約書Noは入力必須です。" };
+  if (!agencyCode1) return { error: "使用代理店コード（1枠目）は必須です。" };
+  // 取扱商材=マルチ → 2枠とも必須 / auひかり・コラボ → 1枠目のみ必須（§7.4）
+  if (products === "マルチ" && !agencyCode2) {
+    return { error: "取扱商材が「マルチ」の場合、使用代理店コードは2枠とも必須です。" };
+  }
+  if (startDate && !DATE_RE.test(startDate)) return { error: "稼働開始日の形式が不正です。" };
+  if (endDate && !DATE_RE.test(endDate)) return { error: "稼働終了日の形式が不正です。" };
+  // 属性=業務委託社員 のときのみ業務委託会社名・住所・連絡先が必須（他属性では保持しない）
+  const isContractor = attribute === "業務委託社員";
+  if (isContractor && (!contractorName || !contractorAddress || !contractorPhone)) {
+    return { error: "属性が「業務委託社員」の場合、業務委託会社名・住所・連絡先は必須です。" };
+  }
+
+  // 申請区分を「稼働」へ変更する場合は重複申請チェック（作成時と同一ルール）
+  if (applicationType === "稼働" && app.applicationType !== "稼働") {
+    const existing = await prisma.fieldAgentApplication.count({
+      where: {
+        salesStaffId: app.salesStaffId,
+        id: { not: app.id },
+        applicationType: "稼働",
+        status: { in: ["applying", "provisional", "registered"] },
+      },
+    });
+    if (existing > 0) return { error: "この販売員には既に有効な訪販員申請（稼働）が存在します。" };
+  }
+
+  await prisma.fieldAgentApplication.update({
+    where: { id: app.id },
+    data: {
+      applicationType,
+      products,
+      attribute,
+      lastNameKana,
+      firstNameKana,
+      identityType,
+      pledgeNo,
+      startDate: startDate || null,
+      endDate: endDate || null,
+      agencyCode1,
+      agencyCode2: agencyCode2 || null,
+      contractorName: isContractor ? contractorName : null,
+      contractorAddress: isContractor ? contractorAddress : null,
+      contractorPhone: isContractor ? contractorPhone : null,
+      history: pushHistory(app.history, "update", user.loginId) as never,
+    },
+  });
+
+  // 変更前後の値を監査ログに残す（§3.3。差分のある項目のみ）
+  const diffs: string[] = [];
+  const pushDiff = (label: string, before: string | null, after: string | null) => {
+    if ((before ?? "") !== (after ?? "")) diffs.push(`${label} ${before ?? "-"}→${after ?? "-"}`);
+  };
+  pushDiff("申請区分", app.applicationType, applicationType);
+  pushDiff("取扱商材", app.products, products);
+  pushDiff("属性", app.attribute, attribute);
+  pushDiff("フリガナ姓", app.lastNameKana, lastNameKana);
+  pushDiff("フリガナ名", app.firstNameKana, firstNameKana);
+  pushDiff("本人性種別", app.identityType, identityType);
+  pushDiff("誓約書No", app.pledgeNo, pledgeNo);
+  pushDiff("稼働開始日", app.startDate, startDate || null);
+  pushDiff("稼働終了日", app.endDate, endDate || null);
+  pushDiff("使用代理店コード1", app.agencyCode1, agencyCode1);
+  pushDiff("使用代理店コード2", app.agencyCode2, agencyCode2 || null);
+  pushDiff("業務委託会社名", app.contractorName, isContractor ? contractorName : null);
+  pushDiff("業務委託会社住所", app.contractorAddress, isContractor ? contractorAddress : null);
+  pushDiff("業務委託会社連絡先", app.contractorPhone, isContractor ? contractorPhone : null);
+  await audit(
+    user.loginId,
+    "訪販員申請変更",
+    `fieldAgentApplication:${app.id} ${diffs.length ? diffs.join(" / ") : "変更なし"}`
+  );
+
+  revalidatePath("/field-agents");
+  return { success: "訪販員申請の業務項目を更新しました。" };
 }
 
 // SNC限定項目（ブラックリスト欄・SNC用メモ）の更新（①②③のみ）

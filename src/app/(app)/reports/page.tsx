@@ -5,6 +5,7 @@ import type { Prisma } from "@prisma/client";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { formatHistory, today } from "@/lib/util";
 import {
   Card,
@@ -25,7 +26,7 @@ import {
 } from "@/components/ui";
 import { DailyReportForm, type StaffOption } from "./daily-form";
 import { CsvUpload } from "./csv-upload";
-import { SubmissionForm, type AgencyOption } from "./submission-form";
+import { SubmissionForm, SubmissionReplaceForm, type AgencyOption } from "./submission-form";
 import {
   approveSubmissionFirst,
   approveSubmissionFinal,
@@ -333,6 +334,12 @@ async function SubmissionsTab({
     (isSncAdmin ||
       ((user.role === "R7" || user.role === "R8") && !!scope && scope.includes(submitterAgencyId)));
 
+  // 差し替え（§5.1 稼働提出物「変」= ①②③⑦⑧。⑦⑧は自店スコープ内。判定は permissions.can §3.2）
+  const canReplace = (submitterAgencyId: string) =>
+    !user.dummy &&
+    can(user.role, "submission", "update") &&
+    (!scope || scope.includes(submitterAgencyId));
+
   const baseParams: Params = { tab: "submissions" };
   if (statusMonth !== currentMonth) baseParams.month = statusMonth!;
   if (q) baseParams.q = q;
@@ -569,6 +576,10 @@ async function SubmissionsTab({
                               />
                               <button className={btnDanger}>差戻し</button>
                             </form>
+                          )}
+                          {/* 差し替え（§5.1「変」）: ファイルを差し替えると承認ステータスが提出直後へ戻る（§6.4） */}
+                          {canReplace(s.submitterAgencyId) && (
+                            <SubmissionReplaceForm submissionId={s.id} />
                           )}
                           {canDelete(s.submitterAgencyId) && (
                             <form action={deleteSubmission}>

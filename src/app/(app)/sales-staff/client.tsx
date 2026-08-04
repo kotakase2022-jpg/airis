@@ -14,6 +14,7 @@ import {
   resumeStaffAction,
   suspendStaffAction,
   updateStaffAction,
+  type RowActionState,
 } from "./actions";
 
 type AgencyOption = { id: string; code: string; name: string; tier: number };
@@ -168,6 +169,16 @@ function StaffEditForm({ staffId, initial }: { staffId: string; initial: StaffEd
   );
 }
 
+// 複数の行内操作のうち、最後に実行されたものの結果状態を返す（ts の大小で判定）
+function latestRowState(states: RowActionState[]): RowActionState {
+  let latest: RowActionState;
+  for (const s of states) {
+    if (!s) continue;
+    if (!latest || (s.ts ?? 0) >= (latest.ts ?? 0)) latest = s;
+  }
+  return latest;
+}
+
 // ============ 行内操作（状態・権限依存） ============
 // 最終承認の一時パスワードは useActionState の戻り値でインライン一度だけ表示する（URLに載せない）。
 export function RowActions({
@@ -192,7 +203,23 @@ export function RowActions({
   canRestore: boolean;
 }) {
   const [state, finalAction, pending] = useActionState(finalApproveAction, undefined);
+  // 行内操作は結果状態（権限不足・状態不整合・DB例外）を必ず表示する（§3.2）。
+  // hook は親（この行コンポーネント）に置くことで、成功時の revalidate による
+  // 再レンダー後もメッセージが残る（子フォームは状態遷移で unmount されるため）。
+  const [firstState, firstAction, firstPending] = useActionState(firstApproveAction, undefined);
+  const [suspendState, suspendAction, suspendPending] = useActionState(
+    suspendStaffAction,
+    undefined
+  );
+  const [resumeState, resumeAction, resumePending] = useActionState(resumeStaffAction, undefined);
+  const [deleteState, deleteAction, deletePending] = useActionState(deleteStaffAction, undefined);
+  const [restoreState, restoreAction, restorePending] = useActionState(
+    restoreStaffAction,
+    undefined
+  );
   const [editing, setEditing] = useState(false);
+  // 直近に実行された行内操作の結果だけを表示する（ts で新旧を判定）
+  const latest = latestRowState([firstState, suspendState, resumeState, deleteState, restoreState]);
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {state?.salesId && state?.tempPassword && (
@@ -215,9 +242,11 @@ export function RowActions({
         </button>
       )}
       {status === "applying" && canFirstApprove && (
-        <form action={firstApproveAction}>
+        <form action={firstAction}>
           <input type="hidden" name="staffId" value={staffId} />
-          <button className={btnSuccess}>1次承認</button>
+          <button disabled={firstPending} className={btnSuccess}>
+            {firstPending ? "処理中..." : "1次承認"}
+          </button>
         </form>
       )}
       {status === "provisional" && canFinalApprove && !state?.salesId && (
@@ -229,20 +258,24 @@ export function RowActions({
         </form>
       )}
       {(status === "provisional" || status === "registered") && canSuspend && (
-        <form action={suspendStaffAction}>
+        <form action={suspendAction}>
           <input type="hidden" name="staffId" value={staffId} />
-          <button className={btnDanger}>停止</button>
+          <button disabled={suspendPending} className={btnDanger}>
+            {suspendPending ? "処理中..." : "停止"}
+          </button>
         </form>
       )}
       {status === "suspended" && canSuspend && (
-        <form action={resumeStaffAction}>
+        <form action={resumeAction}>
           <input type="hidden" name="staffId" value={staffId} />
-          <button className={btnOutline}>再開</button>
+          <button disabled={resumePending} className={btnOutline}>
+            {resumePending ? "処理中..." : "再開"}
+          </button>
         </form>
       )}
       {status !== "deleted" && canDelete && (
         <form
-          action={deleteStaffAction}
+          action={deleteAction}
           onSubmit={(e) => {
             if (!window.confirm("この販売員IDを削除します（論理削除・1年間保持）。よろしいですか？")) {
               e.preventDefault();
@@ -250,16 +283,39 @@ export function RowActions({
           }}
         >
           <input type="hidden" name="staffId" value={staffId} />
-          <button className={btnDanger}>削除</button>
+          <button disabled={deletePending} className={btnDanger}>
+            {deletePending ? "処理中..." : "削除"}
+          </button>
         </form>
       )}
       {status === "deleted" && canRestore && (
-        <form action={restoreStaffAction}>
+        <form action={restoreAction}>
           <input type="hidden" name="staffId" value={staffId} />
-          <button className={btnOutline}>復旧</button>
+          <button disabled={restorePending} className={btnOutline}>
+            {restorePending ? "処理中..." : "復旧"}
+          </button>
         </form>
       )}
       {state?.error && <span className="w-full text-[11px] text-red-600">{state.error}</span>}
+      {/* 行内操作の結果（権限不足・状態不整合・DB例外 → 必ずユーザーへ提示する §3.2） */}
+      {latest?.error && (
+        <p
+          role="alert"
+          data-testid="row-action-error"
+          className="w-full text-[11px] font-semibold text-red-600"
+        >
+          {latest.error}
+        </p>
+      )}
+      {latest?.success && (
+        <p
+          role="status"
+          data-testid="row-action-success"
+          className="w-full text-[11px] text-emerald-600"
+        >
+          {latest.success}
+        </p>
+      )}
       {editing && status !== "deleted" && canUpdate && (
         <StaffEditForm staffId={staffId} initial={initial} />
       )}

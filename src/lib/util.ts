@@ -1,6 +1,11 @@
 import "server-only";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
-import { sendMail } from "./mail";
+import { basePrisma } from "./prisma-base";
+import { resolveSession, type RlsContext } from "./session";
+import { mailConfigured, sendMail } from "./mail";
+import { canAccess, type Role } from "./roles";
+import { can, isDummyFeature, type FeatureKey } from "./permissions";
 
 export function today(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); // JST
@@ -36,15 +41,41 @@ function mailBody(body?: string, link?: string): string {
   return lines.filter(Boolean).join("\n");
 }
 
+// ===== 通知チャネル（§3.7 / §8 Notification.channel） =====
+// §8 の `channel` 列は「どのチャネルで配信したか」を表す。
+// アプリ内通知（ベルアイコン・/notifications）は Notification に channel="inapp" で1件だけ残す。
+// メール配信は Notification に別レコード（channel="mail"）を作ると
+// ヘッダのベル未読件数・/notifications 一覧が二重計上されてしまうため、
+// **配信記録は監査ログ（§3.3）に channel=mail として残す**方式を採る。
+// Slack配信（窓口機能 §7.8）も同様にチャネル別の配信記録が必要になった場合はここに集約する。
+export const INAPP_CHANNEL = "inapp";
+
+// メール配信の記録（§3.3 / §8）。SMTP未設定時は送信スキップなので result="skipped"（§14-8）。
+async function auditMailChannel(recipients: string[], title: string) {
+  if (recipients.length === 0) return;
+  const to = recipients.length === 1 ? recipients[0] : `${recipients.length}件`;
+  await audit(
+    "system",
+    "notify_mail",
+    `channel=mail to=${to} title=${title}`,
+    mailConfigured() ? "success" : "skipped"
+  );
+}
+
 export async function notify(accountId: string, title: string, body?: string, link?: string) {
   try {
-    await prisma.notification.create({ data: { accountId, title, body, link } });
+    // アプリ内通知は channel="inapp" を明示して記録する（§8）
+    await prisma.notification.create({
+      data: { accountId, title, body, link, channel: INAPP_CHANNEL },
+    });
     const account = await prisma.account.findUnique({
       where: { id: accountId },
-      select: { email: true, status: true },
+      select: { loginId: true, email: true, status: true },
     });
     if (account?.status === "active" && account.email) {
       await sendMail(account.email, `【Airis】${title}`, mailBody(body, link));
+      // メールアドレスそのものはログに残さない（§10.3 個人情報）。宛先はログインIDで記録する。
+      await auditMailChannel([account.loginId], title);
     }
   } catch {}
 }
@@ -52,20 +83,97 @@ export async function notify(accountId: string, title: string, body?: string, li
 export async function notifyRole(roles: string[], title: string, body?: string, link?: string) {
   const accounts = await prisma.account.findMany({
     where: { role: { in: roles }, status: "active" },
-    select: { id: true, email: true },
+    select: { id: true, loginId: true, email: true },
   });
-  // アプリ内通知
+  // アプリ内通知（channel="inapp" §8）
   try {
     await prisma.notification.createMany({
-      data: accounts.map((a) => ({ accountId: a.id, title, body, link })),
+      data: accounts.map((a) => ({
+        accountId: a.id,
+        title,
+        body,
+        link,
+        channel: INAPP_CHANNEL,
+      })),
     });
   } catch {}
   // メール（TODO: 大規模配信はキュー化する。速度優先ビルドでは逐次送信）
+  const mailTargets = accounts.filter((a) => a.email);
   await Promise.allSettled(
-    accounts
-      .filter((a) => a.email)
-      .map((a) => sendMail(a.email!, `【Airis】${title}`, mailBody(body, link)))
+    mailTargets.map((a) => sendMail(a.email!, `【Airis】${title}`, mailBody(body, link)))
   );
+  await auditMailChannel(
+    mailTargets.map((a) => a.loginId),
+    title
+  );
+}
+
+// ===== 真のトランザクション（§3.6 全件ロールバック / §3.1 RLS との併用） =====
+// `prisma`（src/lib/prisma.ts）のRLS拡張は「set_config + クエリ本体」をクエリ1件ごとの
+// バッチトランザクションで包む実装なので、複数テーブルへの書き込みを1トランザクションに
+// まとめられない（各クエリが独立コミットされる）。
+// そこで RLS 拡張を通さない basePrisma で interactive transaction を張り、その内側で
+// set_config を **同一トランザクション内に** 明示実行して §3.1 のスコープを Postgres 側へ渡す。
+// rls は resolveSession() が算出した RlsContext（currentRls() で取得できる）。
+// rls=null（セッション外）は bypass=off / scope="" となり、保護テーブルは既定拒否（fail-closed）。
+export async function withScopedTransaction<T>(
+  rls: RlsContext | null,
+  fn: (tx: Prisma.TransactionClient) => Promise<T>
+): Promise<T> {
+  return basePrisma.$transaction(async (tx) => {
+    if (rls?.bypass) {
+      await tx.$executeRaw`SELECT set_config('app.bypass', 'on', TRUE)`;
+    } else {
+      const scope = rls?.scope.join(",") ?? "";
+      await tx.$executeRaw`SELECT set_config('app.bypass', 'off', TRUE), set_config('app.scope', ${scope}, TRUE)`;
+    }
+    return fn(tx);
+  });
+}
+
+/** 現在のセッションのRLSコンテキスト（§3.1）。セッション外（バッチ等）は null。 */
+export async function currentRls(): Promise<RlsContext | null> {
+  const session = await resolveSession().catch(() => null);
+  return session?.rls ?? null;
+}
+
+// ===== §5.1 / §5.2 由来の権限判定ヘルパ（§3.2 宣言的マップの共有） =====
+// ハードコードしたロール配列を画面・APIに散らさないため、permissions.ts / roles.ts の
+// 宣言的マップから導出する判定をここに集約する（根拠となる仕様節をコメントで明記する）。
+
+/**
+ * 「自店スコープでの参照」を含む閲覧可否（§5.1 + §5.1 補足 + §3.5）。
+ * §5.1 の原表は⑧に「申」しか与えていないが、§5.1 補足のとおり **自店スコープの閲覧は
+ * 機能上不可欠**（提出状況・申請状況の確認）なので、申請・提出権限を閲覧権に内含させる。
+ * 実際に見える範囲は agencyScope()（§3.1）とRLS（prisma/rls.sql）で自店に限定される。
+ * ④は §5.1 で「ダミー」の機能に限りダミーデータのみを参照できる（§3.5）。
+ */
+export function canViewFeatureInScope(role: Role, feature: FeatureKey): boolean {
+  return (
+    isDummyFeature(role, feature) ||
+    can(role, feature, "view") ||
+    can(role, feature, "apply") ||
+    can(role, feature, "submit")
+  );
+}
+
+/**
+ * ドキュメントの登録・削除権限（§7.12「SNC（①②③）がアップロード・整理し、閲覧範囲を文書ごとに設定」）。
+ * §5.1 の表に「ドキュメント」行は無いため、
+ *  - ページアクセス可否は §5.2 の宣言（canAccess）
+ *  - 登録・削除の主体は §5.1「お知らせ（全体向け）」の登録権（登=①②③）と同一範囲
+ * として導出する（どちらも「SNCが文書・情報を登録し代理店へ周知する」同種の操作）。
+ */
+export function canManageDocuments(role: Role): boolean {
+  return canAccess(role, "documents") && can(role, "announcement-all", "create");
+}
+
+/**
+ * 代理店所属が必須のロール（§4 のID体系: ⑦⑧⑩は代理店コードをアカウントIDに含む）。
+ * 権限判定ではなく「所属と役割の整合」チェックに使う（申請フォーム §6.1 / 権限変更 要件1-1）。
+ */
+export function requiresAgency(role: Role): boolean {
+  return role === "R7" || role === "R8" || role === "R10";
 }
 
 // 履歴イベント追記用（日付はJST基準 §2）

@@ -2,16 +2,23 @@
 import { agencyScope, requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { csvResponse, toCsv } from "@/lib/csv";
-import { audit, today } from "@/lib/util";
+import { isDummyFeature } from "@/lib/permissions";
+import { audit, canViewFeatureInScope, today } from "@/lib/util";
 
 export async function GET() {
-  const user = await requirePage("sales-staff"); // 認可チェック
+  const user = await requirePage("sales-staff"); // 認可チェック（§5.2 ページアクセス）
+  // §5.1「販売員ID」の参照権限をAPI層でも判定する（§3.2 多層防御）
+  if (!canViewFeatureInScope(user.role, "sales-staff")) {
+    await audit(user.loginId, "csv_export_gigacc", `role=${user.role}`, "denied");
+    return new Response("Forbidden", { status: 403 });
+  }
   const scope = await agencyScope(user);
+  const dummy = isDummyFeature(user.role, "sales-staff"); // ④のみ true（§3.5）
 
   const staff = await prisma.salesStaff.findMany({
     where: {
       status: "registered", // 本登録のみが連携対象
-      ...(scope ? { agencyId: { in: scope } } : { agency: { isDummy: false } }),
+      ...(scope ? { agencyId: { in: scope } } : { agency: { isDummy: dummy } }),
     },
     include: { agency: true },
     orderBy: { salesId: "asc" },

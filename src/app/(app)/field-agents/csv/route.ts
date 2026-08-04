@@ -1,19 +1,29 @@
 // 訪販員申請一覧CSV出力（棚卸用。SPEC §7.4 / 要件3-10）
 // SNC限定項目（ブラックリスト欄・SNC用メモ）は SNC①②③ がダウンロードした場合のみ列に含める
+// 権限判定は §5.1 の宣言的マップ（permissions.ts）経由で行う（§3.2）
 import { getCurrentUser, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { canAccess, SNC_ADMIN_ROLES, STAFF_STATUS_LABELS, type Role } from "@/lib/roles";
+import { canAccess, STAFF_STATUS_LABELS } from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { toCsv, csvResponse } from "@/lib/csv";
-import { audit, today } from "@/lib/util";
+import { audit, canViewFeatureInScope, today } from "@/lib/util";
 
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
   if (user.mustChangePassword) return new Response("Forbidden", { status: 403 });
+  // §5.2 ページアクセス（訪販員申請/管理: ①②③⑦⑧、④はダミー）
   if (!canAccess(user.role, "field-agents")) return new Response("Forbidden", { status: 403 });
+  // §5.1「訪販員申請」の参照権限（①②③⑦=閲 / ⑧=申 / ④=ダミー §3.5）を API層でも判定（§3.2）
+  if (!canViewFeatureInScope(user.role, "field-agent")) {
+    await audit(user.loginId, "訪販員申請一覧CSV出力", `role=${user.role}`, "denied");
+    return new Response("Forbidden", { status: 403 });
+  }
 
   const scope = await agencyScope(user); // R4はダミー代理店に自動スコープ
-  const isSnc = SNC_ADMIN_ROLES.includes(user.role as Role);
+  // SNC限定項目（ブラックリスト欄・SNC用メモ §7.4）は「SNCアカウント（①②③）」のみ。
+  // §5.1「訪販員申請 / 承（最終承認）」を持つのは①②③なのでこれを根拠に判定する（§3.2）。
+  const isSnc = can(user.role, "field-agent", "approve_final");
 
   const apps = await prisma.fieldAgentApplication.findMany({
     where: {
