@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Airis — 販売代理店支援ポータル
 
-## Getting Started
+通信キャリア（SNC）が販売代理店網（1次店 → 2次店 → 販売員）を管理する業務Webアプリ。
+仕様書は [docs/SPEC.md](docs/SPEC.md)（機能要件・権限マトリクス・画面仕様の一次ソース）。
 
-First, run the development server:
+**本番環境**: https://airis-nine.vercel.app
+
+## 技術スタック
+
+- Next.js 16 (App Router) + TypeScript + Tailwind CSS
+- PostgreSQL (Neon) + Prisma 6
+- 認証: 自前実装（ID/パスワード + DBセッション。絶対24h / アイドル60分 / 10回失敗で30分ロック / 初回パスワード変更強制）
+- デプロイ: Vercel（Neonインテグレーションで `DATABASE_URL` 自動設定）
+
+## 開発環境
 
 ```bash
+docker run -d --name airis-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=airis -p 5433:5432 postgres:16
+npm install
+npx prisma db push
+npm run seed        # デモデータ投入（ログイン情報がコンソールに表示される）
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`.env` はローカルDB向け。`.env.local`（gitignore済み）があるとそちらが優先される点に注意。
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 実装済み機能（速度優先ビルド）
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- 10ロールRBAC + 代理店データスコープ（1次店=自店+配下 / 2次店=自店 / SNC=全店 / ④閲覧=ダミーデータ）
+- サイドメニュー11項目: ダッシュボード / Airisアカウント申請 / 販売員ID管理 / 訪販員申請・管理 / 各種資料の提出（日報・稼働提出物）/ 下位代理店 / 管理画面 / ホットライン窓口 / 消費者センター窓口 / お知らせ / ドキュメント（代理店には窓口2つの代わりに統合ビュー「窓口案件」）
+- 申請→1次承認→最終承認フロー（Airisアカウント / 販売員ID / 訪販員申請）、承認時のID自動採番・一時パスワード一回表示
+- 日報（訪販/テレマ、上書き提出、KPI自動計算、CSVテンプレ/一括取込、スマホ対応）
+- 稼働提出物（6様式テンプレDL、二段階承認、提出状況 n/6 マトリクス、年度自動計算)
+- 窓口案件（テンプレ起票、スレッド返信、ステータス/期限バッジ、代理店既読、緊急アラート、代理店側は返信のみ・添付不可）
+- お知らせ（全体/1次店向け、重要フラグ+既読率）、ドキュメント（公開範囲別）
+- CSV入出力（棚卸 / GiGaCC連携 / 監査ログ）、アプリ内通知、監査ログ（最小限）
 
-## Learn More
+## 未実装（本番リリース前に対応 — SPEC参照）
 
-To learn more about Next.js, take a look at the following resources:
+- MFA（TOTP/Google Authenticator）§4.2
+- パスワード有効期限・履歴24世代 §4.2
+- メール/Slack通知の実送信（現在はアプリ内通知のみ）§3.7
+- 期限切れ案件の自動リマインドバッチ §7.8
+- 個人情報の1年後匿名化バッチ §3.4
+- 監査ログの網羅（閲覧イベント等）§3.3、RLS §3.1
+- テスト一式 §13
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+> デモアカウントのパスワードは `prisma/seed.ts` を参照。**本番運用前に必ず変更すること。**
