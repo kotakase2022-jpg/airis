@@ -1,0 +1,331 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// 代理店（1次/2次の階層）
+model Agency {
+  id             String   @id @default(cuid())
+  code           String   @unique // 6桁代理店コード
+  name           String
+  tier           Int // 1=1次, 2=2次
+  parentId       String?
+  parent         Agency?  @relation("AgencyHierarchy", fields: [parentId], references: [id])
+  children       Agency[] @relation("AgencyHierarchy")
+  representative String?
+  status         String   @default("active") // active | closed(稼働終了)
+  joinedAt       DateTime @default(now())
+  isDummy        Boolean  @default(false) // ④ダミー表示用データ
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  accounts     Account[]
+  salesStaff   SalesStaff[]
+  dailyReports DailyReport[]
+  submissionsAsPrimary   Submission[] @relation("SubmissionPrimary")
+  submissionsAsSubmitter Submission[] @relation("SubmissionSubmitter")
+  casesAsPrimary   Case[] @relation("CasePrimary")
+  casesAsSecondary Case[] @relation("CaseSecondary")
+  caseReads    CaseRead[]
+}
+
+// Airisアカウント（10ロール）+ 販売員IDログイン
+model Account {
+  id                 String    @id @default(cuid())
+  loginId            String    @unique // airis_snc_adm_001 / 110001C001 など
+  role               String // R1_SLB_SYS..R9_SALES,R10_CLOSED(実効)
+  name               String
+  email              String?
+  agencyId           String?
+  agency             Agency?   @relation(fields: [agencyId], references: [id])
+  status             String    @default("pending") // pending(承認前)|active(本登録)|suspended(停止中)|deleted(削除済)
+  passwordHash       String
+  mustChangePassword Boolean   @default(true)
+  passwordUpdatedAt  DateTime  @default(now())
+  failedAttempts     Int       @default(0)
+  lockedUntil        DateTime?
+  isVendor           Boolean   @default(false) // サスラボ保守区分
+  deletedAt          DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  sessions      Session[]
+  salesStaff    SalesStaff?
+  notifications Notification[]
+  announcementReads AnnouncementRead[]
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  token      String   @unique
+  accountId  String
+  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  expiresAt  DateTime // 絶対期限24h
+}
+
+// アカウント申請（Airisアカウント）
+model AccountRequest {
+  id            String    @id @default(cuid())
+  requestId     String    @unique // 表示用申請ID
+  role          String
+  name          String
+  email         String
+  agencyId      String?
+  evidenceFileId String? // 上長承認証跡
+  status        String    @default("pending_final") // pending_first(1次承認待ち)|pending_final(承認待ち)|approved|rejected
+  rejectReason  String?
+  issuedLoginId String?
+  history       Json      @default("[]") // [{event,at,by}]
+  createdBy     String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+// 販売員（販売員ID）
+model SalesStaff {
+  id           String    @id @default(cuid())
+  salesId      String?   @unique // xxxxxxC001（承認後に採番）
+  lastName     String
+  firstName    String
+  birthDate    String // YYYY-MM-DD
+  phone        String
+  email        String?
+  agencyId     String
+  agency       Agency    @relation(fields: [agencyId], references: [id])
+  status       String    @default("applying") // applying(申請中)|provisional(仮登録)|registered(本登録)|suspended(停止中)|deleted(削除済)
+  firstApproved Boolean  @default(false) // 1次承認済み
+  accountId    String?   @unique
+  account      Account?  @relation(fields: [accountId], references: [id])
+  history      Json      @default("[]")
+  source       String    @default("form") // form | csv
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  fieldApplications FieldAgentApplication[]
+  dailyReports      DailyReport[]
+}
+
+// 訪販員申請
+model FieldAgentApplication {
+  id              String    @id @default(cuid())
+  salesStaffId    String
+  salesStaff      SalesStaff @relation(fields: [salesStaffId], references: [id])
+  applicationType String // 稼働 | 抹消
+  products        String // マルチ | auひかり | コラボ
+  attribute       String? // 社員/契約社員 | パート・アルバイト | 業務委託社員 | 個人事業主
+  lastNameKana    String?
+  firstNameKana   String?
+  identityType    String? // 免許証 | マイナンバーカード | パスポート
+  pledgeNo        String
+  pledgeFileId    String?
+  startDate       String?
+  endDate         String?
+  agencyCode1     String
+  agencyCode2     String?
+  contractorName  String?
+  contractorAddress String?
+  contractorPhone String?
+  blacklistFlag   String? // ★ | 1 | null（SNCのみ閲覧・編集）
+  sncMemo         String? // SNCのみ
+  status          String   @default("applying") // applying|provisional|registered|suspended|deleted
+  firstApproved   Boolean  @default(false)
+  workMonth       String? // 稼働月 YYYY-MM
+  primaryAgencyName String?
+  agencyName      String?
+  history         Json     @default("[]")
+  deletedAt       DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// 日報（訪販/テレマ）
+model DailyReport {
+  id           String   @id @default(cuid())
+  date         String // YYYY-MM-DD
+  type         String // 訪販 | テレマ
+  salesStaffId String
+  salesStaff   SalesStaff @relation(fields: [salesStaffId], references: [id])
+  agencyId     String
+  agency       Agency   @relation(fields: [agencyId], references: [id])
+  area         String?
+  // 訪販
+  forecastAcq  Int? // 獲得見込（月初見込）
+  acquisitions Int?
+  workers      Int? // 稼働数
+  visits       Int?
+  meetings     Int? // 対面数
+  negotiations Int? // 商談数
+  contracts    Int? // 成約数
+  // テレマ
+  forecastHours   Float? // 稼働時間（月初見込）
+  forecastEntries Int? // エントリー数（月初見込）
+  actualHours     Float?
+  entries         Int?
+  appointments    Int? // アポ数
+  closePassed     Int? // クローズ通過数
+  preConfirmPassed Int? // 前確通過数
+  activityContent String?
+  activityResult  String?
+  notes           String?
+  source          String @default("form")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([date, type, salesStaffId])
+}
+
+// 稼働提出物
+model Submission {
+  id           String   @id @default(cuid())
+  kind         String // 6種
+  fiscalYear   Int
+  targetMonth  String // YYYY-MM
+  primaryAgencyId  String
+  primaryAgency    Agency @relation("SubmissionPrimary", fields: [primaryAgencyId], references: [id])
+  submitterAgencyId String
+  submitterAgency   Agency @relation("SubmissionSubmitter", fields: [submitterAgencyId], references: [id])
+  fileId       String
+  fileName     String
+  memo         String?
+  status       String   @default("pending_first") // pending_first(1次店確認中)|pending_snc(SNC確認中)|approved(最終承認済み)|rejected(差戻し)
+  rejectReason String?
+  history      Json     @default("[]")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// お知らせ
+model Announcement {
+  id        String    @id @default(cuid())
+  audience  String // all(全体向け) | primary(1次店向け)
+  title     String
+  body      String
+  important Boolean   @default(false)
+  status    String    @default("sent") // draft | sent | stopped | deleted
+  fileIds   Json      @default("[]")
+  sentAt    DateTime?
+  createdBy String?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  reads AnnouncementRead[]
+}
+
+model AnnouncementRead {
+  id             String       @id @default(cuid())
+  announcementId String
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  accountId      String
+  account        Account      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  readAt         DateTime     @default(now())
+
+  @@unique([announcementId, accountId])
+}
+
+// 窓口案件（HL/消セン）
+model Case {
+  id           String   @id @default(cuid())
+  series       String // HL | CSC
+  caseNo       String   @unique // HLC-xxxx / CSC-xxxx
+  templateKind String // 音声提出依頼 | 代理店様から顧客への架電依頼 | 代理店確認依頼 | フリー入力
+  title        String
+  primaryAgencyId  String
+  primaryAgency    Agency  @relation("CasePrimary", fields: [primaryAgencyId], references: [id])
+  secondaryAgencyId String?
+  secondaryAgency   Agency? @relation("CaseSecondary", fields: [secondaryAgencyId], references: [id])
+  ispNumber    String?
+  deadline     String? // YYYY-MM-DD
+  status       String   @default("未対応") // 未対応|確認中|対応中|問題発生|完了
+  createdBy    String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  messages CaseMessage[]
+  reads    CaseRead[]
+  statusHistory CaseStatusHistory[]
+}
+
+model CaseMessage {
+  id        String   @id @default(cuid())
+  caseId    String
+  case_     Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  senderSide String // snc | agency
+  senderName String
+  body      String
+  fileIds   Json     @default("[]") // SNC側のみ添付可
+  createdAt DateTime @default(now())
+}
+
+model CaseStatusHistory {
+  id         String   @id @default(cuid())
+  caseId     String
+  case_      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  fromStatus String
+  toStatus   String
+  changedBy  String
+  changedAt  DateTime @default(now())
+}
+
+model CaseRead {
+  id       String   @id @default(cuid())
+  caseId   String
+  case_    Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  agencyId String
+  agency   Agency   @relation(fields: [agencyId], references: [id])
+  readAt   DateTime @default(now())
+
+  @@unique([caseId, agencyId])
+}
+
+// ドキュメント
+model Document {
+  id         String   @id @default(cuid())
+  title      String
+  category   String?
+  visibility String   @default("all") // all | primary | snc
+  fileId     String
+  fileName   String
+  createdBy  String?
+  createdAt  DateTime @default(now())
+}
+
+// ファイル（DB格納・速度優先ビルド）
+model StoredFile {
+  id        String   @id @default(cuid())
+  name      String
+  mime      String
+  size      Int
+  data      Bytes
+  uploadedBy String?
+  createdAt DateTime @default(now())
+}
+
+// 通知（アプリ内）
+model Notification {
+  id        String    @id @default(cuid())
+  accountId String
+  account   Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+// 監査ログ（最小限）
+model AuditLog {
+  id        String   @id @default(cuid())
+  actor     String
+  action    String
+  target    String?
+  result    String   @default("success")
+  ip        String?
+  createdAt DateTime @default(now())
+}
