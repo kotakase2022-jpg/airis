@@ -54,6 +54,10 @@ export default async function FieldAgentsPage({
 
   const scope = await agencyScope(user); // null=全代理店（SNC系）/ 配列=そのIDのみ
   const isSnc = SNC_ADMIN_ROLES.includes(user.role); // ①②③（R4は含まない）
+  // ブラックリスト欄の表示は監査ログ必須記録（§3.3）
+  if (isSnc) {
+    await audit(user.loginId, "view_blacklist_column", `role=${user.role} page=field-agents`);
+  }
   const canApply = !user.dummy && ["R1", "R2", "R3", "R7", "R8"].includes(user.role);
   const canFirstApprove = !user.dummy && ["R1", "R2", "R3", "R7"].includes(user.role);
   const canFinalApprove = !user.dummy && isSnc;
@@ -137,10 +141,6 @@ export default async function FieldAgentsPage({
     primaryAgencyName: s.agency.tier === 1 ? s.agency.name : s.agency.parent?.name ?? "",
   }));
 
-  // 機微データ閲覧の監査記録（ブラックリスト欄の表示は必須記録 §3.3）
-  if (isSnc) {
-    await audit(user.loginId, "訪販員申請一覧閲覧（ブラックリスト欄表示）", `page=${page}`);
-  }
 
   const totalPages = Math.max(1, Math.ceil(count / PAGE_SIZE));
   const buildQuery = (p: number) => {

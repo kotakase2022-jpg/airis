@@ -1,11 +1,12 @@
 import "server-only";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma } from "./prisma";
 import { PageKey, canAccess, isDummyView } from "./roles";
 import { resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
+import { audit } from "./util";
 
 export type { CurrentUser } from "./session";
 
@@ -55,7 +56,25 @@ export async function requireUser(): Promise<CurrentUser> {
 
 export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy: boolean }> {
   const user = await requireUser();
-  if (!canAccess(user.role, page)) redirect("/dashboard");
+  if (!canAccess(user.role, page)) {
+    // 権限外アクセスの試みも記録（§3.3 / SEC②#35）
+    await audit(user.loginId, `access_denied`, `page=${page} role=${user.role}`, "denied");
+    redirect("/dashboard");
+  }
+  // 閲覧イベント監査（§3.3）: ページ表示のみ記録。server action経由（next-actionヘッダあり）は
+  // 操作ごとの監査が別途あるため二重記録しない。SNC系のテナント横断参照は role で識別可能。
+  try {
+    const h = await headers();
+    if (!h.get("next-action")) {
+      await audit(
+        user.loginId,
+        `view_${page}`,
+        `role=${user.role}${user.agencyId ? ` agency=${user.agencyId}` : ""}${isDummyView(user.role, page) ? " dummy" : ""}`
+      );
+    }
+  } catch {
+    // headers()が使えないコンテキストでは閲覧記録をスキップ（業務は止めない）
+  }
   return { ...user, dummy: isDummyView(user.role, page) };
 }
 
