@@ -122,6 +122,101 @@ async function main() {
     });
   }
 
+  // ---- 日報（当月分のサンプル）----
+  const month = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 7);
+  const staff1 = await prisma.salesStaff.findUnique({ where: { salesId: "210001C001" } });
+  const staff2 = await prisma.salesStaff.findUnique({ where: { salesId: "110001C001" } });
+  if (staff1 && staff2) {
+    const reports: [string, string, number, number, number, number, number][] = [
+      // [date, staff, 獲得, 稼働, 訪問, 対面, 商談]
+      [`${month}-01`, staff1.id, 1, 2, 67, 15, 8],
+      [`${month}-02`, staff1.id, 2, 2, 93, 16, 7],
+      [`${month}-03`, staff1.id, 0, 1, 55, 12, 10],
+      [`${month}-01`, staff2.id, 2, 3, 113, 45, 33],
+      [`${month}-02`, staff2.id, 1, 3, 58, 20, 12],
+    ];
+    for (const [date, salesStaffId, acq, workers, visits, meetings, negotiations] of reports) {
+      const st = salesStaffId === staff1.id ? staff1 : staff2;
+      await prisma.dailyReport.upsert({
+        where: { date_type_salesStaffId: { date, type: "訪販", salesStaffId } },
+        update: {},
+        create: {
+          date, type: "訪販", salesStaffId, agencyId: st.agencyId,
+          area: "新宿区", forecastAcq: 30, acquisitions: acq, workers,
+          visits, meetings, negotiations, contracts: Math.min(acq, negotiations),
+          activityContent: "戸建てエリアの巡回訪問", activityResult: "在宅率高め、好反応",
+        },
+      });
+    }
+    await prisma.dailyReport.upsert({
+      where: { date_type_salesStaffId: { date: `${month}-02`, type: "テレマ", salesStaffId: staff2.id } },
+      update: {},
+      create: {
+        date: `${month}-02`, type: "テレマ", salesStaffId: staff2.id, agencyId: staff2.agencyId,
+        forecastHours: 160, forecastEntries: 200, actualHours: 7.5, entries: 12,
+        appointments: 3, closePassed: 2, preConfirmPassed: 1,
+        activityContent: "既存リストへの架電", activityResult: "アポ3件獲得",
+      },
+    });
+  }
+
+  // ---- 窓口案件 ----
+  const r7 = await prisma.account.findUnique({ where: { loginId: "airis_1110001_001" } });
+  const mkCase = async (series: string, no: string, tpl: string, title: string, status: string, deadline: string, primaryId: string) => {
+    const exists = await prisma.case.findUnique({ where: { caseNo: no } });
+    if (exists) return exists;
+    const c = await prisma.case.create({
+      data: {
+        series, caseNo: no, templateKind: tpl, title,
+        primaryAgencyId: primaryId, ispNumber: "9999999999", deadline, status,
+        createdBy: series === "HL" ? "airis_snc_spt1_001" : "airis_snc_spt2_001",
+      },
+    });
+    await prisma.caseMessage.create({
+      data: {
+        caseId: c.id, senderSide: "snc",
+        senderName: series === "HL" ? "ホットライン窓口" : "消費者センター窓口",
+        body: "■依頼理由\n顧客からの問い合わせ対応のため\n\n■顧客情報\nISP受付番号：9999999999\n代理店コード：110001\n代理店名称：東都ネットワーク販売株式会社",
+      },
+    });
+    if (r7) {
+      await prisma.notification.create({
+        data: { accountId: r7.id, title: `新しい${series === "HL" ? "ホットライン" : "消費者センター"}案件`, body: title, link: "/agency-cases" },
+      });
+    }
+    return c;
+  };
+  const dl = (d: number) => new Date(Date.now() + d * 86400000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  await mkCase("HL", "HLC-1000000000001", "代理店確認依頼", "代理店確認依頼／東都ネットワーク販売株式会社／9999999999", "確認中", dl(3), p1.id);
+  await mkCase("HL", "HLC-1000000000002", "音声提出依頼", "音声提出依頼／東都ネットワーク販売株式会社／9999999999", "未対応", dl(-1), p1.id);
+  await mkCase("CSC", "CSC-1000000000001", "代理店様から顧客への架電依頼", "代理店様から顧客への架電依頼／東都ネットワーク販売株式会社／9999999999", "対応中", dl(5), p1.id);
+
+  // ---- お知らせ ----
+  const annCount = await prisma.announcement.count();
+  if (annCount === 0) {
+    await prisma.announcement.create({
+      data: {
+        audience: "all", title: "【重要】8月度の提出物締切について", important: true,
+        body: "8月度の稼働提出物は8月25日までに提出をお願いします。\n未提出の場合は稼働継続に影響する場合があります。",
+        sentAt: new Date(), createdBy: "airis_snc_ops_0001",
+      },
+    });
+    await prisma.announcement.create({
+      data: {
+        audience: "all", title: "夏季休業期間のサポート窓口について",
+        body: "8月13日〜15日は窓口対応をお休みします。緊急時はAiris内の窓口案件からご連絡ください。",
+        sentAt: new Date(), createdBy: "airis_snc_ops_0001",
+      },
+    });
+    await prisma.announcement.create({
+      data: {
+        audience: "primary", title: "【1次店向け】下期インセンティブ制度の説明会",
+        body: "9月開始の新インセンティブ制度について、オンライン説明会を実施します。",
+        sentAt: new Date(), createdBy: "airis_snc_adm_001",
+      },
+    });
+  }
+
   console.log("Seed complete.");
   console.log("== ログイン情報 ==");
   console.log(`管理者系(①②③⑦): パスワード ${PASSWORDS.admin}`);

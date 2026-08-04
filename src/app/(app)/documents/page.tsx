@@ -1,0 +1,252 @@
+import Link from "next/link";
+import { requirePage } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { SNC_ADMIN_ROLES, type Role } from "@/lib/roles";
+import {
+  Card,
+  Badge,
+  PageHeader,
+  InfoBanner,
+  EmptyState,
+  SectionTitle,
+  StatCard,
+  btnDanger,
+  btnOutline,
+  inputCls,
+  thCls,
+  tdCls,
+} from "@/components/ui";
+import { DocumentUploadForm } from "./upload-form";
+import { deleteDocumentAction } from "./actions";
+
+const PAGE_SIZE = 50;
+
+const VISIBILITY_LABELS: Record<string, string> = {
+  all: "全体",
+  primary: "1次店まで",
+  snc: "SNC内",
+};
+
+const VISIBILITY_TONES: Record<string, string> = {
+  all: "blue",
+  primary: "yellow",
+  snc: "gray",
+};
+
+// 公開範囲による絞り込み（§7.12 / §5.2）
+// SNC系(①②③)=全部 / ⑤⑥=all+snc / ⑦=all+primary / ⑧⑨=allのみ / ④ダミー=all相当（読み取り専用）
+function visibilityScope(role: Role, dummy: boolean): string[] | null {
+  if (dummy) return ["all"];
+  if (SNC_ADMIN_ROLES.includes(role)) return null;
+  if (role === "R5" || role === "R6") return ["all", "snc"];
+  if (role === "R7") return ["all", "primary"];
+  return ["all"]; // R8, R9
+}
+
+function fmtJst(d: Date): string {
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+export default async function DocumentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string; q?: string; category?: string }>;
+}) {
+  const user = await requirePage("documents");
+  const sp = await searchParams;
+  const page = Math.max(1, Number(sp.page) || 1);
+  const q = (sp.q ?? "").trim();
+  const category = (sp.category ?? "").trim();
+
+  const isSnc = !user.dummy && SNC_ADMIN_ROLES.includes(user.role);
+  const scope = visibilityScope(user.role, user.dummy);
+
+  const scopeWhere = scope ? { visibility: { in: scope } } : {};
+  const where = {
+    ...scopeWhere,
+    ...(category ? { category } : {}),
+    ...(q
+      ? {
+          OR: [
+            { title: { contains: q, mode: "insensitive" as const } },
+            { fileName: { contains: q, mode: "insensitive" as const } },
+          ],
+        }
+      : {}),
+  };
+
+  const [total, totalAll, documents, categoryRows] = await Promise.all([
+    prisma.document.count({ where }),
+    prisma.document.count({ where: scopeWhere }),
+    prisma.document.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * PAGE_SIZE,
+      take: PAGE_SIZE,
+    }),
+    prisma.document.findMany({
+      where: scopeWhere,
+      select: { category: true },
+      distinct: ["category"],
+      orderBy: { category: "asc" },
+    }),
+  ]);
+  const categories = categoryRows
+    .map((c) => c.category)
+    .filter((c): c is string => !!c);
+
+  const qs = (p: number) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (category) params.set("category", category);
+    if (p > 1) params.set("page", String(p));
+    const s = params.toString();
+    return `/documents${s ? `?${s}` : ""}`;
+  };
+  const lastPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  return (
+    <div>
+      <PageHeader title="ドキュメント" />
+      <InfoBanner>
+        販売マニュアル・通知書類等の文書置き場です。表示内容は権限に応じた公開範囲で絞り込まれます。
+        {user.dummy && " SNC閲覧アカウントのため読み取り専用です。"}
+      </InfoBanner>
+
+      <div className="mb-5 grid grid-cols-3 gap-4">
+        <StatCard value={totalAll} label="閲覧可能なドキュメント" tone="blue" />
+        <StatCard value={categories.length} label="カテゴリ数" tone="purple" />
+        <StatCard value={total} label="絞り込み結果" tone="green" />
+      </div>
+
+      {isSnc && (
+        <Card className="mb-5">
+          <SectionTitle>ドキュメントアップロード（SNCのみ）</SectionTitle>
+          <DocumentUploadForm />
+        </Card>
+      )}
+
+      <Card>
+        <SectionTitle
+          right={
+            <span className="text-xs text-slate-500">
+              全{total}件中 {total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}〜
+              {Math.min(page * PAGE_SIZE, total)}件を表示
+            </span>
+          }
+        >
+          ドキュメント一覧
+        </SectionTitle>
+
+        <form method="get" action="/documents" className="mb-4 flex flex-wrap items-end gap-3">
+          <div className="w-64">
+            <label className="mb-1 block text-xs font-semibold text-slate-600">検索</label>
+            <input
+              type="text"
+              name="q"
+              defaultValue={q}
+              placeholder="タイトル・ファイル名で検索"
+              className={inputCls}
+            />
+          </div>
+          <div className="w-52">
+            <label className="mb-1 block text-xs font-semibold text-slate-600">カテゴリ</label>
+            <select name="category" defaultValue={category} className={inputCls}>
+              <option value="">すべてのカテゴリ</option>
+              {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </div>
+          <button type="submit" className={btnOutline}>
+            絞り込み
+          </button>
+          {(q || category) && (
+            <Link href="/documents" className="text-sm text-blue-600 hover:underline">
+              クリア
+            </Link>
+          )}
+        </form>
+
+        {documents.length === 0 ? (
+          <EmptyState message="該当するドキュメントはありません。" />
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr>
+                  <th className={thCls}>タイトル</th>
+                  <th className={thCls}>カテゴリ</th>
+                  <th className={thCls}>公開範囲</th>
+                  <th className={thCls}>ファイル名</th>
+                  <th className={thCls}>登録日</th>
+                  {isSnc && <th className={thCls}>操作</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {documents.map((d) => (
+                  <tr key={d.id}>
+                    <td className={`${tdCls} font-medium text-slate-800`}>{d.title}</td>
+                    <td className={tdCls}>
+                      {d.category ? (
+                        <Badge tone="blue">{d.category}</Badge>
+                      ) : (
+                        <span className="text-xs text-slate-400">-</span>
+                      )}
+                    </td>
+                    <td className={tdCls}>
+                      <Badge tone={VISIBILITY_TONES[d.visibility] ?? "gray"}>
+                        {VISIBILITY_LABELS[d.visibility] ?? d.visibility}
+                      </Badge>
+                    </td>
+                    <td className={tdCls}>
+                      {/* TODO: ダウンロードの監査ログ記録は /files/[id] ルート側で対応（§7.12） */}
+                      <a href={`/files/${d.fileId}`} className="text-blue-600 hover:underline">
+                        📎 {d.fileName}
+                      </a>
+                    </td>
+                    <td className={`${tdCls} whitespace-nowrap`}>{fmtJst(d.createdAt)}</td>
+                    {isSnc && (
+                      <td className={tdCls}>
+                        <form action={deleteDocumentAction}>
+                          <input type="hidden" name="id" value={d.id} />
+                          <button type="submit" className={btnDanger}>
+                            削除
+                          </button>
+                        </form>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {lastPage > 1 && (
+          <div className="mt-4 flex items-center justify-center gap-4 text-sm">
+            {page > 1 ? (
+              <Link href={qs(page - 1)} className="text-blue-600 hover:underline">
+                ← 前の50件
+              </Link>
+            ) : (
+              <span className="text-slate-300">← 前の50件</span>
+            )}
+            <span className="text-slate-500">
+              {page} / {lastPage} ページ
+            </span>
+            {page < lastPage ? (
+              <Link href={qs(page + 1)} className="text-blue-600 hover:underline">
+                次の50件 →
+              </Link>
+            ) : (
+              <span className="text-slate-300">次の50件 →</span>
+            )}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}

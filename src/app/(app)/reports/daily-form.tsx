@@ -1,0 +1,180 @@
+"use client";
+
+// 稼働日報 入力フォーム（SPEC §7.5。唯一のスマホ最適化画面: 1カラム化+大きめ入力欄）
+
+import { useActionState, useState } from "react";
+import { saveDailyReport } from "./actions";
+import type { DailyFormState } from "./defs";
+import { SectionTitle, labelCls, btnPrimary } from "@/components/ui";
+
+export type StaffOption = { id: string; label: string; agencyName: string };
+
+// スマホで押しやすいよう通常より大きめの入力欄
+const bigInput =
+  "w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base sm:text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500";
+
+const VISIT_FIELDS: { name: string; label: string }[] = [
+  { name: "forecastAcq", label: "獲得見込（月初見込）" },
+  { name: "acquisitions", label: "獲得" },
+  { name: "workers", label: "稼働数" },
+  { name: "visits", label: "訪問数" },
+  { name: "meetings", label: "対面数" },
+  { name: "negotiations", label: "商談数" },
+  { name: "contracts", label: "成約数" },
+];
+
+const TELE_FIELDS: { name: string; label: string; float?: boolean }[] = [
+  { name: "forecastHours", label: "稼働時間（月初見込）", float: true },
+  { name: "forecastEntries", label: "エントリー数（月初見込）" },
+  { name: "actualHours", label: "稼働時間（実績）", float: true },
+  { name: "entries", label: "エントリー数（実績）" },
+  { name: "appointments", label: "アポ数（実績）" },
+  { name: "closePassed", label: "クローズ通過数" },
+  { name: "preConfirmPassed", label: "前確通過数（実績）" },
+];
+
+export function DailyReportForm({
+  staffOptions,
+  fixedStaff,
+  defaultDate,
+}: {
+  staffOptions: StaffOption[];
+  fixedStaff: StaffOption | null; // R9は自分のSalesStaff固定
+  defaultDate: string;
+}) {
+  const [state, formAction, pending] = useActionState<DailyFormState, FormData>(
+    saveDailyReport,
+    {}
+  );
+  const [type, setType] = useState<"訪販" | "テレマ">("訪販");
+  const [staffId, setStaffId] = useState(fixedStaff ? fixedStaff.id : staffOptions[0]?.id ?? "");
+  const agencyName = fixedStaff
+    ? fixedStaff.agencyName
+    : staffOptions.find((s) => s.id === staffId)?.agencyName ?? "-";
+
+  return (
+    <div>
+      <form action={formAction} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <div>
+          <label className={labelCls}>日付</label>
+          <input type="date" name="date" defaultValue={defaultDate} required className={bigInput} />
+        </div>
+        <div>
+          <label className={labelCls}>販売員ID</label>
+          {fixedStaff ? (
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base sm:text-sm text-slate-700">
+              {fixedStaff.label}
+            </div>
+          ) : (
+            <select
+              name="salesStaffId"
+              value={staffId}
+              onChange={(e) => setStaffId(e.target.value)}
+              required
+              className={bigInput}
+            >
+              {staffOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+        <div>
+          <label className={labelCls}>代理店（自動）</label>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base sm:text-sm text-slate-700">
+            {agencyName}
+          </div>
+        </div>
+
+        <div>
+          <label className={labelCls}>日報タイプ</label>
+          <input type="hidden" name="type" value={type} />
+          <div className="inline-flex w-full rounded-xl bg-slate-100 p-1">
+            {(["訪販", "テレマ"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setType(t)}
+                className={
+                  "flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition " +
+                  (type === t ? "bg-white text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700")
+                }
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="sm:col-span-2">
+          <label className={labelCls}>エリア</label>
+          <input name="area" placeholder="例: 東京都世田谷区" className={bigInput} />
+        </div>
+
+        {(type === "訪販" ? VISIT_FIELDS : TELE_FIELDS).map((f) => (
+          <div key={`${type}-${f.name}`}>
+            <label className={labelCls}>{f.label}</label>
+            <input
+              type="number"
+              name={f.name}
+              min={0}
+              step={"float" in f && f.float ? "0.5" : "1"}
+              inputMode="numeric"
+              placeholder="0"
+              className={bigInput}
+            />
+          </div>
+        ))}
+
+        <div className="sm:col-span-3">
+          <label className={labelCls}>活動実施内容</label>
+          <textarea name="activityContent" rows={3} className={bigInput} />
+        </div>
+        <div className="sm:col-span-3">
+          <label className={labelCls}>活動実施結果</label>
+          <textarea name="activityResult" rows={3} className={bigInput} />
+        </div>
+        <div className="sm:col-span-3">
+          <label className={labelCls}>備考（その他トピックス）</label>
+          <textarea name="notes" rows={2} className={bigInput} />
+        </div>
+
+        <div className="sm:col-span-3">
+          {state.error && (
+            <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{state.error}</p>
+          )}
+          {state.success && (
+            <p className="mb-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+              {state.success}
+            </p>
+          )}
+          <button disabled={pending} className={`${btnPrimary} w-full py-3 text-base sm:w-auto sm:py-2 sm:text-sm`}>
+            {pending ? "保存中..." : "日報を保存する"}
+          </button>
+          <p className="mt-2 text-xs text-slate-500">
+            ※同じ日付・タイプ・販売員IDの日報は再提出時に上書きされます。
+          </p>
+        </div>
+      </form>
+
+      {state.kpi && (
+        <div className="mt-6">
+          <SectionTitle>{state.kpiTitle ?? "当月KPI"}</SectionTitle>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
+            {state.kpi.map((k) => (
+              <div key={k.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+                <div className="text-xl font-bold text-slate-800">{k.value}</div>
+                <div className="mt-0.5 text-xs text-slate-500">{k.label}</div>
+              </div>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-slate-400">
+            ※分母が0の指標は「0」表示です。
+            {state.kpiNote && ` ${state.kpiNote}`}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
