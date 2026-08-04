@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { agencyScope, requirePage } from "@/lib/auth";
+import { requirePage } from "@/lib/auth";
 import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, ROLE_NUM, Role } from "@/lib/roles";
 import {
   Badge,
@@ -20,7 +20,7 @@ import {
   thCls,
 } from "@/components/ui";
 import { today } from "@/lib/util";
-import { AccountRowActions } from "./row-actions";
+import { AccountEditButton, AccountRowActions } from "./row-actions";
 
 const PAGE_SIZE = 50;
 
@@ -58,7 +58,6 @@ export default async function AdminPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const user = await requirePage("admin");
-  const scope = await agencyScope(user);
   const sp = await searchParams;
 
   const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : "");
@@ -67,11 +66,11 @@ export default async function AdminPage({
   const statusFilter = str(sp.status);
   const page = Math.max(1, Number(str(sp.page)) || 1);
 
-  // 代理店スコープ（§3.1）: R4はダミー代理店のみ / R1・R2は実データ（ダミー代理店を除外）
-  const scopeFilter: Prisma.AccountWhereInput =
-    scope !== null
-      ? { agencyId: { in: scope } }
-      : { OR: [{ agencyId: null }, { agency: { isDummy: false } }] };
+  // §7.2「全アカウントの一覧」: R1・R2は代理店に属さないSNC系アカウントを含む全実データ
+  // （ダミー代理店の分のみ除外）/ R4（ダミー表示 §3.5）はダミー代理店のアカウントのみ
+  const scopeFilter: Prisma.AccountWhereInput = user.dummy
+    ? { agency: { isDummy: true } }
+    : { OR: [{ agencyId: null }, { agency: { isDummy: false } }] };
 
   const filters: Prisma.AccountWhereInput[] = [scopeFilter];
   if (q) {
@@ -140,24 +139,30 @@ export default async function AdminPage({
 
       {/* TODOバナー（SPEC §4.2） */}
       <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        TODO: MFA(TOTP)・パスワード有効期限/履歴24世代は本番リリースまでに実装（SPEC §4.2）
+        TODO: MFA(TOTP)は本番リリースまでに実装（SPEC §4.2）
       </div>
 
       {/* 統計カード */}
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <StatCard value={totalAll} label="アカウント総数" tone="blue" />
-        <StatCard value={countOf("active")} label="登録済み（有効）" tone="green" />
-        <StatCard value={countOf("suspended")} label="停止" tone="gray" />
-        <StatCard value={countOf("deleted")} label="削除済" tone="red" />
+        {/* 統計カード4枚（§7.2 プロトタイプ踏襲: 表示対象 / 承認待ち / 登録済み / 停止・削除） */}
+        <StatCard value={totalAll} label="表示対象" tone="blue" />
+        <StatCard value={countOf("pending")} label="承認待ち" tone="orange" />
+        <StatCard value={countOf("active")} label="登録済み" tone="green" />
+        <StatCard value={countOf("suspended") + countOf("deleted")} label="停止・削除" tone="gray" />
       </div>
 
       {/* アカウント一覧 */}
       <SectionTitle
         right={
           !user.dummy ? (
-            <a href="/admin/csv?type=inventory" className={btnOutline}>
-              棚卸CSV出力
-            </a>
+            <span className="flex gap-2">
+              <a href="/admin/csv?type=inventory" className={btnOutline}>
+                棚卸CSV出力
+              </a>
+              <a href="/admin/csv?type=access" className={btnOutline}>
+                アクセスログCSV出力
+              </a>
+            </span>
           ) : undefined
         }
       >
@@ -246,11 +251,23 @@ export default async function AdminPage({
                       {user.dummy ? (
                         <span className="text-xs text-slate-400">—</span>
                       ) : (
-                        <AccountRowActions
-                          id={a.id}
-                          status={a.status}
-                          isSelf={a.id === user.id}
-                        />
+                        <div className="space-y-1.5">
+                          <AccountRowActions
+                            id={a.id}
+                            status={a.status}
+                            isSelf={a.id === user.id}
+                          />
+                          {a.status !== "deleted" && a.role !== "R9" && (
+                            <AccountEditButton
+                              id={a.id}
+                              name={a.name}
+                              email={a.email ?? ""}
+                              role={a.role}
+                              hasAgency={!!a.agencyId}
+                              isSelf={a.id === user.id}
+                            />
+                          )}
+                        </div>
                       )}
                     </td>
                   </tr>

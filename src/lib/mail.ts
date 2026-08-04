@@ -27,8 +27,15 @@ function getTransporter(): Transporter | null {
 }
 
 export async function sendMail(to: string, subject: string, text: string): Promise<void> {
+  if (!to) return;
   const t = getTransporter();
-  if (!t || !to) return;
+  if (!t) {
+    // SMTP未設定: 送信スキップ。開発環境ではコンソールに内容を出力する（§2: 開発=コンソール出力）
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[mail] (dev/console) To: ${to}\nSubject: ${subject}\n${text}`);
+    }
+    return;
+  }
   try {
     await t.sendMail({
       from: process.env.MAIL_FROM ?? process.env.SMTP_USER,

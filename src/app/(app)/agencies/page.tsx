@@ -67,16 +67,16 @@ export default async function AgenciesPage({
     }),
   ]);
 
-  // 総ユーザー数（Account数）・販売員数はスコープ内代理店で集計
+  // 総ユーザー数（Account数）・管轄内進行中案件（scope内の未完了Case件数 §7.11）はスコープ内代理店で集計
   const scopedIds = (
     await prisma.agency.findMany({ where: baseWhere, select: { id: true } })
   ).map((a) => a.id);
-  const [userTotal, staffTotal] = await Promise.all([
+  const [userTotal, ongoingCaseTotal] = await Promise.all([
     prisma.account.count({
       where: { agencyId: { in: scopedIds }, status: { not: "deleted" } },
     }),
-    prisma.salesStaff.count({
-      where: { agencyId: { in: scopedIds }, status: { not: "deleted" } },
+    prisma.case.count({
+      where: { primaryAgencyId: { in: scopedIds }, status: { not: "完了" } },
     }),
   ]);
 
@@ -110,6 +110,18 @@ export default async function AgenciesPage({
   });
   const from = total === 0 ? 0 : (current - 1) * PER_PAGE + 1;
   const to = Math.min(current * PER_PAGE, total);
+
+  // 一覧列「進行中案件」: 当該代理店が primary の未完了Case件数（§7.11）
+  const ongoingCaseRows = rows.length
+    ? await prisma.case.groupBy({
+        by: ["primaryAgencyId"],
+        where: { primaryAgencyId: { in: rows.map((a) => a.id) }, status: { not: "完了" } },
+        _count: { _all: true },
+      })
+    : [];
+  const ongoingCaseByAgency = new Map(
+    ongoingCaseRows.map((c) => [c.primaryAgencyId, c._count._all])
+  );
 
   const pageHref = (p: number) => {
     const params = new URLSearchParams();
@@ -145,7 +157,7 @@ export default async function AgenciesPage({
         <StatCard value={subTotal} label="下位代理店数" tone="blue" />
         <StatCard value={subActive} label="有効代理店" tone="green" />
         <StatCard value={userTotal} label="総ユーザー数" tone="purple" />
-        <StatCard value={staffTotal} label="販売員数" tone="orange" />
+        <StatCard value={ongoingCaseTotal} label="管轄内進行中案件" tone="orange" />
       </div>
 
       {/* 代理店階層ツリー */}
@@ -253,7 +265,7 @@ export default async function AgenciesPage({
                   <th className={thCls}>代表者</th>
                   <th className={thCls}>ステータス</th>
                   <th className={thCls}>登録ユーザー</th>
-                  <th className={thCls}>販売員</th>
+                  <th className={thCls}>進行中案件</th>
                   <th className={thCls}>参加日</th>
                   <th className={thCls}>操作</th>
                 </tr>
@@ -280,7 +292,7 @@ export default async function AgenciesPage({
                       <StatusBadge label={AGENCY_STATUS_LABELS[a.status] ?? a.status} />
                     </td>
                     <td className={tdCls}>{a._count.accounts}</td>
-                    <td className={tdCls}>{a._count.salesStaff}</td>
+                    <td className={tdCls}>{ongoingCaseByAgency.get(a.id) ?? 0}</td>
                     <td className={tdCls}>{fmtDate(a.joinedAt)}</td>
                     <td className={tdCls}>
                       {canEdit ? (

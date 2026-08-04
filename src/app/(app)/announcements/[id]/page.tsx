@@ -25,6 +25,13 @@ export default async function AnnouncementDetailPage({
   const ann = await prisma.announcement.findUnique({ where: { id } });
   if (!ann || ann.status === "deleted") notFound();
 
+  // ④ダミー表示はシードの架空データ（isDummy=true）のみ・実データへは一切アクセスさせない（§3.5）。
+  // 逆に非ダミーユーザーにはダミーデータを見せない。
+  if (ann.isDummy !== user.dummy) {
+    if (user.dummy) redirect("/announcements");
+    notFound();
+  }
+
   const isAdmin = !user.dummy && SNC_ADMIN_ROLES.includes(user.role);
   if (!isAdmin) {
     // 閲覧側: 自分が対象のお知らせのみ（⑧⑨は全体向けのみ）。停止中も非表示

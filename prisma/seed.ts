@@ -221,6 +221,47 @@ async function main() {
     });
   }
 
+  // ---- ④ダミー表示用のお知らせ・ドキュメント（§3.5 / §5.2。実データと isDummy で分離）----
+  const dummyAnnCount = await prisma.announcement.count({ where: { isDummy: true } });
+  if (dummyAnnCount === 0) {
+    await prisma.announcement.create({
+      data: {
+        audience: "all", title: "【サンプル】システムメンテナンスのお知らせ", isDummy: true,
+        body: "（架空データ）8月20日 2:00〜5:00 にシステムメンテナンスを実施します。期間中はAirisをご利用いただけません。",
+        sentAt: new Date(), createdBy: "airis_snc_ops_0001",
+      },
+    });
+    await prisma.announcement.create({
+      data: {
+        audience: "all", title: "【サンプル・重要】当月提出物の締切について", important: true, isDummy: true,
+        body: "（架空データ）当月の稼働提出物は25日までに提出をお願いします。",
+        sentAt: new Date(), createdBy: "airis_snc_ops_0001",
+      },
+    });
+  }
+  const dummyDocCount = await prisma.document.count({ where: { isDummy: true } });
+  if (dummyDocCount === 0) {
+    const dummyDocs: [string, string, string][] = [
+      // [title, fileName, content]
+      ["【サンプル】販売マニュアル", "sample-sales-manual.txt", "（架空データ）サンプル販売マニュアルです。"],
+      ["【サンプル】通知書類", "sample-notice.txt", "（架空データ）サンプル通知書類です。"],
+    ];
+    for (const [title, fileName, content] of dummyDocs) {
+      const stored = await prisma.storedFile.create({
+        data: {
+          name: fileName, mime: "text/plain",
+          size: Buffer.byteLength(content), data: Buffer.from(content), uploadedBy: null,
+        },
+      });
+      await prisma.document.create({
+        data: {
+          title, category: "サンプル", visibility: "all", isDummy: true,
+          fileId: stored.id, fileName: stored.name, createdBy: "airis_snc_ops_0001",
+        },
+      });
+    }
+  }
+
   console.log("Seed complete.");
   console.log("== ログイン情報 ==");
   console.log(`管理者系(①②③⑦): パスワード ${PASSWORDS.admin}`);

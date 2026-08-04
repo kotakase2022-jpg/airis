@@ -33,31 +33,56 @@ const TELE_FIELDS: { name: string; label: string; float?: boolean }[] = [
   { name: "preConfirmPassed", label: "前確通過数（実績）" },
 ];
 
+// 月初見込フィールド（月の初回提出時のみ入力可 要件6-3）
+const FORECAST_FIELDS = ["forecastAcq", "forecastHours", "forecastEntries"] as const;
+
 export function DailyReportForm({
   staffOptions,
   fixedStaff,
   defaultDate,
+  forecastHolders,
 }: {
   staffOptions: StaffOption[];
   fixedStaff: StaffOption | null; // R9は自分のSalesStaff固定
   defaultDate: string;
+  // 「販売員ID:タイプ:月:フィールド」→ 月初見込が最初に入ったレコードの日付（BUG-007）
+  forecastHolders: Record<string, string>;
 }) {
   const [state, formAction, pending] = useActionState<DailyFormState, FormData>(
     saveDailyReport,
     {}
   );
   const [type, setType] = useState<"訪販" | "テレマ">("訪販");
+  const [date, setDate] = useState(defaultDate);
   const [staffId, setStaffId] = useState(fixedStaff ? fixedStaff.id : staffOptions[0]?.id ?? "");
   const agencyName = fixedStaff
     ? fixedStaff.agencyName
     : staffOptions.find((s) => s.id === staffId)?.agencyName ?? "-";
+  const currentStaffId = fixedStaff ? fixedStaff.id : staffId;
+
+  // 月初見込は初回提出時のみ入力（要件6-3 / BUG-007）:
+  // 選択中の販売員×タイプ×月に既存の見込があり、その「最初の見込」を書き換えうる
+  // 日付（見込保持レコードの日付以前）を選択している場合はフィールドをdisabledにする。
+  // サーバ側（saveDailyReport）でも同一条件で送信値を無視するため、UIはあくまで補助。
+  const forecastLocked = (name: string): boolean => {
+    if (!(FORECAST_FIELDS as readonly string[]).includes(name)) return false;
+    const holder = forecastHolders[`${currentStaffId}:${type}:${date.slice(0, 7)}:${name}`];
+    return !!holder && date <= holder;
+  };
 
   return (
     <div>
       <form action={formAction} className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>
           <label className={labelCls}>日付</label>
-          <input type="date" name="date" defaultValue={defaultDate} required className={bigInput} />
+          <input
+            type="date"
+            name="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            required
+            className={bigInput}
+          />
         </div>
         <div>
           <label className={labelCls}>販売員ID</label>
@@ -112,20 +137,27 @@ export function DailyReportForm({
           <input name="area" placeholder="例: 東京都世田谷区" className={bigInput} />
         </div>
 
-        {(type === "訪販" ? VISIT_FIELDS : TELE_FIELDS).map((f) => (
-          <div key={`${type}-${f.name}`}>
-            <label className={labelCls}>{f.label}</label>
-            <input
-              type="number"
-              name={f.name}
-              min={0}
-              step={"float" in f && f.float ? "0.5" : "1"}
-              inputMode="numeric"
-              placeholder="0"
-              className={bigInput}
-            />
-          </div>
-        ))}
+        {(type === "訪販" ? VISIT_FIELDS : TELE_FIELDS).map((f) => {
+          const locked = forecastLocked(f.name);
+          return (
+            <div key={`${type}-${f.name}`}>
+              <label className={labelCls}>{f.label}</label>
+              <input
+                type="number"
+                name={f.name}
+                min={0}
+                step={"float" in f && f.float ? "0.5" : "1"}
+                inputMode="numeric"
+                placeholder="0"
+                disabled={locked}
+                className={bigInput + " disabled:bg-slate-100 disabled:text-slate-400"}
+              />
+              {locked && (
+                <p className="mt-1 text-xs text-slate-500">月初見込は初回提出時のみ入力できます</p>
+              )}
+            </div>
+          );
+        })}
 
         <div className="sm:col-span-3">
           <label className={labelCls}>活動実施内容</label>

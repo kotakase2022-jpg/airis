@@ -75,25 +75,27 @@ export async function GET(req: NextRequest) {
     }
 
     // ============ 2) 個人情報の匿名化（削除後1年経過 §3.4） ============
+    // 匿名化済み判定は anonymizedAt IS NULL で行い、匿名化時に anonymizedAt を設定する
     const cutoff = new Date(Date.now() - 365 * 24 * 3600 * 1000);
+    const now = new Date();
 
     // Airisアカウント（loginIdは監査追跡のため残す。ログインはstatus=deletedで不可）
     const accounts = await db.account.updateMany({
-      where: { status: "deleted", deletedAt: { lt: cutoff }, NOT: { name: "（匿名化済み）" } },
-      data: { name: "（匿名化済み）", email: null },
+      where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
+      data: { name: "（匿名化済み）", email: null, anonymizedAt: now },
     });
     summary.anonymized.accounts = accounts.count;
 
     // 販売員（数値実績は分析用に残す）
     const staff = await db.salesStaff.updateMany({
-      where: { status: "deleted", deletedAt: { lt: cutoff }, NOT: { lastName: "（匿名化済み）" } },
-      data: { lastName: "（匿名化済み）", firstName: "", birthDate: "1900-01-01", phone: "", email: null },
+      where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
+      data: { lastName: "（匿名化済み）", firstName: "", birthDate: "1900-01-01", phone: "", email: null, anonymizedAt: now },
     });
     summary.anonymized.salesStaff = staff.count;
 
     // 訪販員申請（業務委託先・カナ・SNCメモを消去。誓約書PDFも削除）
     const apps = await db.fieldAgentApplication.findMany({
-      where: { status: "deleted", deletedAt: { lt: cutoff }, NOT: { lastNameKana: "（匿名化済み）" } },
+      where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
       select: { id: true, pledgeFileId: true },
     });
     for (const a of apps) {
@@ -110,6 +112,7 @@ export async function GET(req: NextRequest) {
           contractorPhone: null,
           sncMemo: null,
           pledgeFileId: null,
+          anonymizedAt: now,
         },
       });
     }

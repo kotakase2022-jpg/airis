@@ -133,6 +133,41 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
     }));
   }
 
+  // 月初見込の初回のみ入力制御用（要件6-3 / BUG-007）:
+  // 「販売員ID:タイプ:月:フィールド」→ 見込が最初に入ったレコードの日付。
+  // フォーム側で該当月の見込フィールドをdisabledにする（確定判定はサーバ側でも行う）。
+  const forecastHolders: Record<string, string> = {};
+  const staffIds = fixedStaff ? [fixedStaff.id] : staffOptions.map((s) => s.id);
+  if (!user.dummy && staffIds.length > 0) {
+    const forecastReports = await prisma.dailyReport.findMany({
+      where: {
+        salesStaffId: { in: staffIds },
+        OR: [
+          { forecastAcq: { not: null } },
+          { forecastHours: { not: null } },
+          { forecastEntries: { not: null } },
+        ],
+      },
+      select: {
+        salesStaffId: true,
+        date: true,
+        type: true,
+        forecastAcq: true,
+        forecastHours: true,
+        forecastEntries: true,
+      },
+      orderBy: { date: "asc" },
+    });
+    for (const r of forecastReports) {
+      const m = r.date.slice(0, 7);
+      for (const f of ["forecastAcq", "forecastHours", "forecastEntries"] as const) {
+        if (r[f] == null) continue;
+        const key = `${r.salesStaffId}:${r.type}:${m}:${f}`;
+        if (!(key in forecastHolders)) forecastHolders[key] = r.date; // date昇順→最初のみ採用
+      }
+    }
+  }
+
   return (
     <div className="mx-auto w-full max-w-3xl">
       <InfoBanner>
@@ -152,6 +187,7 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
               staffOptions={staffOptions}
               fixedStaff={fixedStaff}
               defaultDate={today()}
+              forecastHolders={forecastHolders}
             />
           )}
         </Card>
@@ -239,17 +275,32 @@ async function SubmissionsTab({
     kindsByAgency.get(s.submitterAgencyId)!.add(s.kind);
   }
 
+  // 提出物一覧フィルタ用: スコープ内の1次代理店（§7.6。2次代理店は提出状況の secondaries を流用）
+  const primaries = await prisma.agency.findMany({
+    where: { tier: 1, ...(scope ? { id: { in: scope } } : { isDummy: false }) },
+    orderBy: { code: "asc" },
+    take: 300,
+  });
+
   // 提出物一覧（フィルタ + 50件/頁）
   const page = Math.max(1, Number(p.page ?? "1") || 1);
   const q = p.q ?? "";
   const kindFilter = p.kind ?? "";
   const fyFilter = p.fy ?? "";
   const fmonthFilter = p.fmonth ?? "";
+  // 1次/2次代理店フィルタ（§7.6）。クライアント由来IDはスコープ内の選択肢に含まれるもののみ有効
+  let paFilter = p.pa ?? "";
+  let saFilter = p.sa ?? "";
+  if (paFilter && !primaries.some((a) => a.id === paFilter)) paFilter = "";
+  if (saFilter && !secondaries.some((a) => a.id === saFilter)) saFilter = "";
   const where: Prisma.SubmissionWhereInput = {
     ...(scope ? { submitterAgencyId: { in: scope } } : {}),
     ...(kindFilter ? { kind: kindFilter } : {}),
     ...(fyFilter ? { fiscalYear: Number(fyFilter) } : {}),
     ...(fmonthFilter ? { targetMonth: fmonthFilter } : {}),
+    ...(paFilter ? { primaryAgencyId: paFilter } : {}),
+    // saFilter はスコープ検証済みのため、scope の in 条件より狭い絞り込みとして上書きしてよい
+    ...(saFilter ? { submitterAgencyId: saFilter } : {}),
     ...(q
       ? {
           OR: [
@@ -288,6 +339,8 @@ async function SubmissionsTab({
   if (kindFilter) baseParams.kind = kindFilter;
   if (fyFilter) baseParams.fy = fyFilter;
   if (fmonthFilter) baseParams.fmonth = fmonthFilter;
+  if (paFilter) baseParams.pa = paFilter;
+  if (saFilter) baseParams.sa = saFilter;
 
   return (
     <div>
@@ -400,6 +453,28 @@ async function SubmissionsTab({
               {SUBMISSION_KINDS.map((k) => (
                 <option key={k} value={k}>
                   {k}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>1次代理店</label>
+            <select name="pa" defaultValue={paFilter} className={inputCls + " w-48"}>
+              <option value="">すべて</option>
+              {primaries.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}（{a.code}）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>2次代理店</label>
+            <select name="sa" defaultValue={saFilter} className={inputCls + " w-48"}>
+              <option value="">すべて</option>
+              {secondaries.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}（{a.code}）
                 </option>
               ))}
             </select>

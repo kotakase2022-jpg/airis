@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16
+    container_name: airis-pg
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: airis
+    ports:
+      - "5433:5432"
+    volumes:
+      - airis-pgdata:/var/lib/postgresql/data
+volumes:
+  airis-pgdata:

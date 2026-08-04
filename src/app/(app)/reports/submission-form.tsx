@@ -81,7 +81,8 @@ export function SubmissionForm({
         )}
       </div>
       <div>
-        <label className={labelCls}>ファイル（必須）</label>
+        {/* 実上限は util.ts の storeFile（既定20MB §3.8）。ここは表記のみ */}
+        <label className={labelCls}>ファイル（必須・20MBまで）</label>
         <input
           type="file"
           name="file"

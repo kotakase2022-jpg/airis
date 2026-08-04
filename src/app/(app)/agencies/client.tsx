@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useActionState, useEffect, useState } from "react";
+import { ReactNode, useActionState, useState } from "react";
 import {
   btnDanger,
   btnOutline,
@@ -59,9 +59,12 @@ export function AddAgencyButton({
   const [tier, setTier] = useState("2");
   const [state, formAction, pending] = useActionState(createAgencyAction, initialState);
 
-  useEffect(() => {
-    if (state.ok) setOpen(false);
-  }, [state]);
+  // 送信成功時にモーダルを閉じる（レンダー中の状態調整パターン）
+  const [closedForState, setClosedForState] = useState<unknown>(null);
+  if (state.ok && closedForState !== state) {
+    setClosedForState(state);
+    setOpen(false);
+  }
 
   return (
     <>
@@ -160,9 +163,12 @@ export function EditAgencyButton({
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState(updateAgencyAction, initialState);
 
-  useEffect(() => {
-    if (state.ok) setOpen(false);
-  }, [state]);
+  // 送信成功時にモーダルを閉じる（レンダー中の状態調整パターン）
+  const [closedForState, setClosedForState] = useState<unknown>(null);
+  if (state.ok && closedForState !== state) {
+    setClosedForState(state);
+    setOpen(false);
+  }
 
   return (
     <>

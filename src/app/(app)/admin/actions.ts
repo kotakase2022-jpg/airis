@@ -3,8 +3,8 @@
 import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { agencyScope, hashPassword, requirePage } from "@/lib/auth";
-import { ADMIN_PW_ROLES, Role } from "@/lib/roles";
+import { hashPassword, requirePage } from "@/lib/auth";
+import { ADMIN_PW_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
 import { audit } from "@/lib/util";
 
 export type AdminActionState =
@@ -44,14 +44,14 @@ export async function accountAction(
   const op = String(formData.get("op") ?? "");
   if (!id || !op) return { error: "不正なリクエストです" };
 
-  const account = await prisma.account.findUnique({ where: { id } });
+  const account = await prisma.account.findUnique({ where: { id }, include: { agency: true } });
   if (!account) return { error: "対象アカウントが見つかりません" };
 
-  // 代理店スコープ検証（§3.1。管理画面はR1/R2のみ＝null=全代理店だが多層防御として実施）
-  const scope = await agencyScope(user);
-  if (scope !== null && (!account.agencyId || !scope.includes(account.agencyId))) {
+  // 管理画面はR1/R2のみ（requirePageで担保）= 全アカウント（SNC系のagencyId=null含む）を操作可能。
+  // ダミー代理店（④表示用）のアカウントのみ操作対象外とする。
+  if (account.agency?.isDummy) {
     await audit(user.loginId, `account_${op}`, account.loginId, "denied");
-    return { error: "権限がありません" };
+    return { error: "サンプルデータのアカウントは操作できません" };
   }
 
   if (account.id === user.id) {
@@ -122,4 +122,56 @@ export async function accountAction(
     default:
       return { error: "不明な操作です" };
   }
+}
+
+// アカウント情報の変更（氏名・メール・ロール §5.1「変」/ 要件1-1 権限変更。R1/R2のみ）
+export async function updateAccountAction(
+  _prev: AdminActionState,
+  formData: FormData
+): Promise<AdminActionState> {
+  const user = await requirePage("admin");
+  if (user.dummy) {
+    await audit(user.loginId, "account_update", undefined, "denied");
+    return { error: "閲覧専用アカウントのため操作できません" };
+  }
+
+  const id = String(formData.get("id") ?? "");
+  const name = String(formData.get("name") ?? "").trim();
+  const email = String(formData.get("email") ?? "").trim();
+  const role = String(formData.get("role") ?? "");
+
+  if (!id || !name) return { error: "氏名は必須です" };
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "メールアドレスの形式が不正です" };
+
+  const account = await prisma.account.findUnique({ where: { id }, include: { agency: true } });
+  if (!account) return { error: "対象アカウントが見つかりません" };
+  if (account.agency?.isDummy) return { error: "サンプルデータのアカウントは操作できません" };
+  if (account.role === "R9") return { error: "販売員IDのアカウントは販売員ID管理から変更してください" };
+
+  // ロール変更の許容範囲: 代理店非所属アカウントはSNC系（R1〜R6）内、
+  // 代理店所属アカウントはR7/R8内でのみ変更可能（所属と役割の整合を保つ）
+  const allowedRoles: Role[] = account.agencyId ? ["R7", "R8"] : ["R1", "R2", "R3", "R4", "R5", "R6"];
+  if (!allowedRoles.includes(role as Role)) return { error: "指定できないロールです" };
+  if (account.id === user.id && role !== account.role) {
+    return { error: "自分自身のロールは変更できません" };
+  }
+
+  const roleChanged = role !== account.role;
+  await prisma.account.update({
+    where: { id },
+    data: { name, email: email || null, role },
+  });
+  if (roleChanged) {
+    // 権限変更は即時反映のためセッション破棄（次回ログインから新ロール）
+    await prisma.session.deleteMany({ where: { accountId: id } });
+  }
+  await audit(
+    user.loginId,
+    roleChanged ? "account_role_change" : "account_update",
+    roleChanged
+      ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
+      : account.loginId
+  );
+  revalidatePath("/admin");
+  return { message: `${account.loginId} を更新しました` };
 }

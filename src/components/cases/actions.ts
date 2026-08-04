@@ -215,7 +215,7 @@ export async function changeStatusAction(caseId: string, formData: FormData): Pr
 }
 
 // 緊急アラート（R3全員 + 当該一次店R7全員へ通知。要件9-2③）
-export async function urgentAlertAction(caseId: string, _formData: FormData): Promise<void> {
+export async function urgentAlertAction(caseId: string): Promise<void> {
   const authUser = await requireUser();
   const c = await prisma.case.findUnique({ where: { id: caseId } });
   if (!c) return;

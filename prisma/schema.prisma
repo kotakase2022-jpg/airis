@@ -50,10 +50,12 @@ model Account {
   lockedUntil        DateTime?
   isVendor           Boolean   @default(false) // サスラボ保守区分
   deletedAt          DateTime?
+  anonymizedAt       DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
   sessions      Session[]
+  passwordHistory PasswordHistory[]
   salesStaff    SalesStaff?
   notifications Notification[]
   announcementReads AnnouncementRead[]
@@ -105,6 +107,7 @@ model SalesStaff {
   history      Json      @default("[]")
   source       String    @default("form") // form | csv
   deletedAt    DateTime?
+  anonymizedAt DateTime?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -141,6 +144,7 @@ model FieldAgentApplication {
   agencyName      String?
   history         Json     @default("[]")
   deletedAt       DateTime?
+  anonymizedAt    DateTime?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 }
@@ -208,6 +212,7 @@ model Announcement {
   title     String
   body      String
   important Boolean   @default(false)
+  isDummy   Boolean   @default(false) // ④ダミー表示用
   status    String    @default("sent") // draft | sent | stopped | deleted
   fileIds   Json      @default("[]")
   sentAt    DateTime?
@@ -290,6 +295,7 @@ model Document {
   title      String
   category   String?
   visibility String   @default("all") // all | primary | snc
+  isDummy    Boolean  @default(false) // ④ダミー表示用
   fileId     String
   fileName   String
   createdBy  String?
@@ -328,4 +334,15 @@ model AuditLog {
   result    String   @default("success")
   ip        String?
   createdAt DateTime @default(now())
+}
+
+// パスワード履歴（§4.2 再利用禁止24世代）
+model PasswordHistory {
+  id        String   @id @default(cuid())
+  accountId String
+  account   Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  hash      String
+  createdAt DateTime @default(now())
+
+  @@index([accountId, createdAt])
 }

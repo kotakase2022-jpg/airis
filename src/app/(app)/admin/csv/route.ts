@@ -12,7 +12,8 @@ function jst(d: Date, len: number): string {
     .replace("T", " ");
 }
 
-// 管理画面CSVエクスポート（?type=inventory: 棚卸CSV / ?type=audit: 監査ログCSV）
+// 管理画面CSVエクスポート
+// ?type=inventory: 棚卸CSV / ?type=audit: 監査ログCSV / ?type=access: アクセスログCSV（要件1-6）
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
@@ -24,6 +25,23 @@ export async function GET(req: NextRequest) {
   }
 
   const type = req.nextUrl.searchParams.get("type") ?? "inventory";
+
+  if (type === "access") {
+    // アクセスログCSV（§3.3 / 要件1-6）: ログイン監査ログ（action=login）から
+    // 日時・ログインID・結果・IP・User-Agent を出力
+    const logs = await prisma.auditLog.findMany({
+      where: { action: "login" },
+      orderBy: { createdAt: "desc" },
+    });
+    const ua = (target: string | null) =>
+      target?.startsWith("ua=") ? target.slice(3) : target ?? "";
+    const csv = toCsv(
+      ["日時", "ログインID", "結果", "IP", "UserAgent"],
+      logs.map((l) => [jst(l.createdAt, 16), l.actor, l.result, l.ip ?? "", ua(l.target)])
+    );
+    await audit(user.loginId, "csv_export", "access_logs"); // CSV出力自体も監査対象（§3.6）
+    return csvResponse(`アクセスログ_${today()}.csv`, csv);
+  }
 
   if (type === "audit") {
     // 監査ログCSV（全件）

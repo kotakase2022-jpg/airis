@@ -19,7 +19,7 @@ export function ReplyForm({ caseId, allowFiles }: { caseId: string; allowFiles: 
       </div>
       {allowFiles && (
         <div>
-          <label className={labelCls}>添付ファイル（複数可・1ファイル4MBまで）</label>
+          <label className={labelCls}>添付ファイル（複数可・1ファイル20MBまで）</label>
           <input type="file" name="files" multiple className="text-sm text-slate-600" />
         </div>
       )}

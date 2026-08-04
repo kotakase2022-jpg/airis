@@ -1,9 +1,93 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import type { MouseEvent } from "react";
-import { accountAction, type AdminActionState } from "./actions";
-import { btnDanger, btnOutline, btnSuccess } from "@/components/ui";
+import { accountAction, updateAccountAction, type AdminActionState } from "./actions";
+import { btnDanger, btnOutline, btnPrimary, btnSuccess, inputCls, labelCls } from "@/components/ui";
+
+// アカウント編集フォーム（氏名・メール・ロール変更 §5.1「変」）
+export function AccountEditButton({
+  id,
+  name,
+  email,
+  role,
+  hasAgency,
+  isSelf,
+}: {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  hasAgency: boolean;
+  isSelf: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [state, action, pending] = useActionState<AdminActionState, FormData>(
+    updateAccountAction,
+    undefined
+  );
+  // 送信成功でフォームを閉じる（レンダー中の状態調整パターン）
+  const [closedFor, setClosedFor] = useState<unknown>(null);
+  if (state && "message" in (state as object) && (state as { message?: string }).message && closedFor !== state) {
+    setClosedFor(state);
+    setOpen(false);
+  }
+
+  const roleOptions: [string, string][] = hasAgency
+    ? [["R7", "一次代理店管理者"], ["R8", "二次代理店管理者"]]
+    : [
+        ["R1", "SLシステム管理"],
+        ["R2", "SNC管理者"],
+        ["R3", "SNC運用者"],
+        ["R4", "SNC閲覧者"],
+        ["R5", "SNCホットライン担当"],
+        ["R6", "SNC消費者センター担当"],
+      ];
+
+  return (
+    <div>
+      <button type="button" className={btnOutline} onClick={() => setOpen((v) => !v)}>
+        編集
+      </button>
+      {open && (
+        <form action={action} className="mt-2 w-64 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <input type="hidden" name="id" value={id} />
+          <div>
+            <label className={labelCls}>氏名</label>
+            <input name="name" defaultValue={name} className={inputCls} required />
+          </div>
+          <div>
+            <label className={labelCls}>メールアドレス</label>
+            <input name="email" type="email" defaultValue={email} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>ロール{isSelf ? "（自分自身は変更不可）" : ""}</label>
+            <select name="role" defaultValue={role} className={inputCls} disabled={isSelf}>
+              {roleOptions.map(([v, label]) => (
+                <option key={v} value={v}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            {isSelf && <input type="hidden" name="role" value={role} />}
+          </div>
+          <div className="flex gap-2">
+            <button className={btnPrimary} disabled={pending}>
+              {pending ? "保存中..." : "保存"}
+            </button>
+            <button type="button" className={btnOutline} onClick={() => setOpen(false)}>
+              キャンセル
+            </button>
+          </div>
+          {state?.error && <p className="text-xs text-red-600">{state.error}</p>}
+        </form>
+      )}
+      {state && "message" in (state as object) && (state as { message?: string }).message && !open && (
+        <p className="mt-1 text-xs text-emerald-600">{(state as { message?: string }).message}</p>
+      )}
+    </div>
+  );
+}
 
 // アカウント行の操作ボタン群（状態依存）+ 一時パスワードのインライン一回表示
 export function AccountRowActions({

@@ -56,6 +56,22 @@ export async function requireUser(): Promise<CurrentUser> {
 
 export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy: boolean }> {
   const user = await requireUser();
+  // 管理系画面へのIP許可リスト制御（§10.1 / SEC②#10）。ADMIN_IP_ALLOWLIST未設定時は無効。
+  // 設定はカンマ区切りIPリスト。x-forwarded-for先頭を接続元とみなす（信頼できるプロキシ配下前提）。
+  if (page === "admin" && process.env.ADMIN_IP_ALLOWLIST) {
+    try {
+      const h = await headers();
+      const ip = (h.get("x-forwarded-for") ?? "").split(",")[0].trim() || "local";
+      const allowed = process.env.ADMIN_IP_ALLOWLIST.split(",").map((s) => s.trim());
+      if (!allowed.includes(ip)) {
+        await audit(user.loginId, "access_denied", `page=admin ip=${ip} (allowlist)`, "denied");
+        redirect("/dashboard");
+      }
+    } catch (e) {
+      // redirect()はthrowで実現されるため再スロー。headers()不可時のみ通過
+      if ((e as Error & { digest?: string })?.digest?.startsWith("NEXT_REDIRECT")) throw e;
+    }
+  }
   if (!canAccess(user.role, page)) {
     // 権限外アクセスの試みも記録（§3.3 / SEC②#35）
     await audit(user.loginId, `access_denied`, `page=${page} role=${user.role}`, "denied");

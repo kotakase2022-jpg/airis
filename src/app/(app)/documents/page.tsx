@@ -61,7 +61,12 @@ export default async function DocumentsPage({
   const isSnc = !user.dummy && SNC_ADMIN_ROLES.includes(user.role);
   const scope = visibilityScope(user.role, user.dummy);
 
-  const scopeWhere = scope ? { visibility: { in: scope } } : {};
+  // ④ダミー表示はシードの架空データ（isDummy=true）のみ・実データは一切見せない（§3.5）。
+  // 非ダミーユーザーには実データ（isDummy=false）のみ表示する。
+  const scopeWhere = {
+    isDummy: user.dummy,
+    ...(scope ? { visibility: { in: scope } } : {}),
+  };
   const where = {
     ...scopeWhere,
     ...(category ? { category } : {}),

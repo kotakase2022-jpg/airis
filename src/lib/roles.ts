@@ -143,3 +143,21 @@ export const CASE_TEMPLATES = [
   "代理店確認依頼",
   "フリー入力",
 ] as const;
+
+// ===== 将来機能の権限枠（§7.13 / §5.1。画面は未実装、権限定義のみ先行） =====
+// AIチャット/AI研修/AIロープレ/ゲーミング要素（要件シート4・5欠番のため詳細未確定 §14-6）
+export type FutureFeatureKey =
+  | "ai-chat-all" // AIチャット（全体向け）
+  | "ai-chat-primary" // AIチャット（1次店向け）
+  | "ai-training" // AI研修
+  | "ai-roleplay" // AIロープレ
+  | "gaming"; // ゲーミング要素
+
+// §5.1 の権限マトリクスどおりの利用可否（利用可= true）
+export const FUTURE_FEATURE_ACCESS: Record<FutureFeatureKey, Role[]> = {
+  "ai-chat-all": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+  "ai-chat-primary": ["R1", "R2", "R3", "R4", "R5", "R6", "R7"],
+  "ai-training": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"], // ①②③=作成系, ④〜⑨=閲覧
+  "ai-roleplay": ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+  gaming: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+};

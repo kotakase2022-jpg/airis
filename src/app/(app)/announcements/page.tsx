@@ -12,11 +12,16 @@ import {
   StatCard,
   btnDanger,
   btnOutline,
+  btnPrimary,
   thCls,
   tdCls,
 } from "@/components/ui";
 import { AnnouncementForm } from "./new-form";
-import { stopAnnouncementAction, deleteAnnouncementAction } from "./actions";
+import {
+  stopAnnouncementAction,
+  deleteAnnouncementAction,
+  sendAnnouncementAction,
+} from "./actions";
 
 const PAGE_SIZE = 50;
 
@@ -68,11 +73,12 @@ export default async function AnnouncementsPage({
 // SNC管理側（①②③）: 作成・送信・停止・削除・既読率
 // ─────────────────────────────────────────────
 async function AdminView({ page }: { page: number }) {
-  const where = { status: { not: "deleted" } };
+  // 実データのみ（④ダミー表示用データは isDummy=true で分離 §3.5）
+  const where = { status: { not: "deleted" }, isDummy: false };
   const [total, importantCount, stoppedCount, announcements] = await Promise.all([
     prisma.announcement.count({ where }),
     prisma.announcement.count({ where: { ...where, important: true } }),
-    prisma.announcement.count({ where: { status: "stopped" } }),
+    prisma.announcement.count({ where: { status: "stopped", isDummy: false } }),
     prisma.announcement.findMany({
       where,
       orderBy: [{ important: "desc" }, { sentAt: "desc" }, { createdAt: "desc" }],
@@ -213,6 +219,14 @@ async function AdminView({ page }: { page: number }) {
                       </td>
                       <td className={tdCls}>
                         <div className="flex items-center gap-2 whitespace-nowrap">
+                          {a.status === "draft" && (
+                            <form action={sendAnnouncementAction}>
+                              <input type="hidden" name="id" value={a.id} />
+                              <button type="submit" className={btnPrimary}>
+                                送信
+                              </button>
+                            </form>
+                          )}
                           {a.status === "sent" && (
                             <form action={stopAnnouncementAction}>
                               <input type="hidden" name="id" value={a.id} />
@@ -258,7 +272,9 @@ async function ViewerView({
 }) {
   // ⑦は全体向け+1次店向け、⑧⑨は全体向けのみ。④ダミーは両方（読み取り専用）
   const audiences = role === "R7" || dummy ? ["all", "primary"] : ["all"];
-  const where = { status: "sent", audience: { in: audiences } };
+  // ④ダミー表示はシードの架空データ（isDummy=true）のみ・実データは一切見せない（§3.5）。
+  // 非ダミーユーザーには実データ（isDummy=false）のみ表示する。
+  const where = { status: "sent", audience: { in: audiences }, isDummy: dummy };
   const [total, announcements] = await Promise.all([
     prisma.announcement.count({ where }),
     prisma.announcement.findMany({

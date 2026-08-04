@@ -347,7 +347,8 @@ export function ApplyForm({ staff, isSnc }: { staff: StaffOption[]; isSnc: boole
             disabled={checking || creating}
             className={btnOutline}
           >
-            {checking ? "確認中..." : "同姓同名・ブラックリスト確認"}
+            {/* ブラックリストの存在自体をSNC系(①②③)以外には見せない（§7.4） */}
+            {checking ? "確認中..." : isSnc ? "同姓同名・ブラックリスト確認" : "同姓同名確認"}
           </button>
           <button type="submit" disabled={creating || checking} className={btnPrimary}>
             {creating ? "申請中..." : "申請する"}

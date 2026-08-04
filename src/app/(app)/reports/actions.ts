@@ -51,10 +51,22 @@ function fx(v: number): string {
   return String(Math.round(v * 10) / 10);
 }
 
+// 月初見込は「月内最初（最古日付）のレコードの見込」を採用する（要件6-3: 月の初回提出時のみ入力）
+type ForecastField = "forecastAcq" | "forecastHours" | "forecastEntries";
+function firstForecastRec(
+  reports: Pick<DailyReport, "date" | ForecastField>[],
+  field: ForecastField
+): { date: string; value: number } | null {
+  let holder: { date: string; value: number } | null = null;
+  for (const r of reports) {
+    const v = r[field];
+    if (v == null) continue;
+    if (!holder || r.date < holder.date) holder = { date: r.date, value: v };
+  }
+  return holder;
+}
+
 // 当月KPI 12タイル（訪販）。計算式は日報Excel準拠（詳細不明分は仮実装 §14-5）
-// TODO(§14-5): テレマ用KPI（アポ生産性・クローズ通過率・前確通過率・残稼働等）は
-// 入力項目/数式の原本が未確定のため未実装。テレマ日報保存時も本12タイル（訪販項目
-// ベース）を表示するため、テレマのみの月は多くの指標が0表示になる。
 function calcMonthlyKpi(reports: DailyReport[], date: string): KpiTile[] {
   const [y, m, d] = date.split("-").map(Number);
   const daysInMonth = new Date(y, m, 0).getDate();
@@ -67,8 +79,8 @@ function calcMonthlyKpi(reports: DailyReport[], date: string): KpiTile[] {
   const meetings = sum((r) => r.meetings);
   const negotiations = sum((r) => r.negotiations);
   const contracts = sum((r) => r.contracts);
-  // 獲得見込は「月初見込」（月内の最大値を採用）
-  const forecast = reports.reduce((acc, r) => Math.max(acc, r.forecastAcq ?? 0), 0);
+  // 獲得見込は「月初見込」= 月内最初（最古日付）のレコードの見込を採用
+  const forecast = firstForecastRec(reports, "forecastAcq")?.value ?? 0;
   // TODO: 「訪問/日」等の分母は暫定で当月の日報提出日数を採用（Excel原本の数式確認要 §14-5）
   const reportDays = new Set(reports.map((r) => r.date)).size;
   const landing = div(acq, elapsed) * daysInMonth; // 着地予想
@@ -86,6 +98,32 @@ function calcMonthlyKpi(reports: DailyReport[], date: string): KpiTile[] {
     { label: "訪問/日", value: fx(div(visits, reportDays)) },
     { label: "対面/日", value: fx(div(meetings, reportDays)) },
     { label: "商談/日", value: fx(div(negotiations, reportDays)) },
+  ];
+}
+
+// 当月KPIタイル（テレマ §7.5）: アポ生産性=アポ数計/稼働時間計、クローズ通過率=クローズ通過数計/アポ数計、
+// 前確通過率=前確通過数計/クローズ通過数計、差分（見込vs実績）、残稼働=見込-実績計。分母0は0。
+// ※「獲得生産性」「後確通過率」は分子となる入力項目（獲得数・後確通過数）が要件6-3に存在しないため
+//   対象外（仮実装+TODO §14-5。kpiNote で注記を表示）
+function calcTeleKpi(reports: DailyReport[]): KpiTile[] {
+  const sum = (f: (r: DailyReport) => number | null) =>
+    reports.reduce((acc, r) => acc + (f(r) ?? 0), 0);
+  const hours = sum((r) => r.actualHours);
+  const entries = sum((r) => r.entries);
+  const appointments = sum((r) => r.appointments);
+  const closePassed = sum((r) => r.closePassed);
+  const preConfirmPassed = sum((r) => r.preConfirmPassed);
+  // 見込は月初見込（月内最初のレコードの見込）
+  const forecastHours = firstForecastRec(reports, "forecastHours")?.value ?? 0;
+  const forecastEntries = firstForecastRec(reports, "forecastEntries")?.value ?? 0;
+
+  return [
+    { label: "アポ生産性", value: fx(div(appointments, hours)) },
+    { label: "クローズ通過率", value: pct(div(closePassed, appointments)) },
+    { label: "前確通過率", value: pct(div(preConfirmPassed, closePassed)) },
+    { label: "稼働時間差分", value: fx(hours - forecastHours) },
+    { label: "エントリー数差分", value: fx(entries - forecastEntries) },
+    { label: "残稼働", value: fx(forecastHours - hours) },
   ];
 }
 
@@ -174,6 +212,27 @@ export async function saveDailyReport(
     source: "form",
   };
 
+  // 月初見込は月の初回提出時のみ入力（要件6-3 / BUG-007）:
+  // 同月・同タイプ・同販売員の既存レコードに見込値が存在する場合、
+  // その「最初（最古日付）の見込」を書き換えうる保存（見込保持レコード自身の再提出や
+  // それ以前の日付への提出）では送信された見込値を無視し、既存の値を維持する。
+  // ※KPI計算は月内最初（最古日付）のレコードの見込を採用するため、月初見込は不変となる。
+  const month = date.slice(0, 7);
+  const priorMonthReports = await prisma.dailyReport.findMany({
+    where: { salesStaffId: staff.id, type, date: { startsWith: month } },
+    select: { date: true, forecastAcq: true, forecastHours: true, forecastEntries: true },
+  });
+  const existingSameDate = priorMonthReports.find((r) => r.date === date);
+  const keepFirstForecast = (field: ForecastField) => {
+    const holder = firstForecastRec(priorMonthReports, field);
+    if (holder && date <= holder.date) nums[field] = existingSameDate?.[field] ?? null;
+  };
+  if (isVisit) keepFirstForecast("forecastAcq");
+  else {
+    keepFirstForecast("forecastHours");
+    keepFirstForecast("forecastEntries");
+  }
+
   // 同一（日付,タイプ,販売員ID）は上書き（要件6-1）
   await prisma.dailyReport.upsert({
     where: { date_type_salesStaffId: { date, type, salesStaffId: staff.id } },
@@ -184,19 +243,17 @@ export async function saveDailyReport(
   await audit(user.loginId, "daily_report_upsert", `${date}/${type}/${staff.salesId ?? staff.id}`);
   revalidatePath("/reports");
 
-  // 保存後、当月KPIタイル（12個）を返す
-  const month = date.slice(0, 7);
+  // 保存後、当月KPIタイルを返す（訪販12タイル / テレマ専用タイル §7.5）
   const monthReports = await prisma.dailyReport.findMany({
     where: { salesStaffId: staff.id, type, date: { startsWith: month } },
   });
   return {
     success: `${date} の${type}日報を保存しました`,
     kpiTitle: `当月KPI（${month} / ${type}）`,
-    kpi: calcMonthlyKpi(monthReports, date),
-    kpiNote:
-      type === "テレマ"
-        ? "テレマ専用KPI（アポ生産性・クローズ通過率等）は仮実装のため未表示です（TODO §14-5）"
-        : undefined,
+    kpi: isVisit ? calcMonthlyKpi(monthReports, date) : calcTeleKpi(monthReports),
+    kpiNote: isVisit
+      ? undefined
+      : "「獲得生産性」「後確通過率」は入力項目（獲得数・後確通過数）が存在しないため対象外です（仮実装 TODO §14-5）",
   };
 }
 
@@ -212,7 +269,7 @@ export async function uploadDailyCsv(
   if (csvType !== "訪販" && csvType !== "テレマ") return { errors: ["日報タイプが不正です"] };
   const file = formData.get("file");
   if (!(file instanceof File) || file.size === 0) return { errors: ["CSVファイルを選択してください"] };
-  if (file.size > 4 * 1024 * 1024) return { errors: ["CSVファイルは4MB以下にしてください"] };
+  if (file.size > 20 * 1024 * 1024) return { errors: ["CSVファイルは20MB以下にしてください"] }; // 上限は既定20MB（§3.8）
 
   const scope = await agencyScope(user);
   const isVisit = csvType === "訪販";
