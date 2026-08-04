@@ -8,16 +8,20 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { agencyScope, hashPassword, requirePage, type CurrentUser } from "@/lib/auth";
 import { SNC_ADMIN_ROLES } from "@/lib/roles";
+import { can, canApproveFirst } from "@/lib/permissions";
 import { audit, notify, notifyRole, pushHistory } from "@/lib/util";
 import { parseCsv } from "@/lib/csv";
 
 export type ApplyState = { error?: string; success?: string } | undefined;
+export type UpdateState = { error?: string; success?: string } | undefined;
 export type CsvApplyState = { error?: string; errors?: string[]; success?: string } | undefined;
 export type FinalApproveState = { error?: string; salesId?: string; tempPassword?: string } | undefined;
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-// 停止・削除を実施できるロール（権限一覧★: ①②③⑦。⑦は自店配下のみ = agencyScope で担保）
-const MANAGE_ROLES = ["R1", "R2", "R3", "R7"];
+// 権限判定は §5.1 の宣言的マップ（@/lib/permissions）に集約する（§3.2）。
+// 販売員ID: 申=①②③⑦⑧ / 一承=⑦（+最終承認権限者は内含 §6.2-2） / 承=①②③ / 変・停・削=①②③⑦。
+// ⑦の「自店配下のみ」は agencyScope（§3.1）で担保する。
+const FEATURE = "sales-staff" as const;
 
 // 一時パスワード生成（一般アカウント最小14桁 → 16桁。紛らわしい文字は除外）
 function genTempPassword(): string {
@@ -53,6 +57,7 @@ async function loadStaffInScope(user: CurrentUser, staffId: string) {
 export async function applyStaffAction(_prev: ApplyState, formData: FormData): Promise<ApplyState> {
   const user = await requirePage("sales-staff");
   if (user.dummy) return { error: "閲覧専用アカウントのため申請できません" };
+  if (!can(user.role, FEATURE, "apply")) return { error: "販売員IDの申請権限がありません" };
   const scope = await agencyScope(user);
 
   const agencyId = String(formData.get("agencyId") ?? "");
@@ -108,6 +113,7 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
 export async function csvBulkApplyAction(_prev: CsvApplyState, formData: FormData): Promise<CsvApplyState> {
   const user = await requirePage("sales-staff");
   if (user.dummy) return { error: "閲覧専用アカウントのため申請できません" };
+  if (!can(user.role, FEATURE, "apply")) return { error: "販売員IDの申請権限がありません" };
   const scope = await agencyScope(user);
 
   const file = formData.get("file");
@@ -187,10 +193,61 @@ export async function csvBulkApplyAction(_prev: CsvApplyState, formData: FormDat
   return { success: `${creates.length}件の販売員ID申請を登録しました（申請中）` };
 }
 
+// ============ 編集（変更。§5.1「変」= ①②③⑦。⑦は自店配下のみ / §7.3 操作列「編集」） ============
+// 編集対象は販売員IDの登録情報（氏名・生年月日・電話番号・メールアドレス。§6.2-1）。
+// 代理店の付け替えは所属変更＝別業務のため対象外（TODO: 要件確認後に対応）。
+export async function updateStaffAction(
+  _prev: UpdateState,
+  formData: FormData
+): Promise<UpdateState> {
+  const user = await requirePage("sales-staff");
+  if (user.dummy) return { error: "閲覧専用アカウントのため編集できません" };
+  if (!can(user.role, FEATURE, "update")) return { error: "販売員IDの編集権限がありません" };
+  const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
+  if (!staff) return { error: "対象の販売員が見つかりません" };
+  if (staff.status === "deleted") {
+    return { error: "削除済の販売員IDは編集できません（復旧してから編集してください）" };
+  }
+
+  const lastName = String(formData.get("lastName") ?? "").trim();
+  const firstName = String(formData.get("firstName") ?? "").trim();
+  const birthDate = String(formData.get("birthDate") ?? "").trim();
+  const phone = String(formData.get("phone") ?? "").trim();
+  const email = String(formData.get("email") ?? "").trim();
+
+  if (!lastName || !firstName || !birthDate || !phone) {
+    return { error: "必須項目（姓・名・生年月日・電話番号）を入力してください" };
+  }
+  if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
+
+  await prisma.salesStaff.update({
+    where: { id: staff.id },
+    data: {
+      lastName,
+      firstName,
+      birthDate,
+      phone,
+      email: email || null,
+      history: pushHistory(staff.history, "update", user.loginId) as never,
+    },
+  });
+  // 発行済みのR9アカウント（ログインID＝販売員ID）の氏名・メールも同期して齟齬を防ぐ
+  if (staff.accountId) {
+    await prisma.account.update({
+      where: { id: staff.accountId },
+      data: { name: `${lastName} ${firstName}`, email: email || null },
+    });
+  }
+
+  await audit(user.loginId, "sales_staff_update", staff.id);
+  revalidatePath("/sales-staff");
+  return { success: `${lastName} ${firstName} さんの登録情報を更新しました` };
+}
+
 // ============ 1次承認（R7=自店配下のみ / R1・R2・R3） ============
 export async function firstApproveAction(formData: FormData): Promise<void> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) return;
+  if (user.dummy || !canApproveFirst(user.role, FEATURE)) return;
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
   if (!staff || staff.status !== "applying") return;
 
@@ -219,7 +276,7 @@ export async function finalApproveAction(
 ): Promise<FinalApproveState> {
   const user = await requirePage("sales-staff");
   if (user.dummy) return { error: "閲覧専用アカウントのため操作できません" };
-  if (!SNC_ADMIN_ROLES.includes(user.role)) return { error: "最終承認の権限がありません" };
+  if (!can(user.role, FEATURE, "approve_final")) return { error: "最終承認の権限がありません" };
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
   if (!staff) return { error: "対象の販売員が見つかりません" };
   if (staff.status !== "provisional") return { error: "仮登録（1次承認済み）の販売員のみ最終承認できます" };
@@ -275,7 +332,7 @@ export async function finalApproveAction(
 // ============ 停止（R1・R2・R3・R7） ============
 export async function suspendStaffAction(formData: FormData): Promise<void> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) return;
+  if (user.dummy || !can(user.role, FEATURE, "suspend")) return;
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
   if (!staff || !["provisional", "registered"].includes(staff.status)) return;
 
@@ -293,7 +350,8 @@ export async function suspendStaffAction(formData: FormData): Promise<void> {
 // ============ 再開（R1・R2・R3・R7） ============
 export async function resumeStaffAction(formData: FormData): Promise<void> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) return;
+  // 再開（停止の解除）は停止権限と同一（§5.1「停」）
+  if (user.dummy || !can(user.role, FEATURE, "suspend")) return;
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
   if (!staff || staff.status !== "suspended") return;
 
@@ -313,7 +371,7 @@ export async function resumeStaffAction(formData: FormData): Promise<void> {
 // ============ 削除（論理削除。R1・R2・R3・R7。Accountはsuspended化） ============
 export async function deleteStaffAction(formData: FormData): Promise<void> {
   const user = await requirePage("sales-staff");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) return;
+  if (user.dummy || !can(user.role, FEATURE, "delete")) return;
   const staff = await loadStaffInScope(user, String(formData.get("staffId") ?? ""));
   if (!staff || staff.status === "deleted") return;
 
@@ -333,6 +391,7 @@ export async function deleteStaffAction(formData: FormData): Promise<void> {
 }
 
 // ============ 復旧（R1・R2・R3。deleted → suspended） ============
+// 復旧は §5.1 の操作列に無い管理機能（§3.4 誤削除対応）。既存どおりSNC管理系（①②③）に限定する。
 export async function restoreStaffAction(formData: FormData): Promise<void> {
   const user = await requirePage("sales-staff");
   if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;

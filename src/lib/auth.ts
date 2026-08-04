@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { prisma } from "./prisma";
-import { PageKey, canAccess, isDummyView } from "./roles";
+import { PageKey, Role, canAccess, isDummyView } from "./roles";
 import { resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
 import { audit } from "./util";
 
@@ -12,11 +12,50 @@ export type { CurrentUser } from "./session";
 
 const ABS_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS ?? 24);
 
-export function hashPassword(pw: string) {
-  return bcrypt.hashSync(pw, 10);
+// ===== パスワードハッシュ（§2 / §10.3 / SEC②#42） =====
+// アプリケーションペッパーを環境変数（バージョンID付き）で付与する。
+// 現行バージョンは PASSWORD_PEPPER_V1。未設定時は従来動作（ペッパー無し）なので既存環境と互換。
+// ローテーション時は PASSWORD_PEPPER_V2 を足して CURRENT_PEPPER_KEY を切り替え、
+// ログイン成功時の再ハッシュ（needsRehash）で順次移行する。
+// TODO(§10.3): ハッシュ関数自体の Argon2id 移行は依存追加（argon2）が必要なため未実施。
+const CURRENT_PEPPER_KEY = "PASSWORD_PEPPER_V1";
+
+function currentPepper(): string {
+  return process.env[CURRENT_PEPPER_KEY] ?? "";
 }
-export function verifyPassword(pw: string, hash: string) {
-  return bcrypt.compareSync(pw, hash);
+
+// ペッパーの混ぜ方: bcrypt は入力72バイトで切り詰められるため素朴な連結は
+// 長いパスワードを実質的に切り詰めてしまう。OWASP Password Storage Cheat Sheet に従い
+// HMAC-SHA256（鍵=ペッパー）で前段ハッシュしてから bcrypt する（SHA-256はCRYPTREC準拠。
+// §10.3 で禁止された SHA-1/MD5 は使用しない）。
+function prehash(pw: string, pepper: string): string {
+  if (!pepper) return pw;
+  return crypto.createHmac("sha256", pepper).update(pw, "utf8").digest("hex");
+}
+
+export function hashPassword(pw: string) {
+  return bcrypt.hashSync(prehash(pw, currentPepper()), 10);
+}
+
+// ok: パスワード一致 / needsRehash: ペッパー未適用の旧ハッシュだったため再ハッシュ保存が必要
+export type PasswordVerification = { ok: boolean; needsRehash: boolean };
+
+export function verifyPassword(pw: string, hash: string): PasswordVerification {
+  const pepper = currentPepper();
+  if (pepper && bcrypt.compareSync(prehash(pw, pepper), hash)) {
+    return { ok: true, needsRehash: false };
+  }
+  // 既存ハッシュ（ペッパー導入前 / 旧バージョン）との互換検証。
+  // 成功したら呼び出し側で hashPassword() により現行ペッパーで再ハッシュする。
+  if (bcrypt.compareSync(pw, hash)) return { ok: true, needsRehash: !!pepper };
+  return { ok: false, needsRehash: false };
+}
+
+// 実効ロールの解決（§14-2）: 稼働終了代理店（agency.status=closed）に属する⑦⑧は⑩として扱う。
+// セッション経由（session.ts）と同じ規則を、セッション未確立のログイン処理でも使うためのヘルパ。
+export function effectiveRole(rawRole: string, agencyStatus?: string | null): Role {
+  if ((rawRole === "R7" || rawRole === "R8") && agencyStatus === "closed") return "R10";
+  return rawRole as Role;
 }
 
 export async function createSession(accountId: string) {

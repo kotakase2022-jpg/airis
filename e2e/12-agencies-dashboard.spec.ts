@@ -95,8 +95,9 @@ test("下位代理店: R2で統計4枚・階層ツリー・一覧列が表示さ
   await expect(primaryNode.getByText("株式会社セールスパートナー東京")).toBeVisible();
   await expect(primaryNode.getByText("ID: 210001")).toBeVisible();
   // 稼働終了の1次店（190001）はツリーで「稼働終了」バッジ
+  // （配下2次店もシードで稼働終了のため、1次店ノード自身のヘッダ行に限定して判定する）
   const closedNode = page.locator("div.border-l-emerald-500", { hasText: "ID: 190001" });
-  await expect(closedNode.getByText("稼働終了")).toBeVisible();
+  await expect(closedNode.locator("> div").first().getByText("稼働終了")).toBeVisible();
   // ダミー代理店（990001）は表示されない
   await expect(page.getByText("990001")).toHaveCount(0);
 
@@ -416,6 +417,97 @@ test("ダッシュボード: R2の各セクションカード数値がDB件数�
   expect(criticalErrors(errors)).toEqual([]);
 });
 
+// §7.1 で追加されたカード（未提出者数・提出物n/6・稼働終了数・未読お知らせ・監査/アラート）と
+// 非ダミーロールには実お知らせのみが出ること（§3.5 の逆方向）を検証する
+test("ダッシュボード: R2で§7.1の追加カード（未提出者数・提出物n/6・稼働終了・未読お知らせ・監査）がDBと一致し、サンプルお知らせは出ない", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const errors = collectConsoleErrors(page);
+  const d = db();
+  const month = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 7);
+
+  // R2スコープ = 非ダミー全代理店
+  const scopeIds = (await d.agency.findMany({ where: { isDummy: false }, select: { id: true } })).map((a) => a.id);
+  const r2 = await d.account.findUnique({ where: { loginId: "airis_snc_adm_001" } });
+  expect(r2).not.toBeNull();
+
+  // 当月日報の未提出者数（提出可能=仮登録・本登録の販売員で、当月の日報が無い人数）
+  const expectedUnsubmitted = await d.salesStaff.count({
+    where: {
+      agencyId: { in: scopeIds },
+      status: { in: ["provisional", "registered"] },
+      dailyReports: { none: { date: { startsWith: month } } },
+    },
+  });
+  // 提出物の提出状況 n/6（当月・スコープ内で提出済み（差戻し以外）の様式種別数）
+  const expectedKinds = (
+    await d.submission.findMany({
+      where: { targetMonth: month, status: { not: "rejected" }, submitterAgencyId: { in: scopeIds } },
+      select: { kind: true },
+      distinct: ["kind"],
+    })
+  ).length;
+  const expectedClosed = await d.agency.count({ where: { status: "closed", isDummy: false } });
+  // 未読お知らせ件数（実データの送信済みお知らせ − R2の既読）
+  const annWhere = { status: "sent", isDummy: false };
+  const [annTotal, annRead] = await Promise.all([
+    d.announcement.count({ where: annWhere }),
+    d.announcementRead.count({ where: { accountId: r2!.id, announcement: annWhere } }),
+  ]);
+  const expectedUnread = Math.max(0, annTotal - annRead);
+  // 実データ／ダミーのお知らせタイトル（双方向assert用）
+  const realTitles = (
+    await d.announcement.findMany({
+      where: annWhere,
+      orderBy: { sentAt: "desc" },
+      take: 20,
+      select: { title: true },
+    })
+  ).map((a) => a.title);
+  const dummyTitles = (
+    await d.announcement.findMany({
+      where: { status: "sent", isDummy: true },
+      select: { title: true },
+    })
+  ).map((a) => a.title);
+  expect(realTitles.length).toBeGreaterThan(0);
+  expect(dummyTitles.length).toBeGreaterThan(0);
+
+  await login(page, "R2");
+  await page.goto("/dashboard");
+  await expect(page.getByRole("heading", { name: "ダッシュボード" })).toBeVisible();
+
+  const section = (name: string | RegExp) =>
+    page.locator("section").filter({ has: page.locator("h2", { hasText: name }) });
+
+  // 日報・稼働提出物セクション: 未提出者数 / n/6
+  const sReports = section(/^日報・稼働提出物/);
+  expect(await statValue(sReports as never, "当月日報の未提出者数")).toBe(expectedUnsubmitted);
+  await expect(statCard(sReports as never, "提出物の提出状況（当月）")).toHaveText(`${expectedKinds} / 6`);
+
+  // 代理店セクション: 稼働終了数（§7.1）
+  const sAgency = section(/^代理店$/);
+  expect(await statValue(sAgency as never, "稼働終了")).toBe(expectedClosed);
+
+  // 管理セクション（①②のみ）: 監査イベント・不正利用アラート
+  const sAdmin = section(/^管理（本日/);
+  await expect(sAdmin).toBeVisible();
+  // ログイン・画面表示が監査記録されるため当日イベントは必ず1件以上
+  expect(await statValue(sAdmin as never, "直近の監査イベント件数")).toBeGreaterThan(0);
+  expect(await statValue(sAdmin as never, "不正利用アラート件数")).toBeGreaterThanOrEqual(0);
+
+  // お知らせセクション: 未読件数 + 実データのみ表示（④用サンプルは出ない §3.5 逆方向）
+  const sAnn = section(/^最新のお知らせ$/);
+  expect(await statValue(sAnn as never, "未読お知らせ件数")).toBe(expectedUnread);
+  await expect(sAnn.getByText(realTitles[0], { exact: true })).toHaveCount(1);
+  for (const title of dummyTitles) {
+    await expect(sAnn.getByText(title, { exact: true })).toHaveCount(0);
+  }
+
+  expect(criticalErrors(errors)).toEqual([]);
+});
+
 test("ダッシュボード: R2の各セクションリンクから該当画面へ遷移できる", async ({ page }) => {
   test.setTimeout(180_000);
   await login(page, "R2");
@@ -445,6 +537,25 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
   const errors = collectConsoleErrors(page);
   const d = db();
   const dummyTotal = await d.agency.count({ where: { isDummy: true } });
+  // お知らせの双方向検証用（④にはサンプルのみ・実データは1件も出ない §3.5）
+  const dummyAnnTitles = (
+    await d.announcement.findMany({
+      where: { status: "sent", isDummy: true },
+      orderBy: { sentAt: "desc" },
+      take: 5,
+      select: { title: true },
+    })
+  ).map((a) => a.title);
+  const realAnnTitles = (
+    await d.announcement.findMany({
+      where: { status: "sent", isDummy: false },
+      orderBy: { sentAt: "desc" },
+      take: 20,
+      select: { title: true },
+    })
+  ).map((a) => a.title);
+  expect(dummyAnnTitles.length).toBeGreaterThan(0);
+  expect(realAnnTitles.length).toBeGreaterThan(0);
 
   await login(page, "R4");
   await expect(page).toHaveURL(/\/dashboard/);
@@ -469,6 +580,18 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
   // ダッシュボードの代理店数 = ダミー代理店数のみ
   const sAgency = page.locator("section").filter({ has: page.locator("h2", { hasText: /^代理店$/ }) });
   expect(await statValue(sAgency as never, "代理店数")).toBe(dummyTotal);
+
+  // ダッシュボードのお知らせ: サンプルのみ表示され、実お知らせは1件も出ない（§3.5）
+  const sAnn = page.locator("section").filter({ has: page.locator("h2", { hasText: /^最新のお知らせ$/ }) });
+  await expect(sAnn).toBeVisible();
+  for (const title of dummyAnnTitles) {
+    await expect(sAnn.getByText(title, { exact: true })).toHaveCount(1);
+  }
+  for (const title of realAnnTitles) {
+    await expect(sAnn.getByText(title, { exact: true })).toHaveCount(0);
+  }
+  // ④は①②専用の管理カード（監査イベント・不正利用アラート）を持たない（実データ非表示 §3.5）
+  await expect(page.locator("section").filter({ has: page.locator("h2", { hasText: /^管理（本日/ }) })).toHaveCount(0);
 
   // 販売員ID管理: ダミー販売員(990001系)のみ、実データは一切出ない
   await page.goto("/sales-staff");

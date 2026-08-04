@@ -31,10 +31,21 @@ function str(v: FormDataEntryValue | null): string | null {
   return s === "" ? null : s;
 }
 
-// 代理店に紐づく有効アカウント全員へアプリ内通知
-async function notifyAgencyAccounts(agencyId: string, title: string, body?: string, link?: string) {
+// 稼働提出物の通知宛先ロール（§5.1: 稼働提出物は⑦⑧のみ。⑨販売員は「×」のため配信しない）
+// ※⑩（稼働終了）は実効ロールで、DB上のロールは R7/R8 のまま（§14-2）
+const SUBMISSION_NOTIFY_ROLES = ["R7", "R8"];
+
+// 代理店に紐づく有効アカウントへアプリ内通知（宛先ロールをスコープする §3.7 / §5.1）
+// roles を明示しない呼び出しは稼働提出物系のため、既定は代理店管理者（R7/R8）のみ。
+async function notifyAgencyAccounts(
+  agencyId: string,
+  title: string,
+  body?: string,
+  link?: string,
+  roles: string[] = SUBMISSION_NOTIFY_ROLES
+) {
   const accounts = await prisma.account.findMany({
-    where: { agencyId, status: "active" },
+    where: { agencyId, status: "active", role: { in: roles } },
     select: { id: true },
   });
   await Promise.all(accounts.map((a) => notify(a.id, title, body, link)));
@@ -53,17 +64,48 @@ function fx(v: number): string {
 
 // 月初見込は「月内最初（最古日付）のレコードの見込」を採用する（要件6-3: 月の初回提出時のみ入力）
 type ForecastField = "forecastAcq" | "forecastHours" | "forecastEntries";
-function firstForecastRec(
-  reports: Pick<DailyReport, "date" | ForecastField>[],
-  field: ForecastField
-): { date: string; value: number } | null {
+type ForecastRow = { date: string; value: number | null };
+type ForecastSource = Pick<DailyReport, "date" | ForecastField>;
+
+function firstForecast(rows: ForecastRow[]): { date: string; value: number } | null {
   let holder: { date: string; value: number } | null = null;
-  for (const r of reports) {
-    const v = r[field];
-    if (v == null) continue;
-    if (!holder || r.date < holder.date) holder = { date: r.date, value: v };
+  for (const r of rows) {
+    if (r.value == null) continue;
+    if (!holder || r.date < holder.date) holder = { date: r.date, value: r.value };
   }
   return holder;
+}
+
+function firstForecastRec(
+  reports: ForecastSource[],
+  field: ForecastField
+): { date: string; value: number } | null {
+  return firstForecast(reports.map((r) => ({ date: r.date, value: r[field] })));
+}
+
+// 月初見込ロック（要件6-3 / BUG-007 の回帰防止）— フォーム保存とCSV取込の共通ルール。
+// 「月内に見込は1つだけ（最古日付のレコードのみが保持する）」を保証する:
+//   1. 同月・同タイプ・同販売員の既存レコードに見込が確定している場合、その日付の値は不変とし、
+//      今回保存する他の日付のレコードには見込を保存しない（null）。
+//   2. 既存に見込が無い場合、今回保存する行のうち最古日付の見込のみを採用し、他はnullにする。
+// 戻り値: 日付 → 保存すべき見込値。
+function lockMonthForecast(
+  existing: ForecastSource[],
+  incoming: ForecastRow[],
+  field: ForecastField
+): Map<string, number | null> {
+  const resolved = new Map<string, number | null>();
+  const confirmed = firstForecastRec(existing, field); // 既存の確定済み月初見込
+  const holder = confirmed ?? firstForecast(incoming); // 無ければ今回分の最古日付が月初見込になる
+  for (const row of incoming) {
+    if (!holder || row.date !== holder.date) {
+      resolved.set(row.date, null);
+      continue;
+    }
+    // 確定済みの見込は上書きさせない（CSV・フォームいずれの経路でも既存値を維持）
+    resolved.set(row.date, confirmed ? confirmed.value : row.value);
+  }
+  return resolved;
 }
 
 // 当月KPI 12タイル（訪販）。計算式は日報Excel準拠（詳細不明分は仮実装 §14-5）
@@ -213,19 +255,17 @@ export async function saveDailyReport(
   };
 
   // 月初見込は月の初回提出時のみ入力（要件6-3 / BUG-007）:
-  // 同月・同タイプ・同販売員の既存レコードに見込値が存在する場合、
-  // その「最初（最古日付）の見込」を書き換えうる保存（見込保持レコード自身の再提出や
-  // それ以前の日付への提出）では送信された見込値を無視し、既存の値を維持する。
-  // ※KPI計算は月内最初（最古日付）のレコードの見込を採用するため、月初見込は不変となる。
+  // 同月・同タイプ・同販売員で既に見込が確定している場合は送信値を無視して既存値を維持し、
+  // 他の日付のレコードには見込を保存しない（月内に見込は1つだけ）。
+  // 判定ロジックは lockMonthForecast() に集約し、CSV取込（uploadDailyCsv）と共通化する。
   const month = date.slice(0, 7);
   const priorMonthReports = await prisma.dailyReport.findMany({
     where: { salesStaffId: staff.id, type, date: { startsWith: month } },
     select: { date: true, forecastAcq: true, forecastHours: true, forecastEntries: true },
   });
-  const existingSameDate = priorMonthReports.find((r) => r.date === date);
   const keepFirstForecast = (field: ForecastField) => {
-    const holder = firstForecastRec(priorMonthReports, field);
-    if (holder && date <= holder.date) nums[field] = existingSameDate?.[field] ?? null;
+    const resolved = lockMonthForecast(priorMonthReports, [{ date, value: nums[field] }], field);
+    nums[field] = resolved.get(date) ?? null;
   };
   if (isVisit) keepFirstForecast("forecastAcq");
   else {
@@ -256,6 +296,14 @@ export async function saveDailyReport(
       : "「獲得生産性」「後確通過率」は入力項目（獲得数・後確通過数）が存在しないため対象外です（仮実装 TODO §14-5）",
   };
 }
+
+type CsvUpsertRow = {
+  date: string;
+  staffId: string;
+  agencyId: string;
+  salesLabel: string;
+  data: Record<string, string | number | null>;
+};
 
 // CSVアップロード（行単位検証 → エラーがあれば全件拒否 §3.6）
 export async function uploadDailyCsv(
@@ -293,13 +341,7 @@ export async function uploadDailyCsv(
 
   const errors: string[] = [];
   const seen = new Set<string>();
-  const upserts: {
-    date: string;
-    staffId: string;
-    agencyId: string;
-    salesLabel: string;
-    data: Record<string, string | number | null>;
-  }[] = [];
+  const upserts: CsvUpsertRow[] = [];
 
   for (let i = 1; i < rows.length; i++) {
     const line = i + 1;
@@ -389,6 +431,34 @@ export async function uploadDailyCsv(
 
   // エラーが1件でもあれば全件拒否（部分取込しない §3.6）
   if (errors.length) return { errors };
+
+  // 月初見込ロック（要件6-3 / BUG-007の回帰防止）:
+  // CSV取込でも「同月・同タイプ・同販売員」単位でフォームと同じルールを適用する。
+  // 既に確定済みの見込があればCSVの見込値を無視して既存値を維持し、月内の他の日付には見込を保存しない。
+  const forecastFields: ForecastField[] = isVisit
+    ? ["forecastAcq"]
+    : ["forecastHours", "forecastEntries"];
+  const monthGroups = new Map<string, { staffId: string; month: string; rows: CsvUpsertRow[] }>();
+  for (const u of upserts) {
+    const m = u.date.slice(0, 7);
+    const key = `${u.staffId}|${m}`;
+    if (!monthGroups.has(key)) monthGroups.set(key, { staffId: u.staffId, month: m, rows: [] });
+    monthGroups.get(key)!.rows.push(u);
+  }
+  for (const g of monthGroups.values()) {
+    const existing = await prisma.dailyReport.findMany({
+      where: { salesStaffId: g.staffId, type: csvType, date: { startsWith: g.month } },
+      select: { date: true, forecastAcq: true, forecastHours: true, forecastEntries: true },
+    });
+    for (const field of forecastFields) {
+      const incoming = g.rows.map((r) => {
+        const v = r.data[field];
+        return { date: r.date, value: typeof v === "number" ? v : null };
+      });
+      const resolved = lockMonthForecast(existing, incoming, field);
+      for (const r of g.rows) r.data[field] = resolved.get(r.date) ?? null;
+    }
+  }
 
   // RLS拡張と干渉するためトランザクションを使わず逐次実行（速度優先。検証済みデータのみここに到達する）
   for (const u of upserts) {

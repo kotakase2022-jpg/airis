@@ -81,14 +81,45 @@ export function formatHistory(history: unknown): string {
     .join(" / ");
 }
 
+// アップロード許可拡張子・MIMEホワイトリスト（§3.8）
+const ALLOWED_EXT: Record<string, string> = {
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  pdf: "application/pdf",
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  zip: "application/zip",
+  csv: "text/csv",
+  txt: "text/plain",
+};
+
+function safeName(name: string): string {
+  // パス要素・制御文字を除去（ディレクトリトラバーサル防止）
+  return name.replace(/[\\/\x00-\x1f]/g, "_").replace(/\.\.+/g, ".").slice(0, 255);
+}
+
+// 配信時に信頼できる MIME を拡張子から決定（クライアント申告値を信用しない）
+export function safeMimeFor(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return ALLOWED_EXT[ext] ?? "application/octet-stream";
+}
+
 // ファイル保存（DB格納・上限は既定20MB。環境変数 FILE_MAX_MB で変更可 §3.8）
+// 拡張子＋ファイル名をホワイトリスト方式で検証・サニタイズする。
 export async function storeFile(file: File, uploadedBy: string): Promise<{ id: string; name: string } | { error: string }> {
   const maxMb = Number(process.env.FILE_MAX_MB) > 0 ? Number(process.env.FILE_MAX_MB) : 20;
   if (file.size === 0) return { error: "ファイルが空です" };
   if (file.size > maxMb * 1024 * 1024) return { error: `ファイルは${maxMb}MB以下にしてください` };
+  const name = safeName(file.name);
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  if (!ALLOWED_EXT[ext]) {
+    return { error: `この形式のファイルは受け付けられません（許可: ${Object.keys(ALLOWED_EXT).join(", ")}）` };
+  }
   const buf = Buffer.from(await file.arrayBuffer());
+  // 保存MIMEは拡張子から決定（クライアント申告のtext/html等を保存しない）
   const stored = await prisma.storedFile.create({
-    data: { name: file.name, mime: file.type || "application/octet-stream", size: file.size, data: buf, uploadedBy },
+    data: { name, mime: safeMimeFor(name), size: file.size, data: buf, uploadedBy },
   });
   return { id: stored.id, name: stored.name };
 }

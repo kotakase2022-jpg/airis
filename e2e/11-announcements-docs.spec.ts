@@ -469,9 +469,21 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
   test.setTimeout(120_000);
   const d = db();
   // 準備: 公開範囲allのドキュメント（DB直接作成で自己完結）
+  // ※/files/[id] は参照元エンティティのスコープで認可する（§10.5 IDOR防止）ため、
+  //   StoredFile 単体ではなく Document から参照された状態で検証する。
   const content = "QA7 download check content 12345";
   const stored = await d.storedFile.create({
     data: { name: "QA7-download.txt", mime: "text/plain", size: content.length, data: Buffer.from(content), uploadedBy: null },
+  });
+  const doc = await d.document.create({
+    data: {
+      title: "QA7 ダウンロード検証用ドキュメント",
+      category: "QA7",
+      visibility: "all",
+      fileId: stored.id,
+      fileName: stored.name,
+      createdBy: "qa7-setup",
+    },
   });
 
   try {
@@ -496,7 +508,16 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
     // 存在しないファイルID → 404（ログイン済み）
     const nf = await page.request.get("/files/qa7-not-exist-file");
     expect(nf.status()).toBe(404);
+
+    // 参照元エンティティを持たない孤立ファイルは拒否（fail-closed §10.5）
+    const orphan = await d.storedFile.create({
+      data: { name: "QA7-orphan.txt", mime: "text/plain", size: 4, data: Buffer.from("orph"), uploadedBy: null },
+    });
+    const orphanRes = await page.request.get(`/files/${orphan.id}`);
+    expect(orphanRes.status(), "孤立ファイルは403で拒否される").toBe(403);
+    await d.storedFile.deleteMany({ where: { id: orphan.id } });
   } finally {
+    await d.document.deleteMany({ where: { id: doc.id } });
     await d.storedFile.deleteMany({ where: { id: stored.id } });
   }
 });

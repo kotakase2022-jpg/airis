@@ -576,3 +576,70 @@ test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
     }
   });
 });
+
+// ============ ロールと所属代理店の階層整合（§3.1。申請時 createRequestAction と同一ルール） ============
+test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更）", () => {
+  test("2次店所属アカウントは⑦へ変更できず・1次店所属アカウントは⑧へ変更できない（DBのロールも変わらない）", async ({
+    page,
+  }) => {
+    const tier2LoginId = `qa2_tier2_${RUN}`; // 2次代理店(210001)所属のR8
+    const tier1LoginId = `qa2_tier1_${RUN}`; // 1次代理店(110001)所属のR7
+    const { id: tier2Id } = await createQa2Account(tier2LoginId, { role: "R8" });
+    const p1 = await db().agency.findUnique({ where: { code: "110001" } });
+    if (!p1) throw new Error("シード代理店110001が見つかりません");
+    const tier1Acc = await db().account.create({
+      data: {
+        loginId: tier1LoginId,
+        role: "R7",
+        name: `QA2 tier1 ${RUN}`,
+        email: `${tier1LoginId}@example.com`,
+        agencyId: p1.id,
+        status: "active",
+        passwordHash: "x",
+        mustChangePassword: false,
+      },
+    });
+
+    try {
+      await login(page, "R2");
+
+      // 2次代理店所属 → ⑦（一次代理店管理者）に変更しようとするとエラー
+      await page.goto(`/admin?q=${tier2LoginId}`);
+      const row2 = accountRow(page, tier2LoginId);
+      await expect(row2).toHaveCount(1);
+      await row2.getByRole("button", { name: "編集" }).click();
+      await row2.locator('select[name="role"]').selectOption("R7");
+      await row2.getByRole("button", { name: "保存" }).click();
+      await expect(
+        row2.getByText("一次代理店管理者には1次代理店を選択してください")
+      ).toBeVisible({ timeout: 10_000 });
+      expect((await db().account.findUnique({ where: { id: tier2Id } }))!.role).toBe("R8");
+
+      // 1次代理店所属 → ⑧（二次代理店管理者）に変更しようとするとエラー
+      await page.goto(`/admin?q=${tier1LoginId}`);
+      const row1 = accountRow(page, tier1LoginId);
+      await expect(row1).toHaveCount(1);
+      await row1.getByRole("button", { name: "編集" }).click();
+      await row1.locator('select[name="role"]').selectOption("R8");
+      await row1.getByRole("button", { name: "保存" }).click();
+      await expect(
+        row1.getByText("二次代理店管理者には2次代理店を選択してください")
+      ).toBeVisible({ timeout: 10_000 });
+      expect((await db().account.findUnique({ where: { id: tier1Acc.id } }))!.role).toBe("R7");
+
+      // tier整合が保たれる変更（ロールは据え置きで氏名変更）は成功する
+      await page.goto(`/admin?q=${tier1LoginId}`);
+      const row1b = accountRow(page, tier1LoginId);
+      await row1b.getByRole("button", { name: "編集" }).click();
+      await row1b.locator('input[name="name"]').fill(`QA2 tier1 更新 ${RUN}`);
+      await row1b.getByRole("button", { name: "保存" }).click();
+      await expect(row1b.getByText("を更新しました")).toBeVisible({ timeout: 10_000 });
+      const after = await db().account.findUnique({ where: { id: tier1Acc.id } });
+      expect(after!.name).toBe(`QA2 tier1 更新 ${RUN}`);
+      expect(after!.role).toBe("R7");
+    } finally {
+      await db().account.delete({ where: { id: tier2Id } }).catch(() => {});
+      await db().account.delete({ where: { id: tier1Acc.id } }).catch(() => {});
+    }
+  });
+});

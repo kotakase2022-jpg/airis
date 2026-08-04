@@ -2,7 +2,7 @@
  * QA担当: Airisアカウント申請（§6.1 / §7.2 / §3.3）
  * データプレフィクス: QA2
  */
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, Page, Locator } from "@playwright/test";
 import {
   ACCOUNTS,
   db,
@@ -335,8 +335,10 @@ test.describe("却下・統計・アクセス制御", () => {
       page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)
     ).toBeVisible({ timeout: 10_000 });
 
-    // R3で却下（理由必須）
-    await login(page, "R3");
+    // R2で却下（理由必須）
+    // ※申請対象ロールが⑥（SNC系）のため、職務分離（§6.1-3 / 要件1-1）により却下できるのは
+    //   ①②のみ。③での却下不可は「職務分離」describeで別途検証している。
+    await login(page, "R2");
     await page.goto("/account-requests");
     const row = page.locator("tbody tr", { hasText: name });
     await expect(row).toHaveCount(1);
@@ -366,7 +368,7 @@ test.describe("却下・統計・アクセス制御", () => {
     // 監査ログ: account_request_reject
     const auditRow = await db().auditLog.findFirst({
       where: {
-        actor: ACCOUNTS.R3.loginId,
+        actor: ACCOUNTS.R2.loginId,
         action: "account_request_reject",
         target: req!.requestId,
       },
@@ -450,5 +452,188 @@ test.describe("却下・統計・アクセス制御", () => {
     await expect(
       page.getByRole("heading", { name: "Airisアカウント申請" })
     ).toBeVisible();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 職務分離（§6.1-3 / 要件1-1）
+//   「SNC一般以上のアカウント発行・権限変更・停止・削除は必ずSNC課長以上（②）の承認を要する」
+//   → 申請対象ロールがSNC系（①〜⑥）の申請は①②のみ最終承認・却下でき、
+//     ③（SNC運用者）は代理店系（⑦⑧⑩）の最終承認・却下に限定される。
+//   UI（ボタン非表示）とサーバ側（server action の直接実行）の両方を検証する（§3.2）。
+// ---------------------------------------------------------------------------
+test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承認・却下できない（§6.1-3 / 要件1-1）", () => {
+  const sncName = `QA2職務分離SNC-${RUN}`;
+  const sncEmail = `qa2-sod-snc-${RUN}@example.com`;
+  const agencyName = `QA2職務分離代理店-${RUN}`;
+  const agencyEmail = `qa2-sod-agency-${RUN}@example.com`;
+  const jstToday = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  let sncReqDbId = "";
+  let sncRequestId = "";
+  let agencyRequestId = "";
+
+  // 承認待ち（pending_final）の申請を2件用意: ④=SNC系ロール / ⑧=代理店系ロール
+  test.beforeAll(async () => {
+    const s1 = await db().agency.findUnique({ where: { code: "210001" } });
+    expect(s1).not.toBeNull();
+    const snc = await db().accountRequest.create({
+      data: {
+        requestId: `REQ-QA2SODS-${RUN}`,
+        role: "R4",
+        name: sncName,
+        email: sncEmail,
+        status: "pending_final",
+        history: [{ event: "requested", at: jstToday, by: "qa2-sod" }],
+      },
+    });
+    const agency = await db().accountRequest.create({
+      data: {
+        requestId: `REQ-QA2SODA-${RUN}`,
+        role: "R8",
+        name: agencyName,
+        email: agencyEmail,
+        agencyId: s1!.id,
+        status: "pending_final",
+        history: [{ event: "requested", at: jstToday, by: "qa2-sod" }],
+      },
+    });
+    sncReqDbId = snc.id;
+    sncRequestId = snc.requestId;
+    agencyRequestId = agency.requestId;
+  });
+
+  // 行内フォームの hidden id を差し替える（クライアント改ざんの再現）
+  async function tamperId(row: Locator, formHasText: string, newId: string) {
+    const form = row.locator("form").filter({ hasText: formHasText });
+    await expect(form).toHaveCount(1);
+    await form.locator('input[name="id"]').evaluate((el, v) => {
+      (el as HTMLInputElement).value = v as string;
+    }, newId);
+  }
+
+  test("R3の一覧: SNC系ロール（④）の申請には最終承認・却下ボタンが出ない（⑧の申請には出る）", async ({ page }) => {
+    const errors = collectConsoleErrors(page);
+    await login(page, "R3");
+    await page.goto("/account-requests");
+
+    // ④（SNC閲覧）の申請: 承認待ちだが③には操作ボタンが一切出ない
+    const sncRow = page.locator("tbody tr", { hasText: sncName });
+    await expect(sncRow).toHaveCount(1);
+    await expect(sncRow.getByText("承認待ち", { exact: true })).toBeVisible();
+    await expect(sncRow.getByRole("button", { name: "最終承認" })).toHaveCount(0);
+    await expect(sncRow.getByRole("button", { name: "却下" })).toHaveCount(0);
+    await expect(sncRow.locator("td").last()).toContainText("—");
+
+    // ⑧（二次代理店管理者）の申請: ③は最終承認・却下できる
+    const agencyRow = page.locator("tbody tr", { hasText: agencyName });
+    await expect(agencyRow).toHaveCount(1);
+    await expect(agencyRow.getByRole("button", { name: "最終承認" })).toBeVisible();
+    await expect(agencyRow.getByRole("button", { name: "却下" })).toBeVisible();
+
+    expect(criticalErrors(errors)).toEqual([]);
+  });
+
+  test("R3: idを差し替えてSNC系ロールの申請を却下しようとしてもサーバ側で拒否される", async ({ page }) => {
+    await login(page, "R3");
+    await page.goto("/account-requests");
+    const agencyRow = page.locator("tbody tr", { hasText: agencyName });
+    await agencyRow.getByRole("button", { name: "却下" }).click();
+    await agencyRow.locator('input[name="reason"]').fill("QA2職務分離テスト（拒否されるべき）");
+    // 却下フォームのidを④の申請に差し替えて送信
+    await tamperId(agencyRow, "確定", sncReqDbId);
+    await agencyRow.getByRole("button", { name: "確定" }).click();
+
+    await expect(
+      agencyRow.getByText("SNC系ロール（①〜⑥）のアカウント発行はSNC課長以上（②）の承認が必要です")
+    ).toBeVisible({ timeout: 10_000 });
+
+    // DB: ④の申請は承認待ちのまま・却下理由も残らない
+    const req = await db().accountRequest.findUnique({ where: { id: sncReqDbId } });
+    expect(req!.status).toBe("pending_final");
+    expect(req!.rejectReason).toBeNull();
+    expect((req!.history as { event: string }[]).map((h) => h.event)).toEqual(["requested"]);
+    // ⑧の申請も却下されていない
+    const agencyReq = await db().accountRequest.findFirst({ where: { requestId: agencyRequestId } });
+    expect(agencyReq!.status).toBe("pending_final");
+
+    // 拒否は監査ログに記録される（§3.3）
+    const denied = await db().auditLog.findFirst({
+      where: {
+        actor: ACCOUNTS.R3.loginId,
+        action: "account_request_reject",
+        result: "denied",
+        target: { contains: sncRequestId },
+      },
+    });
+    expect(denied).not.toBeNull();
+  });
+
+  test("R3: idを差し替えてSNC系ロールの申請を最終承認しようとしてもサーバ側で拒否される（アカウント未発行）", async ({ page }) => {
+    await login(page, "R3");
+    await page.goto("/account-requests");
+    const agencyRow = page.locator("tbody tr", { hasText: agencyName });
+    await tamperId(agencyRow, "最終承認", sncReqDbId);
+    await agencyRow.getByRole("button", { name: "最終承認" }).click();
+
+    await expect(
+      agencyRow.getByText("SNC系ロール（①〜⑥）のアカウント発行はSNC課長以上（②）の承認が必要です")
+    ).toBeVisible({ timeout: 10_000 });
+
+    // DB: 申請は承認待ちのまま・アカウントは発行されない
+    const req = await db().accountRequest.findUnique({ where: { id: sncReqDbId } });
+    expect(req!.status).toBe("pending_final");
+    expect(req!.issuedLoginId).toBeNull();
+    expect((req!.history as { event: string }[]).map((h) => h.event)).toEqual(["requested"]);
+    expect(await db().account.count({ where: { email: sncEmail } })).toBe(0);
+
+    const denied = await db().auditLog.findFirst({
+      where: {
+        actor: ACCOUNTS.R3.loginId,
+        action: "account_request_final_approve",
+        result: "denied",
+        target: { contains: sncRequestId },
+      },
+    });
+    expect(denied).not.toBeNull();
+  });
+
+  test("R3は⑧（代理店系）の申請を最終承認できる（③の権限は⑦⑧⑩に限定される）", async ({ page }) => {
+    await login(page, "R3");
+    await page.goto("/account-requests");
+    const agencyRow = page.locator("tbody tr", { hasText: agencyName });
+    await agencyRow.getByRole("button", { name: "最終承認" }).click();
+    await expect(agencyRow.getByText("最終承認しました")).toBeVisible({ timeout: 10_000 });
+
+    const req = await db().accountRequest.findFirst({ where: { requestId: agencyRequestId } });
+    expect(req!.status).toBe("approved");
+    expect(req!.issuedLoginId).toMatch(/^airis_2210001_\d{3}$/);
+    const account = await db().account.findUnique({ where: { loginId: req!.issuedLoginId! } });
+    expect(account).not.toBeNull();
+    expect(account!.role).toBe("R8");
+
+    const ok = await db().auditLog.findFirst({
+      where: {
+        actor: ACCOUNTS.R3.loginId,
+        action: "account_request_final_approve",
+        result: "success",
+        target: { contains: agencyRequestId },
+      },
+    });
+    expect(ok).not.toBeNull();
+  });
+
+  test("R2（SNC課長以上）はSNC系ロール（④）の申請を最終承認できる", async ({ page }) => {
+    await login(page, "R2");
+    await page.goto("/account-requests");
+    const sncRow = page.locator("tbody tr", { hasText: sncName });
+    await expect(sncRow.getByRole("button", { name: "最終承認" })).toBeVisible();
+    await sncRow.getByRole("button", { name: "最終承認" }).click();
+    await expect(sncRow.getByText("最終承認しました")).toBeVisible({ timeout: 10_000 });
+
+    const req = await db().accountRequest.findUnique({ where: { id: sncReqDbId } });
+    expect(req!.status).toBe("approved");
+    expect(req!.issuedLoginId).toMatch(/^airis_snc_vew_\d{3}$/);
+    const account = await db().account.findUnique({ where: { loginId: req!.issuedLoginId! } });
+    expect(account!.role).toBe("R4");
   });
 });

@@ -3,11 +3,14 @@
 // 訪販員申請・管理 server actions（SPEC §6.3 / §7.4）
 // - 全アクションで requirePage による権限チェック + agencyScope によるスコープ検証を行う
 // - R4（SNC閲覧=ダミー表示）は書き込み拒否
+import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS, type Role } from "@/lib/roles";
+import { parseCsv } from "@/lib/csv";
 import { audit, notify, notifyRole, pushHistory, storeFile, today } from "@/lib/util";
+import { FIELD_AGENT_CSV_HEADERS, pledgePdfName } from "./csv-columns";
 
 const APPLICATION_TYPES = ["稼働", "抹消"];
 const PRODUCTS = ["マルチ", "auひかり", "コラボ"];
@@ -21,6 +24,8 @@ const MANAGE_ROLES: Role[] = ["R1", "R2", "R3", "R7"];
 
 export type FormState = { error?: string; success?: string };
 export type CheckState = { error?: string; warnings?: string[]; checked?: boolean };
+// CSV一括申請の結果（errors=行単位エラーレポート。1件でもあれば全件登録しない §3.6）
+export type CsvBulkState = { error?: string; errors?: string[]; success?: string };
 
 function isSncAdmin(user: CurrentUser) {
   return SNC_ADMIN_ROLES.includes(user.role);
@@ -202,6 +207,375 @@ export async function createFieldAgentApplication(
 
   revalidatePath("/field-agents");
   return { success: `訪販員申請（${applicationType}）を受け付けました。（申請中）` };
+}
+
+// ============================================================
+// CSV一括申請（§7.4 / §3.6）
+// - 行単位バリデーション → エラーが1件でもあれば「n行目: 理由」を返して**全件登録しない**
+// - 誓約書PDFは `{誓約書No}-{連番3桁}.pdf` のファイル名でCSV行順に突合する
+//   （例: 誓約書No 70 で30行 → 70-001.pdf 〜 70-030.pdf）
+//   ※ SPEC §7.4 は「zipで一括アップロード」と記述しているが、zipの展開はNode標準の
+//     zlibだけでは実現できず依存追加が必要なため、multiple指定のfile inputで複数PDFを
+//     同時に受け取り、同じファイル名規則で突合する方式とした（「登録後に個別添付」には
+//     しない）。TODO: zip展開ライブラリ導入時にzipアップロードも受け付ける。
+// ============================================================
+const CSV_MAX_ROWS = 1000;
+
+// CSV列インデックス（csv-columns.ts の FIELD_AGENT_CSV_HEADERS と同順）
+const C_SALES_ID = 0;
+const C_TYPE = 1;
+const C_PRODUCTS = 2;
+const C_ATTRIBUTE = 3;
+const C_KANA_LAST = 4;
+const C_KANA_FIRST = 5;
+const C_IDENTITY = 6;
+const C_PLEDGE_NO = 7;
+const C_START_DATE = 8;
+const C_CODE1 = 9;
+const C_CODE2 = 10;
+const C_CONTRACTOR_NAME = 11;
+const C_CONTRACTOR_ADDRESS = 12;
+const C_CONTRACTOR_PHONE = 13;
+
+function csvSafeFileName(name: string): string {
+  return name
+    .replace(/^.*[\\/]/, "") // ブラウザによるパス付きファイル名対策
+    .replace(/[\\/\x00-\x1f]/g, "_")
+    .slice(0, 255);
+}
+
+export async function csvBulkApplyAction(
+  _prev: CsvBulkState,
+  formData: FormData
+): Promise<CsvBulkState> {
+  const user = await requirePage("field-agents");
+  if (user.dummy) return { error: "閲覧専用アカウントのため申請できません。" };
+  if (!APPLY_ROLES.includes(user.role)) return { error: "訪販員申請の権限がありません。" };
+
+  // ---- CSV本体 ----
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: "CSVファイルを選択してください。" };
+  }
+  if (file.size > 4 * 1024 * 1024) return { error: "CSVファイルは4MB以下にしてください。" };
+
+  const rows = parseCsv(await file.text());
+  const hasHeader = (rows[0]?.[C_SALES_ID] ?? "").trim() === FIELD_AGENT_CSV_HEADERS[C_SALES_ID];
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  if (dataRows.length === 0) return { error: "CSVにデータ行がありません。" };
+  if (dataRows.length > CSV_MAX_ROWS) {
+    return { error: `1回の一括申請は${CSV_MAX_ROWS}行以内にしてください。` };
+  }
+
+  // ---- 誓約書PDF（複数同時アップロード）をファイル名で保持 ----
+  const maxMb = Number(process.env.FILE_MAX_MB) > 0 ? Number(process.env.FILE_MAX_MB) : 20;
+  const pdfs = new Map<string, File>(); // key=小文字ファイル名
+  const fileErrors: string[] = [];
+  for (const entry of formData.getAll("pledgeFiles")) {
+    if (!(entry instanceof File) || entry.size === 0) continue;
+    const name = csvSafeFileName(entry.name);
+    if (!name.toLowerCase().endsWith(".pdf")) {
+      fileErrors.push(`誓約書「${name}」はPDFファイルではありません。`);
+      continue;
+    }
+    if (entry.size > maxMb * 1024 * 1024) {
+      fileErrors.push(`誓約書「${name}」は${maxMb}MBを超えています。`);
+      continue;
+    }
+    pdfs.set(name.toLowerCase(), entry);
+  }
+  if (fileErrors.length > 0) return { errors: fileErrors };
+
+  // ---- 販売員IDをスコープ内で一括解決（クライアント由来の値を信用しない §3.1） ----
+  const scope = await agencyScope(user);
+  const salesIds = Array.from(
+    new Set(dataRows.map((r) => (r[C_SALES_ID] ?? "").trim()).filter(Boolean))
+  );
+  const staffRows = salesIds.length
+    ? await prisma.salesStaff.findMany({
+        where: {
+          salesId: { in: salesIds },
+          ...(scope === null ? { agency: { isDummy: false } } : { agencyId: { in: scope } }),
+        },
+        include: { agency: { include: { parent: true } } },
+      })
+    : [];
+  const staffBySalesId = new Map(staffRows.map((s) => [s.salesId ?? "", s]));
+
+  // 既存申請の状況（重複稼働申請・抹消対象の有無）を一括取得
+  const staffIds = staffRows.map((s) => s.id);
+  const [activeWorkApps, aliveApps] = staffIds.length
+    ? await Promise.all([
+        prisma.fieldAgentApplication.findMany({
+          where: {
+            salesStaffId: { in: staffIds },
+            applicationType: "稼働",
+            status: { in: ["applying", "provisional", "registered"] },
+          },
+          select: { salesStaffId: true },
+        }),
+        prisma.fieldAgentApplication.findMany({
+          where: { salesStaffId: { in: staffIds }, status: { not: "deleted" } },
+          select: { salesStaffId: true },
+        }),
+      ])
+    : [[], []];
+  const hasActiveWork = new Set(activeWorkApps.map((a) => a.salesStaffId));
+  const hasAlive = new Set(aliveApps.map((a) => a.salesStaffId));
+
+  type PendingRow = {
+    line: number;
+    staff: (typeof staffRows)[number];
+    applicationType: string;
+    products: string;
+    attribute: string;
+    lastNameKana: string;
+    firstNameKana: string;
+    identityType: string;
+    pledgeNo: string;
+    startDate: string;
+    agencyCode1: string;
+    agencyCode2: string;
+    contractorName: string;
+    contractorAddress: string;
+    contractorPhone: string;
+    pdfKey: string | null;
+  };
+
+  const errors: string[] = [];
+  const creates: PendingRow[] = [];
+  const pledgeSeq = new Map<string, number>(); // 誓約書Noごとの連番（CSV行順）
+  const seenWorkStaff = new Set<string>();
+  const usedPdfKeys = new Set<string>();
+
+  dataRows.forEach((r, i) => {
+    // TODO: parseCsv は空行を除外するため、空行を含むファイルでは行番号が原本とずれる可能性がある
+    const line = i + (hasHeader ? 2 : 1);
+    const g = (c: number) => (r[c] ?? "").trim();
+    const salesId = g(C_SALES_ID);
+    const applicationType = g(C_TYPE);
+    const products = g(C_PRODUCTS);
+    const attribute = g(C_ATTRIBUTE);
+    const lastNameKana = g(C_KANA_LAST);
+    const firstNameKana = g(C_KANA_FIRST);
+    const identityType = g(C_IDENTITY);
+    const pledgeNo = g(C_PLEDGE_NO);
+    const startDate = g(C_START_DATE);
+    const agencyCode1 = g(C_CODE1);
+    const agencyCode2 = g(C_CODE2);
+    const contractorName = g(C_CONTRACTOR_NAME);
+    const contractorAddress = g(C_CONTRACTOR_ADDRESS);
+    const contractorPhone = g(C_CONTRACTOR_PHONE);
+
+    const e: string[] = [];
+
+    // 販売員ID: 存在 + スコープ内 + 仮登録/本登録（§6.3-1）
+    const staff = salesId ? staffBySalesId.get(salesId) : undefined;
+    if (!salesId) e.push("販売員IDが未入力です");
+    else if (!staff) e.push(`販売員ID「${salesId}」が存在しないか、操作可能な代理店の範囲外です`);
+    else if (!["provisional", "registered"].includes(staff.status)) {
+      e.push(
+        `販売員ID「${salesId}」は仮登録または本登録ではありません（現在: ${STAFF_STATUS_LABELS[staff.status] ?? staff.status}）`
+      );
+    }
+
+    if (!APPLICATION_TYPES.includes(applicationType)) {
+      e.push(`申請区分は「${APPLICATION_TYPES.join("」「")}」のいずれかで入力してください`);
+    }
+    if (!PRODUCTS.includes(products)) {
+      e.push(`取扱商材は「${PRODUCTS.join("」「")}」のいずれかで入力してください`);
+    }
+    if (!ATTRIBUTES.includes(attribute)) {
+      e.push(`属性は「${ATTRIBUTES.join("」「")}」のいずれかで入力してください`);
+    }
+    if (!lastNameKana || !firstNameKana) e.push("フリガナ（姓・名）が未入力です");
+    if (!IDENTITY_TYPES.includes(identityType)) {
+      e.push(`本人性種別は「${IDENTITY_TYPES.join("」「")}」のいずれかで入力してください`);
+    }
+    if (!pledgeNo) e.push("誓約書Noが未入力です");
+    if (!agencyCode1) e.push("使用代理店コード1が未入力です");
+    // 取扱商材=マルチ → 使用代理店コードは2枠とも必須（§7.4）
+    if (products === "マルチ" && !agencyCode2) {
+      e.push("取扱商材が「マルチ」の場合、使用代理店コードは2枠とも必須です");
+    }
+    if (startDate && !DATE_RE.test(startDate)) {
+      e.push("稼働開始日は YYYY-MM-DD 形式で入力してください");
+    }
+    // 属性=業務委託社員 のときのみ業務委託会社名・住所・連絡先が必須（§7.4）
+    const isContractor = attribute === "業務委託社員";
+    if (isContractor && (!contractorName || !contractorAddress || !contractorPhone)) {
+      e.push("属性が「業務委託社員」の場合、業務委託会社名・住所・連絡先は必須です");
+    }
+
+    // 重複申請・抹消対象の検証（単票申請と同一ルール）
+    if (staff && applicationType === "稼働") {
+      if (hasActiveWork.has(staff.id)) {
+        e.push("この販売員には既に有効な訪販員申請（稼働）が存在します");
+      } else if (seenWorkStaff.has(staff.id)) {
+        e.push("同一販売員IDの稼働申請がCSV内で重複しています");
+      } else {
+        seenWorkStaff.add(staff.id);
+      }
+    }
+    if (staff && applicationType === "抹消" && !hasAlive.has(staff.id)) {
+      e.push("抹消申請の対象となる訪販員登録がありません");
+    }
+
+    // 誓約書PDFの突合（連番は誓約書Noごとの出現順=CSV行順。全行同一Noなら行番号と一致）
+    let pdfKey: string | null = null;
+    let seq = 0;
+    if (pledgeNo) {
+      seq = (pledgeSeq.get(pledgeNo) ?? 0) + 1;
+      pledgeSeq.set(pledgeNo, seq);
+    }
+    if (pdfs.size > 0 && pledgeNo) {
+      const expected = pledgePdfName(pledgeNo, seq);
+      // CSV全体の行順で採番されたファイル名も許容する（誓約書Noが混在するCSV向け）
+      const candidates = [expected, pledgePdfName(pledgeNo, i + 1)];
+      const hit = candidates.map((c) => c.toLowerCase()).find((k) => pdfs.has(k));
+      if (!hit) {
+        e.push(`誓約書PDF「${expected}」が見つかりません（ファイル名は 誓約書No-連番3桁.pdf）`);
+      } else {
+        pdfKey = hit;
+        usedPdfKeys.add(hit);
+      }
+    }
+
+    if (e.length > 0) {
+      errors.push(`${line}行目: ${e.join("、")}`);
+      return;
+    }
+    creates.push({
+      line,
+      staff: staff!,
+      applicationType,
+      products,
+      attribute,
+      lastNameKana,
+      firstNameKana,
+      identityType,
+      pledgeNo,
+      startDate,
+      agencyCode1,
+      agencyCode2,
+      contractorName,
+      contractorAddress,
+      contractorPhone,
+      pdfKey,
+    });
+  });
+
+  // CSVのどの行とも突合できなかった誓約書PDFもエラー行レポートの対象（§7.4）
+  for (const [key, f] of pdfs) {
+    if (!usedPdfKeys.has(key)) {
+      errors.push(
+        `誓約書PDF「${csvSafeFileName(f.name)}」はCSVのどの行とも突合できません（ファイル名は 誓約書No-連番3桁.pdf）`
+      );
+    }
+  }
+
+  // エラーが1件でもあれば全件登録しない（§3.6 全件ロールバック）
+  if (errors.length > 0) {
+    await audit(
+      user.loginId,
+      "訪販員申請CSV一括申請",
+      `rows=${dataRows.length} errors=${errors.length}（全件未登録）`,
+      "denied"
+    );
+    return { errors };
+  }
+
+  // ---- 登録（誓約書PDF保存 → 申請レコードを createMany で一括作成） ----
+  const fileIdByLine = new Map<number, string>();
+  const storedFiles: {
+    id: string;
+    name: string;
+    mime: string;
+    size: number;
+    data: Uint8Array<ArrayBuffer>;
+    uploadedBy: string;
+  }[] = [];
+  for (const c of creates) {
+    if (!c.pdfKey) continue;
+    const pdf = pdfs.get(c.pdfKey)!;
+    const id = crypto.randomUUID();
+    storedFiles.push({
+      id,
+      name: csvSafeFileName(pdf.name),
+      mime: "application/pdf", // 保存MIMEは拡張子から決定（クライアント申告値を信用しない §3.8）
+      size: pdf.size,
+      data: new Uint8Array(await pdf.arrayBuffer()),
+      uploadedBy: user.loginId,
+    });
+    fileIdByLine.set(c.line, id);
+  }
+  if (storedFiles.length > 0) await prisma.storedFile.createMany({ data: storedFiles });
+
+  await prisma.fieldAgentApplication.createMany({
+    data: creates.map((c) => ({
+      salesStaffId: c.staff.id,
+      applicationType: c.applicationType,
+      products: c.products,
+      attribute: c.attribute,
+      lastNameKana: c.lastNameKana,
+      firstNameKana: c.firstNameKana,
+      identityType: c.identityType,
+      pledgeNo: c.pledgeNo,
+      pledgeFileId: fileIdByLine.get(c.line) ?? null,
+      startDate: c.startDate || null,
+      agencyCode1: c.agencyCode1,
+      agencyCode2: c.agencyCode2 || null,
+      contractorName: c.attribute === "業務委託社員" ? c.contractorName : null,
+      contractorAddress: c.attribute === "業務委託社員" ? c.contractorAddress : null,
+      contractorPhone: c.attribute === "業務委託社員" ? c.contractorPhone : null,
+      status: "applying",
+      primaryAgencyName:
+        c.staff.agency.tier === 1 ? c.staff.agency.name : c.staff.agency.parent?.name ?? null,
+      agencyName: c.staff.agency.name,
+      history: pushHistory([], "requested", user.loginId) as never,
+    })),
+  });
+
+  await audit(
+    user.loginId,
+    "訪販員申請CSV一括申請",
+    `${creates.length}件（誓約書PDF ${storedFiles.length}件）`
+  );
+  await notifyRole(
+    ["R2", "R3"],
+    "訪販員申請がCSVで一括提出されました",
+    `${user.name} さんが${creates.length}件の訪販員申請を登録しました`,
+    "/field-agents"
+  );
+  // 2次店からの一括申請は親1次店の管理者にも1次承認待ちを通知
+  if (user.role === "R8") {
+    const parentIds = Array.from(
+      new Set(creates.map((c) => c.staff.agency.parentId).filter((v): v is string => !!v))
+    );
+    if (parentIds.length > 0) {
+      const admins = await prisma.account.findMany({
+        where: { role: "R7", agencyId: { in: parentIds }, status: "active" },
+        select: { id: true },
+      });
+      await Promise.all(
+        admins.map((ad) =>
+          notify(
+            ad.id,
+            "訪販員申請（1次承認待ち）",
+            `CSV一括申請で${creates.length}件が提出されました`,
+            "/field-agents"
+          )
+        )
+      );
+    }
+  }
+
+  revalidatePath("/field-agents");
+  return {
+    success: `${creates.length}件の訪販員申請を登録しました。（申請中${
+      storedFiles.length > 0 ? ` / 誓約書PDF ${storedFiles.length}件を突合` : ""
+    }）`,
+  };
 }
 
 // ============================================================

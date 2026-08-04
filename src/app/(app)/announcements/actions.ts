@@ -3,13 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage } from "@/lib/auth";
-import { SNC_ADMIN_ROLES } from "@/lib/roles";
+import { announcementFeature, can } from "@/lib/permissions";
 import { audit, notifyRole, storeFile } from "@/lib/util";
 
 export type AnnouncementFormState = {
   error?: string;
   success?: string;
 };
+
+// 権限判定は §5.1 の宣言的マップに集約する（§3.2）。
+// お知らせ（全体向け / 1次店向け）とも 登・送・変・停・削 は①②③のみ、⑦⑧⑨は閲覧のみ。
 
 // 対象ロールへアプリ内通知（全体向け: ⑦⑧⑨ / 1次店向け: ⑦）
 async function notifyAnnouncement(ann: {
@@ -35,10 +38,6 @@ export async function createAnnouncementAction(
   formData: FormData
 ): Promise<AnnouncementFormState> {
   const user = await requirePage("announcements");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) {
-    return { error: "お知らせの登録・送信権限がありません" };
-  }
-
   const audience = String(formData.get("audience") ?? "");
   const title = String(formData.get("title") ?? "").trim();
   const body = String(formData.get("body") ?? "").trim();
@@ -46,6 +45,14 @@ export async function createAnnouncementAction(
   const isDraft = String(formData.get("intent") ?? "") === "draft";
 
   if (audience !== "all" && audience !== "primary") return { error: "宛先を選択してください" };
+  const feature = announcementFeature(audience);
+  if (
+    user.dummy ||
+    !can(user.role, feature, "create") ||
+    (!isDraft && !can(user.role, feature, "send"))
+  ) {
+    return { error: "お知らせの登録・送信権限がありません" };
+  }
   if (!title) return { error: "タイトルを入力してください" };
   if (!body) return { error: "本文を入力してください" };
 
@@ -87,14 +94,47 @@ export async function createAnnouncementAction(
   return { success: "お知らせを送信しました" };
 }
 
+// 編集（変更。§5.1「変」= ①②③）
+// 対象は送信済み（sent）・下書き（draft）のお知らせのタイトル・本文・重要フラグ。
+// 宛先（audience）は配信対象そのものが変わるため変更不可（複製作成で対応 §7.7）。添付の差し替えも対象外。
+export async function updateAnnouncementAction(
+  _prev: AnnouncementFormState,
+  formData: FormData
+): Promise<AnnouncementFormState> {
+  const user = await requirePage("announcements");
+  const id = String(formData.get("id") ?? "");
+  if (!id) return { error: "対象のお知らせが指定されていません" };
+  const ann = await prisma.announcement.findUnique({ where: { id } });
+  // ④ダミー表示用データ（§3.5）は実データと分離するため編集させない
+  if (!ann || ann.isDummy) return { error: "対象のお知らせが見つかりません" };
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "update")) {
+    return { error: "お知らせの編集権限がありません" };
+  }
+  if (ann.status !== "sent" && ann.status !== "draft") {
+    return { error: "送信済みまたは下書きのお知らせのみ編集できます" };
+  }
+
+  const title = String(formData.get("title") ?? "").trim();
+  const body = String(formData.get("body") ?? "").trim();
+  const important = formData.get("important") === "on";
+  if (!title) return { error: "タイトルを入力してください" };
+  if (!body) return { error: "本文を入力してください" };
+
+  await prisma.announcement.update({ where: { id }, data: { title, body, important } });
+  await audit(user.loginId, "announcement.update", id);
+  revalidatePath("/announcements");
+  revalidatePath(`/announcements/${id}`);
+  return { success: "お知らせを更新しました" };
+}
+
 // 下書きの送信（sentAt を設定して対象ロールへ通知 §7.7）
 export async function sendAnnouncementAction(formData: FormData): Promise<void> {
   const user = await requirePage("announcements");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const ann = await prisma.announcement.findUnique({ where: { id } });
   if (!ann || ann.isDummy || ann.status !== "draft") return;
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "send")) return;
   const sent = await prisma.announcement.update({
     where: { id },
     data: { status: "sent", sentAt: new Date() },
@@ -107,11 +147,11 @@ export async function sendAnnouncementAction(formData: FormData): Promise<void> 
 // 停止（閲覧側から非表示にする）
 export async function stopAnnouncementAction(formData: FormData): Promise<void> {
   const user = await requirePage("announcements");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const ann = await prisma.announcement.findUnique({ where: { id } });
-  if (!ann || ann.status === "deleted") return;
+  if (!ann || ann.isDummy || ann.status === "deleted") return;
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "suspend")) return;
   await prisma.announcement.update({ where: { id }, data: { status: "stopped" } });
   await audit(user.loginId, "announcement.stop", id);
   revalidatePath("/announcements");
@@ -120,11 +160,11 @@ export async function stopAnnouncementAction(formData: FormData): Promise<void> 
 // 削除（論理削除）
 export async function deleteAnnouncementAction(formData: FormData): Promise<void> {
   const user = await requirePage("announcements");
-  if (user.dummy || !SNC_ADMIN_ROLES.includes(user.role)) return;
   const id = String(formData.get("id") ?? "");
   if (!id) return;
   const ann = await prisma.announcement.findUnique({ where: { id } });
-  if (!ann) return;
+  if (!ann || ann.isDummy) return;
+  if (user.dummy || !can(user.role, announcementFeature(ann.audience), "delete")) return;
   await prisma.announcement.update({ where: { id }, data: { status: "deleted" } });
   await audit(user.loginId, "announcement.delete", id);
   revalidatePath("/announcements");

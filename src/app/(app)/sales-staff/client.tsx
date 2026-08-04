@@ -2,7 +2,7 @@
 
 // 販売員ID管理 クライアントコンポーネント（申請フォーム / CSV一括申請 / 行内操作）
 
-import { useActionState } from "react";
+import { useActionState, useState } from "react";
 import { btnDanger, btnOutline, btnPrimary, btnSuccess, inputCls, labelCls } from "@/components/ui";
 import {
   applyStaffAction,
@@ -13,9 +13,19 @@ import {
   restoreStaffAction,
   resumeStaffAction,
   suspendStaffAction,
+  updateStaffAction,
 } from "./actions";
 
 type AgencyOption = { id: string; code: string; name: string; tier: number };
+
+// 販売員IDの登録情報（編集フォームの初期値）
+export type StaffEditable = {
+  lastName: string;
+  firstName: string;
+  birthDate: string;
+  phone: string;
+  email: string;
+};
 
 // ============ ＋ 販売員ID申請フォーム ============
 export function ApplyForm({
@@ -112,11 +122,59 @@ export function CsvBulkForm() {
   );
 }
 
+// ============ 編集フォーム（§5.1「変」/ §7.3 操作列「編集」） ============
+// 氏名・生年月日・電話番号・メールアドレスを編集する（販売員IDの登録情報 §6.2-1）。
+function StaffEditForm({ staffId, initial }: { staffId: string; initial: StaffEditable }) {
+  const [state, formAction, pending] = useActionState(updateStaffAction, undefined);
+  return (
+    <form action={formAction} className="w-full rounded-lg border border-slate-200 bg-slate-50 p-3">
+      <input type="hidden" name="staffId" value={staffId} />
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className={labelCls}>姓 *</label>
+          <input name="lastName" required defaultValue={initial.lastName} className={inputCls} />
+        </div>
+        <div>
+          <label className={labelCls}>名 *</label>
+          <input name="firstName" required defaultValue={initial.firstName} className={inputCls} />
+        </div>
+        <div>
+          <label className={labelCls}>生年月日 *</label>
+          <input
+            type="date"
+            name="birthDate"
+            required
+            defaultValue={initial.birthDate}
+            className={inputCls}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>電話番号 *</label>
+          <input name="phone" required defaultValue={initial.phone} className={inputCls} />
+        </div>
+        <div className="col-span-2">
+          <label className={labelCls}>メールアドレス（任意）</label>
+          <input type="email" name="email" defaultValue={initial.email} className={inputCls} />
+        </div>
+      </div>
+      {state?.error && <p className="mt-2 text-[11px] text-red-600">{state.error}</p>}
+      {state?.success && <p className="mt-2 text-[11px] text-emerald-600">{state.success}</p>}
+      <div className="mt-2">
+        <button disabled={pending} className={btnPrimary}>
+          {pending ? "保存中..." : "保存"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 // ============ 行内操作（状態・権限依存） ============
 // 最終承認の一時パスワードは useActionState の戻り値でインライン一度だけ表示する（URLに載せない）。
 export function RowActions({
   staffId,
   status,
+  initial,
+  canUpdate,
   canFirstApprove,
   canFinalApprove,
   canSuspend,
@@ -125,6 +183,8 @@ export function RowActions({
 }: {
   staffId: string;
   status: string;
+  initial: StaffEditable;
+  canUpdate: boolean;
   canFirstApprove: boolean;
   canFinalApprove: boolean;
   canSuspend: boolean;
@@ -132,6 +192,7 @@ export function RowActions({
   canRestore: boolean;
 }) {
   const [state, finalAction, pending] = useActionState(finalApproveAction, undefined);
+  const [editing, setEditing] = useState(false);
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {state?.salesId && state?.tempPassword && (
@@ -147,6 +208,11 @@ export function RowActions({
             ※この画面でのみ表示されます（再表示不可）。本人へ安全な方法で伝達してください。
           </div>
         </div>
+      )}
+      {status !== "deleted" && canUpdate && (
+        <button type="button" className={btnOutline} onClick={() => setEditing((v) => !v)}>
+          {editing ? "編集を閉じる" : "編集"}
+        </button>
       )}
       {status === "applying" && canFirstApprove && (
         <form action={firstApproveAction}>
@@ -194,6 +260,9 @@ export function RowActions({
         </form>
       )}
       {state?.error && <span className="w-full text-[11px] text-red-600">{state.error}</span>}
+      {editing && status !== "deleted" && canUpdate && (
+        <StaffEditForm staffId={staffId} initial={initial} />
+      )}
     </div>
   );
 }

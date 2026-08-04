@@ -42,6 +42,20 @@ async function main() {
     where: { code: "250008" }, update: {},
     create: { code: "250008", name: "近畿セールスサポート株式会社", tier: 2, parentId: p2.id, representative: "伊藤 六郎", joinedAt: new Date("2024-11-01") },
   });
+  // §9-2: 1次店×3、各配下に2次店2〜3店。150008配下・190001配下を補充する（既存行は update: {} で不変更）
+  await prisma.agency.upsert({
+    where: { code: "250009" }, update: {},
+    create: { code: "250009", name: "株式会社なにわ通信サービス", tier: 2, parentId: p2.id, representative: "渡辺 七郎", joinedAt: new Date("2025-03-01") },
+  });
+  // 稼働終了1次店（190001）配下は、親に合わせて稼働終了で登録する（§4.1 / §14-2）
+  await prisma.agency.upsert({
+    where: { code: "290001" }, update: {},
+    create: { code: "290001", name: "札幌フィールドサービス株式会社", tier: 2, parentId: p3.id, representative: "中村 八郎", status: "closed", joinedAt: new Date("2023-11-01") },
+  });
+  await prisma.agency.upsert({
+    where: { code: "290002" }, update: {},
+    create: { code: "290002", name: "株式会社道東セールス", tier: 2, parentId: p3.id, representative: "小林 九郎", status: "closed", joinedAt: new Date("2024-02-01") },
+  });
   // ④ダミー表示用の架空データ
   const d1 = await prisma.agency.upsert({
     where: { code: "990001" }, update: {},
@@ -239,6 +253,31 @@ async function main() {
       },
     });
   }
+  // ---- ドキュメント（実データ。§9-4 / §7.12 公開範囲 all / primary / snc を網羅）----
+  // Document には一意キーが無いためタイトルで存在確認して冪等にする（既存行は変更しない）
+  const realDocs: [string, string, string, string, string][] = [
+    // [title, category, visibility, fileName, content]
+    ["販売代理店向け 業務マニュアル", "マニュアル", "all", "airis-sales-manual.txt", "Airis 販売代理店向け業務マニュアル（サンプル本文）。日報・提出物の提出手順を記載。"],
+    ["1次代理店向け 2次店管理ガイド", "マニュアル", "primary", "primary-agency-guide.txt", "1次代理店向け 2次店管理ガイド（サンプル本文）。2次店の申請・1次承認の運用手順を記載。"],
+    ["SNC内部 運用手順書（社内限り）", "運用", "snc", "snc-operation-manual.txt", "SNC内部向け運用手順書（サンプル本文）。エリア営業SVの承認オペレーションを記載。"],
+  ];
+  for (const [title, category, visibility, fileName, content] of realDocs) {
+    const exists = await prisma.document.findFirst({ where: { title, isDummy: false } });
+    if (exists) continue;
+    const stored = await prisma.storedFile.create({
+      data: {
+        name: fileName, mime: "text/plain",
+        size: Buffer.byteLength(content), data: Buffer.from(content), uploadedBy: "airis_snc_ops_0001",
+      },
+    });
+    await prisma.document.create({
+      data: {
+        title, category, visibility,
+        fileId: stored.id, fileName: stored.name, createdBy: "airis_snc_ops_0001",
+      },
+    });
+  }
+
   const dummyDocCount = await prisma.document.count({ where: { isDummy: true } });
   if (dummyDocCount === 0) {
     const dummyDocs: [string, string, string][] = [

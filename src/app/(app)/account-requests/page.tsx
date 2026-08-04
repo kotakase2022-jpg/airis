@@ -24,6 +24,7 @@ import {
 } from "@/components/ui";
 import { RequestForm, type Option } from "./request-form";
 import { RowActions } from "./row-actions";
+import { canFinalApproveRequest } from "./approval-rules";
 
 const PAGE_SIZE = 50;
 
@@ -142,11 +143,15 @@ export default async function AccountRequestsPage({
                   const inScope = !!r.agencyId && (scope ?? []).includes(r.agencyId);
                   const canFirstApprove =
                     !user.dummy && user.role === "R7" && r.status === "pending_first" && inScope;
+                  // 職務分離（§6.1-3 / 要件1-1）: SNC系ロール（①〜⑥）の申請は①②のみ
+                  // 最終承認・却下できる（③には該当行のボタンを出さない）
+                  const sncCanApproveTarget = isSncAdmin && canFinalApproveRequest(user.role, r.role);
                   const canFinalApprove =
-                    !user.dummy && isSncAdmin && r.status === "pending_final";
+                    !user.dummy && sncCanApproveTarget && r.status === "pending_final";
                   const canReject =
                     !user.dummy &&
-                    ((isSncAdmin && (r.status === "pending_first" || r.status === "pending_final")) ||
+                    ((sncCanApproveTarget &&
+                      (r.status === "pending_first" || r.status === "pending_final")) ||
                       (user.role === "R7" && r.status === "pending_first" && inScope));
                   return (
                     <tr key={r.id}>

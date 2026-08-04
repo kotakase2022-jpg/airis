@@ -152,6 +152,17 @@ export async function updateAccountAction(
   // 代理店所属アカウントはR7/R8内でのみ変更可能（所属と役割の整合を保つ）
   const allowedRoles: Role[] = account.agencyId ? ["R7", "R8"] : ["R1", "R2", "R3", "R4", "R5", "R6"];
   if (!allowedRoles.includes(role as Role)) return { error: "指定できないロールです" };
+
+  // 所属代理店の階層とロールの整合（§3.1 / 申請時の createRequestAction と同一ルール）:
+  // ⑦一次代理店管理者は1次代理店、⑧二次代理店管理者は2次代理店に属していなければならない
+  if (account.agencyId) {
+    if (role === "R7" && account.agency?.tier !== 1) {
+      return { error: "一次代理店管理者には1次代理店を選択してください" };
+    }
+    if (role === "R8" && account.agency?.tier !== 2) {
+      return { error: "二次代理店管理者には2次代理店を選択してください" };
+    }
+  }
   if (account.id === user.id && role !== account.role) {
     return { error: "自分自身のロールは変更できません" };
   }

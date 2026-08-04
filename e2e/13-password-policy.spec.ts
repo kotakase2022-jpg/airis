@@ -9,16 +9,32 @@
  */
 import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { db } from "./helpers";
 
 const RUN = Date.now();
 const REUSE_ERROR = "過去24世代と同じパスワードは使用できません";
 
+// パスワードのペッパー（§10.3）。サーバ側と同じ値がテストプロセスに与えられていれば
+// ペッパー付きのハッシュ／照合を行う。未設定時は従来どおり素のbcrypt。
+// ※ src/lib/auth.ts と同じ前段ハッシュ（HMAC-SHA256・鍵=ペッパー → bcrypt）
+const PEPPER = process.env.PASSWORD_PEPPER_V1 ?? "";
+function prehash(pw: string): string {
+  return PEPPER ? crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex") : pw;
+}
+function hashPw(pw: string): string {
+  return bcrypt.hashSync(prehash(pw), 10);
+}
+// ペッパー有効・無効の両方（＝再ハッシュ前後の両方）を許容してパスワード一致を判定する
+function matchesPw(pw: string, hash: string): boolean {
+  return bcrypt.compareSync(prehash(pw), hash) || bcrypt.compareSync(pw, hash);
+}
+
 // QA13専用アカウント作成（シード行を破壊しない）
 async function createAccount(
   loginId: string,
   password: string,
-  opts: { role?: string; passwordUpdatedAt?: Date } = {}
+  opts: { role?: string; agencyId?: string; passwordUpdatedAt?: Date } = {}
 ): Promise<string> {
   await db().account.deleteMany({ where: { loginId } });
   const acc = await db().account.create({
@@ -27,8 +43,9 @@ async function createAccount(
       role: opts.role ?? "R5",
       name: `QA13試験用 ${loginId}`,
       status: "active",
-      passwordHash: bcrypt.hashSync(password, 10),
+      passwordHash: hashPw(password),
       mustChangePassword: false,
+      ...(opts.agencyId ? { agencyId: opts.agencyId } : {}),
       ...(opts.passwordUpdatedAt ? { passwordUpdatedAt: opts.passwordUpdatedAt } : {}),
     },
   });
@@ -38,6 +55,8 @@ async function createAccount(
 async function removeAccount(loginId: string) {
   // PasswordHistory / Session は onDelete: Cascade で削除される
   await db().account.deleteMany({ where: { loginId } });
+  // 監査ログは Cascade 対象外なので明示的に後始末する
+  await db().auditLog.deleteMany({ where: { actor: loginId } });
 }
 
 async function submitLogin(page: Page, loginId: string, password: string) {
@@ -93,7 +112,7 @@ test.describe.serial("パスワード履歴: 再利用禁止・履歴保存", ()
     });
     expect(acc!.passwordHistory).toHaveLength(1);
     // 保存されたのは旧パスワード（P0）のハッシュ
-    expect(bcrypt.compareSync(P0, acc!.passwordHistory[0].hash)).toBe(true);
+    expect(matchesPw(P0, acc!.passwordHistory[0].hash)).toBe(true);
     expect(acc!.mustChangePassword).toBe(false);
   });
 
@@ -112,7 +131,7 @@ test.describe.serial("パスワード履歴: 再利用禁止・履歴保存", ()
 
     // DB: パスワードは変わっていない
     const acc = await db().account.findUnique({ where: { loginId: ID } });
-    expect(bcrypt.compareSync(P1, acc!.passwordHash)).toBe(true);
+    expect(matchesPw(P1, acc!.passwordHash)).toBe(true);
 
     // 未使用のパスワードへは変更できる（正常系）
     await submitPasswordChange(page, P1, P2);
@@ -121,7 +140,7 @@ test.describe.serial("パスワード履歴: 再利用禁止・履歴保存", ()
       where: { loginId: ID },
       include: { passwordHistory: true },
     });
-    expect(bcrypt.compareSync(P2, after!.passwordHash)).toBe(true);
+    expect(matchesPw(P2, after!.passwordHash)).toBe(true);
     expect(after!.passwordHistory).toHaveLength(2);
   });
 });
@@ -145,7 +164,7 @@ test.describe.serial("パスワード履歴: 24世代ウィンドウと剪定", 
       const row = await db().passwordHistory.create({
         data: {
           accountId,
-          hash: bcrypt.hashSync(genPw(n), 10),
+          hash: hashPw(genPw(n)),
           createdAt: new Date(base + n * 60_000),
         },
       });
@@ -178,7 +197,7 @@ test.describe.serial("パスワード履歴: 24世代ウィンドウと剪定", 
       where: { loginId: ID },
       include: { passwordHistory: { orderBy: { createdAt: "asc" } } },
     });
-    expect(bcrypt.compareSync(genPw(1), acc!.passwordHash)).toBe(true);
+    expect(matchesPw(genPw(1), acc!.passwordHash)).toBe(true);
     expect(acc!.passwordHistory).toHaveLength(24);
     const remainingIds = acc!.passwordHistory.map((h) => h.id);
     expect(remainingIds).not.toContain(genIds[1]); // 最古から削除
@@ -187,7 +206,7 @@ test.describe.serial("パスワード履歴: 24世代ウィンドウと剪定", 
     expect(remainingIds).toContain(genIds[25]);
     // 直前まで使っていたパスワード（CURRENT）の旧ハッシュが履歴に追加されている
     const newest = acc!.passwordHistory[acc!.passwordHistory.length - 1];
-    expect(bcrypt.compareSync(CURRENT, newest.hash)).toBe(true);
+    expect(matchesPw(CURRENT, newest.hash)).toBe(true);
   });
 });
 
@@ -267,6 +286,91 @@ test.describe("パスワード有効期限", () => {
       await page.waitForURL(/\/password/, { timeout: 15_000 });
       const acc = await db().account.findUnique({ where: { loginId: ID } });
       expect(acc!.mustChangePassword).toBe(true);
+    } finally {
+      await removeAccount(ID);
+    }
+  });
+});
+
+// ================================================================
+// 4. 実効ロールでのポリシー判定（§4.2 / §14-2）
+//    稼働終了代理店（Account.role=R7 + agency.status=closed → 実効⑩）は
+//    管理者ポリシー（20桁/90日）ではなく一般ポリシー（14桁/180日）が適用される。
+// ================================================================
+test.describe("実効ロール（稼働終了代理店=⑩）のパスワードポリシー", () => {
+  const daysAgo = (d: number) => new Date(Date.now() - d * 24 * 3600 * 1000);
+
+  async function closedAgencyId(): Promise<string> {
+    const ag = await db().agency.findUnique({ where: { code: "190001" } }); // status=closed
+    expect(ag?.status, "190001は稼働終了代理店であること").toBe("closed");
+    return ag!.id;
+  }
+  async function activeAgencyId(): Promise<string> {
+    const ag = await db().agency.findUnique({ where: { code: "110001" } });
+    expect(ag?.status).toBe("active");
+    return ag!.id;
+  }
+
+  test("稼働終了代理店の⑦(実効⑩): 91日経過は期限内（180日）→ 通常ログイン", async ({ page }) => {
+    test.setTimeout(120_000);
+    const ID = `QA13_closed_r10_${RUN}`;
+    const PW = `QA13-Closed-Agency-${RUN}a`;
+    await createAccount(ID, PW, {
+      role: "R7",
+      agencyId: await closedAgencyId(),
+      passwordUpdatedAt: daysAgo(91),
+    });
+    try {
+      await submitLogin(page, ID, PW);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+      const acc = await db().account.findUnique({ where: { loginId: ID } });
+      expect(acc!.mustChangePassword, "実効⑩は180日ポリシーなので期限内").toBe(false);
+    } finally {
+      await removeAccount(ID);
+    }
+  });
+
+  test("稼働中の⑦: 91日経過は期限切れ（90日）→ /passwordへ誘導（対照）", async ({ page }) => {
+    test.setTimeout(120_000);
+    const ID = `QA13_active_r7_${RUN}`;
+    const PW = `QA13-Active-Agency-${RUN}b`;
+    await createAccount(ID, PW, {
+      role: "R7",
+      agencyId: await activeAgencyId(),
+      passwordUpdatedAt: daysAgo(91),
+    });
+    try {
+      await submitLogin(page, ID, PW);
+      await page.waitForURL(/\/password/, { timeout: 15_000 });
+      const acc = await db().account.findUnique({ where: { loginId: ID } });
+      expect(acc!.mustChangePassword).toBe(true);
+    } finally {
+      await removeAccount(ID);
+    }
+  });
+
+  test("稼働終了代理店の⑦(実効⑩): パスワード最小桁数は14桁（20桁ではない）", async ({ page }) => {
+    test.setTimeout(120_000);
+    const ID = `QA13_closed_len_${RUN}`;
+    const PW = `QA13-Closed-Len-${RUN}c`;
+    await createAccount(ID, PW, { role: "R7", agencyId: await closedAgencyId() });
+    try {
+      await submitLogin(page, ID, PW);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+
+      // 13桁 → 一般ポリシーのエラー文言（管理者ポリシーなら「20桁以上」になる）
+      const pw13 = "QA13Closed-a1"; // 13桁・大小英数
+      expect(pw13.length).toBe(13);
+      await submitPasswordChange(page, PW, pw13);
+      await expect(page.getByText("パスワードは14桁以上にしてください")).toBeVisible();
+
+      // 14桁 → 変更できる
+      const pw14 = "QA13Closed-a1x"; // 14桁・大小英数
+      expect(pw14.length).toBe(14);
+      await submitPasswordChange(page, PW, pw14);
+      await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+      const acc = await db().account.findUnique({ where: { loginId: ID } });
+      expect(matchesPw(pw14, acc!.passwordHash)).toBe(true);
     } finally {
       await removeAccount(ID);
     }

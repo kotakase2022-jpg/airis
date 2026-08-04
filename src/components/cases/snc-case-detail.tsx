@@ -3,12 +3,13 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope } from "@/lib/auth";
 import { CASE_STATUSES } from "@/lib/roles";
+import { can, caseFeature } from "@/lib/permissions";
 import { audit } from "@/lib/util";
-import { Badge, Card, EmptyState, PageHeader, SectionTitle, StatusBadge, btnDanger, btnOutline, inputCls } from "@/components/ui";
+import { Badge, Card, EmptyState, PageHeader, SectionTitle, StatusBadge, btnDanger, btnOutline, btnPrimary, inputCls, labelCls } from "@/components/ui";
 import { DeadlineBadge, fmtDateTime, seriesBasePath, seriesLabel } from "./badges";
 import { CaseThread, parseMessageFiles } from "./thread";
 import { ReplyForm } from "./reply-form";
-import { changeStatusAction, urgentAlertAction } from "./actions";
+import { changeStatusAction, updateCaseAction, urgentAlertAction } from "./actions";
 
 // SNC側 案件詳細（スレッド + 返信（添付可） + ステータス変更 + 緊急アラート §7.8）
 export async function SncCaseDetailPage({
@@ -44,6 +45,9 @@ export async function SncCaseDetailPage({
   const read = c.reads.find((r) => r.agencyId === c.primaryAgencyId);
   const agencyRead = !!read && read.readAt >= c.updatedAt;
 
+  // 変更（§5.1「変」）: ①②③ + 担当窓口（HL=⑤ / 消セン=⑥）。server action 側でも再検証する。
+  const canUpdate = !user.isDummy && can(user.role, caseFeature(series), "update");
+
   return (
     <div>
       <PageHeader
@@ -60,7 +64,7 @@ export async function SncCaseDetailPage({
           <StatusBadge label={c.status} />
           <DeadlineBadge deadline={c.deadline} />
           <Badge tone={agencyRead ? "green" : "yellow"}>{agencyRead ? "代理店既読" : "代理店未読"}</Badge>
-          {!user.isDummy && (
+          {canUpdate && (
             <div className="ml-auto flex items-center gap-2">
               <form action={changeStatusAction.bind(null, c.id)} className="flex items-center gap-2">
                 <select name="status" defaultValue={c.status} className={`${inputCls} w-36`}>
@@ -78,6 +82,37 @@ export async function SncCaseDetailPage({
             </div>
           )}
         </div>
+
+        {/* 案件の編集（§5.1「変」）: 件名・対応期限。変更前後の値は監査ログに記録される（§3.3） */}
+        {canUpdate && (
+          <details className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-3">
+            <summary className="cursor-pointer text-sm font-bold text-blue-700">
+              案件を編集（件名・対応期限）
+            </summary>
+            <form
+              action={updateCaseAction.bind(null, c.id)}
+              className="mt-3 grid grid-cols-3 items-end gap-3"
+            >
+              <div className="col-span-2">
+                <label className={labelCls}>件名 *</label>
+                <input name="title" defaultValue={c.title} required className={inputCls} />
+              </div>
+              <div>
+                <label className={labelCls}>対応期限（空欄可）</label>
+                <input
+                  type="date"
+                  name="deadline"
+                  defaultValue={c.deadline ?? ""}
+                  className={inputCls}
+                />
+              </div>
+              <div className="col-span-3">
+                <button className={btnPrimary}>保存</button>
+              </div>
+            </form>
+          </details>
+        )}
+
         <div className="grid grid-cols-3 gap-4 text-sm">
           <div>
             <div className="text-xs font-semibold text-slate-500">案件ID</div>

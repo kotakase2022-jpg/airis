@@ -4,6 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { agencyScope, requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS } from "@/lib/roles";
+import { can, canApproveFirst } from "@/lib/permissions";
 import { formatHistory } from "@/lib/util";
 import {
   Card,
@@ -84,13 +85,16 @@ export default async function SalesStaffPage({
   const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const to = Math.min(page * PAGE_SIZE, total);
 
-  // 操作権限（R4=ダミー表示は全書き込みUI非表示。server action 側でも拒否している）
+  // 操作権限（§5.1 の宣言的マップで判定 §3.2。R4=ダミー表示は全書き込みUI非表示。server action 側でも拒否している）
   const canWrite = !user.dummy;
-  const canFirstApprove = canWrite && ["R1", "R2", "R3", "R7"].includes(user.role);
-  const canFinalApprove = canWrite && SNC_ADMIN_ROLES.includes(user.role);
-  const canSuspend = canWrite && ["R1", "R2", "R3", "R7"].includes(user.role);
-  const canDelete = canSuspend;
-  const canRestore = canFinalApprove;
+  const canApply = canWrite && can(user.role, "sales-staff", "apply");
+  const canUpdate = canWrite && can(user.role, "sales-staff", "update");
+  const canFirstApprove = canWrite && canApproveFirst(user.role, "sales-staff");
+  const canFinalApprove = canWrite && can(user.role, "sales-staff", "approve_final");
+  const canSuspend = canWrite && can(user.role, "sales-staff", "suspend");
+  const canDelete = canWrite && can(user.role, "sales-staff", "delete");
+  // 復旧は §5.1 の操作列に無い管理機能（§3.4）。SNC管理系（①②③）のみ。
+  const canRestore = canWrite && SNC_ADMIN_ROLES.includes(user.role);
 
   const href = (p: number) => {
     const u = new URLSearchParams();
@@ -125,7 +129,7 @@ export default async function SalesStaffPage({
         <StatCard value={cnt("suspended") + cnt("deleted")} label="停止・削除" tone="gray" />
       </div>
 
-      {canWrite && (
+      {canApply && (
         <Card className="mb-4">
           <details>
             <summary className="cursor-pointer text-sm font-bold text-blue-700">＋ 販売員ID申請</summary>
@@ -258,6 +262,14 @@ export default async function SalesStaffPage({
                           <RowActions
                             staffId={s.id}
                             status={s.status}
+                            initial={{
+                              lastName: s.lastName,
+                              firstName: s.firstName,
+                              birthDate: s.birthDate,
+                              phone: s.phone,
+                              email: s.email ?? "",
+                            }}
+                            canUpdate={canUpdate}
                             canFirstApprove={canFirstApprove}
                             canFinalApprove={canFinalApprove}
                             canSuspend={canSuspend}

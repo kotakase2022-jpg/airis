@@ -13,8 +13,21 @@ const D_CSV2 = `${MONTH}-24`;
 const D_CSV_BAD = `${MONTH}-25`;
 const D_TELE = `${MONTH}-26`;
 // 月初見込テスト用: 他データと衝突しない遠い月（6月=30日）
-const D_FC1 = "2027-06-19";
-const D_FC2 = "2027-06-20";
+const M_FC = "2027-06";
+const D_FC1 = `${M_FC}-19`;
+const D_FC2 = `${M_FC}-20`;
+// CSV経由の月初見込ロック検証用（要件6-3 / BUG-007の回帰）
+const M_CSV_FC = "2027-08"; // フォームで確定済みの見込をCSVが上書きしないことの検証
+const D_CFC1 = `${M_CSV_FC}-10`;
+const D_CFC2 = `${M_CSV_FC}-11`;
+const M_CSV_ONLY = "2027-09"; // CSVのみで月内複数行に見込がある場合
+const D_CO1 = `${M_CSV_ONLY}-10`;
+const D_CO2 = `${M_CSV_ONLY}-11`;
+const D_CO3 = `${M_CSV_ONLY}-12`;
+// 稼働提出物の通知宛先スコープ検証用（§3.7 / §5.1）
+const M_SUB_NOTIFY = "2032-04"; // 他スイートの集計に影響しない遠い月
+const SUB_KIND_NOTIFY = "環境ヒアリングシート";
+const SUB_MEMO_NOTIFY = "QA5-通知宛先スコープ";
 
 const VISIT_HEADERS =
   "日付,販売員ID,エリア,獲得見込,獲得,稼働数,訪問数,対面数,商談数,成約数,活動実施内容,活動実施結果,備考";
@@ -51,11 +64,43 @@ test.beforeAll(async () => {
       ],
     },
   });
+  // 月初見込ロック検証で使う月は「月内に見込が1件も無い」状態から開始する
+  await db().dailyReport.deleteMany({
+    where: {
+      salesStaffId: staffId,
+      OR: [M_FC, M_CSV_FC, M_CSV_ONLY].map((m) => ({ date: { startsWith: m } })),
+    },
+  });
+  await db().submission.deleteMany({ where: { memo: SUB_MEMO_NOTIFY } });
 });
 
 test.afterAll(async () => {
+  await db().submission.deleteMany({ where: { memo: SUB_MEMO_NOTIFY } });
   await db().$disconnect();
 });
+
+// 月内の日報を日付昇順で [日付, 月初見込] のペアにして返す（月初見込ロックのDB検証用）
+async function monthForecastPairs(
+  month: string,
+  type: "訪販" | "テレマ" = "訪販"
+): Promise<[string, number | null][]> {
+  const rows = await db().dailyReport.findMany({
+    where: { salesStaffId: staffId, type, date: { startsWith: month } },
+    orderBy: { date: "asc" },
+    select: { date: true, forecastAcq: true },
+  });
+  return rows.map((r) => [r.date, r.forecastAcq]);
+}
+
+async function uploadVisitCsv(page: Page, fileName: string, lines: string[]) {
+  await page.locator('select[name="csvType"]').selectOption("訪販");
+  await page.setInputFiles('input[name="file"]', {
+    name: fileName,
+    mimeType: "text/csv",
+    buffer: Buffer.from("﻿" + [VISIT_HEADERS, ...lines].join("\r\n"), "utf-8"),
+  });
+  await page.getByRole("button", { name: "CSVアップロード" }).click();
+}
 
 async function saveVisitReport(
   page: Page,
@@ -142,7 +187,9 @@ test("R9: 訪販日報の保存→DB検証→同日再提出で上書き（レ�
     where: { date_type_salesStaffId: { date: D_OVERWRITE, type: "訪販", salesStaffId: staffId } },
   });
   expect(rec1).not.toBeNull();
-  expect(rec1!.forecastAcq).toBe(30);
+  // 当月はシード日報（${MONTH}-01, forecastAcq=30）が月初見込を確定済みのため、
+  // 後日日付で送信した見込は保存されない（要件6-3「月の初回提出時のみ入力」/ BUG-007）。
+  expect(rec1!.forecastAcq).toBeNull();
   expect(rec1!.acquisitions).toBe(2);
   expect(rec1!.workers).toBe(3);
   expect(rec1!.visits).toBe(50);
@@ -190,6 +237,15 @@ test("R9: 訪販日報の保存→DB検証→同日再提出で上書き（レ�
       where: { date: D_OVERWRITE, type: "訪販", salesStaffId: staffId },
     })
   ).toBe(1);
+
+  // 月初見込は月内最古のレコードが保持し続ける（当月の見込は1つだけ 要件6-3）
+  const holder = await db().dailyReport.findFirst({
+    where: { salesStaffId: staffId, type: "訪販", date: { startsWith: MONTH }, forecastAcq: { not: null } },
+    orderBy: { date: "asc" },
+    select: { date: true, forecastAcq: true },
+  });
+  expect(holder).not.toBeNull();
+  expect(holder!.date).toBe(`${MONTH}-01`);
 
   expect(criticalErrors(errors)).toEqual([]);
 });
@@ -267,8 +323,10 @@ test("R9: テレマ日報の保存→DB検証（テレマ項目が保存され�
     where: { date_type_salesStaffId: { date: D_TELE, type: "テレマ", salesStaffId: staffId } },
   });
   expect(rec).not.toBeNull();
-  expect(rec!.forecastHours).toBe(8.5);
-  expect(rec!.forecastEntries).toBe(100);
+  // 当月のテレマ月初見込はシード日報（${MONTH}-02, 稼働時間160 / エントリー200）で確定済みのため、
+  // 後日日付で送信した月初見込は保存されない（要件6-3 / BUG-007）。実績値は保存される。
+  expect(rec!.forecastHours).toBeNull();
+  expect(rec!.forecastEntries).toBeNull();
   expect(rec!.actualHours).toBe(7.5);
   expect(rec!.entries).toBe(12);
   expect(rec!.appointments).toBe(3);
@@ -332,6 +390,148 @@ test("R9: 訪販の月初見込は月の初回提出時のみ入力（2回目提
   const tiles = page.locator("div.rounded-xl.bg-slate-50.text-center");
   const rateTile = tiles.filter({ hasText: "達成率" });
   await expect(rateTile.locator("div").first()).toHaveText("10%");
+
+  // DB検証: 月内で見込を保持するのは最古日付の1レコードのみ
+  // （後日日付の見込は保存しない = 月内に見込は1つだけ 要件6-3 / BUG-007）
+  expect(await monthForecastPairs(M_FC)).toEqual([
+    [D_FC1, 30],
+    [D_FC2, null],
+  ]);
+});
+
+test("R9: CSV取込では確定済み月初見込が上書きされない（月内全行のforecastAcqをDB検証）（要件6-3 / BUG-007）", async ({
+  page,
+}) => {
+  // 仕様: 月初見込は「月の初回提出時のみ入力」。取込経路（フォーム／CSV）に依らず、
+  // 一度確定した月初見込はCSVの値で上書きされてはならない。
+  test.setTimeout(120_000);
+  await login(page, "R9");
+  await page.goto("/reports");
+
+  // 月の初回提出（フォーム）で月初見込=40を確定
+  await saveVisitReport(
+    page,
+    D_CFC1,
+    { forecastAcq: "40", acquisitions: "1", workers: "1", visits: "10", meetings: "5", negotiations: "2", contracts: "1" },
+    { area: "QA5-CSV月初見込の確定" }
+  );
+  expect(await monthForecastPairs(M_CSV_FC)).toEqual([[D_CFC1, 40]]);
+
+  // CSVで同月2行を取込（確定日に999・後日に888の見込を入れた不正なCSV）
+  await uploadVisitCsv(page, "QA5-visit-forecast-lock.csv", [
+    `${D_CFC1},110001C001,QA5-CSV見込上書き1,999,5,2,30,10,5,2,QA5 CSV見込ロック1,,`,
+    `${D_CFC2},110001C001,QA5-CSV見込上書き2,888,3,1,20,8,4,1,QA5 CSV見込ロック2,,`,
+  ]);
+  await expect(page.getByText("2件の訪販日報を取り込みました")).toBeVisible({ timeout: 15_000 });
+
+  // 月内全行の見込を検証: 確定済みの40が維持され、後日日付には見込を保存しない
+  await expect
+    .poll(async () => JSON.stringify(await monthForecastPairs(M_CSV_FC)), { timeout: 10_000 })
+    .toBe(JSON.stringify([[D_CFC1, 40], [D_CFC2, null]]));
+
+  // 見込以外の値はCSVで正しく上書き・追加されている（取込自体は成功している証明）
+  const rows = await db().dailyReport.findMany({
+    where: { salesStaffId: staffId, type: "訪販", date: { startsWith: M_CSV_FC } },
+    orderBy: { date: "asc" },
+  });
+  expect(rows).toHaveLength(2);
+  expect(rows[0].acquisitions).toBe(5);
+  expect(rows[0].visits).toBe(30);
+  expect(rows[0].source).toBe("csv");
+  expect(rows[1].acquisitions).toBe(3);
+  expect(rows[1].source).toBe("csv");
+});
+
+test("R9: CSV取込のみでも月内の見込は最古日付の1件だけ（後日日付では見込が保存されない）（要件6-3）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await login(page, "R9");
+  await page.goto("/reports");
+
+  // 行順に依存しないこと（後日日付を先頭に置く）も併せて検証する
+  await uploadVisitCsv(page, "QA5-visit-forecast-only-csv.csv", [
+    `${D_CO2},110001C001,QA5-CSV単独見込2,99,2,1,10,5,2,1,QA5 CSV単独見込2,,`,
+    `${D_CO1},110001C001,QA5-CSV単独見込1,30,1,1,10,5,2,1,QA5 CSV単独見込1,,`,
+    `${D_CO3},110001C001,QA5-CSV単独見込3,,1,1,10,5,2,1,QA5 CSV単独見込3,,`,
+  ]);
+  await expect(page.getByText("3件の訪販日報を取り込みました")).toBeVisible({ timeout: 15_000 });
+
+  await expect
+    .poll(async () => JSON.stringify(await monthForecastPairs(M_CSV_ONLY)), { timeout: 10_000 })
+    .toBe(JSON.stringify([[D_CO1, 30], [D_CO2, null], [D_CO3, null]]));
+});
+
+test("稼働提出物の通知は代理店管理者（⑦⑧）のみに届く（⑨販売員には配信しない）（§3.7 / §5.1）", async ({
+  page,
+}) => {
+  // 仕様: §5.1 の権限マトリクスで⑨は稼働提出物=×。稼働提出物の通知（提出・承認・差戻し）は
+  // 代理店管理者（⑦⑧）のみに配信し、同じ代理店に属する⑨販売員には配信しない。
+  test.setTimeout(180_000);
+  const d = db();
+  const loginIds = ["airis_1110001_001", "airis_2210001_001", "110001C001", "210001C001"];
+  const accounts = await d.account.findMany({
+    where: { loginId: { in: loginIds } },
+    select: { id: true, loginId: true },
+  });
+  const idOf = (loginId: string): string => {
+    const acc = accounts.find((a) => a.loginId === loginId);
+    if (!acc) throw new Error(`シードアカウント ${loginId} が見つかりません`);
+    return acc.id;
+  };
+  const r7 = idOf("airis_1110001_001"); // ⑦ 東都(110001) = 1次店（提出通知の宛先）
+  const r8 = idOf("airis_2210001_001"); // ⑧ セールスパートナー東京(210001) = 提出元
+  const r9Ids = [idOf("110001C001"), idOf("210001C001")]; // ⑨（1次店所属・提出元所属の両方）
+  const subNotify = { title: { contains: "稼働提出物" } };
+
+  // 過去実行で作られた通知は除去し、このテストで新たに発生する通知のみを検証する
+  await d.notification.deleteMany({ where: { accountId: { in: r9Ids }, ...subNotify } });
+  await d.submission.deleteMany({ where: { memo: SUB_MEMO_NOTIFY } });
+  const before7 = await d.notification.count({ where: { accountId: r7, ...subNotify } });
+  const before8 = await d.notification.count({ where: { accountId: r8, ...subNotify } });
+
+  // ⑧が提出 → 1次店（⑦）へ「1次承認待ち」通知
+  await login(page, "R8");
+  await page.goto("/reports?tab=submissions");
+  const form = page.locator("form").filter({ has: page.locator('input[name="memo"]') });
+  await form.locator('select[name="kind"]').selectOption(SUB_KIND_NOTIFY);
+  await form.locator('input[name="targetMonth"]').fill(M_SUB_NOTIFY);
+  await form.locator('input[name="file"]').setInputFiles({
+    name: `${SUB_MEMO_NOTIFY}.xlsx`,
+    mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    buffer: Buffer.from("QA5 dummy xlsx payload"),
+  });
+  await form.locator('input[name="memo"]').fill(SUB_MEMO_NOTIFY);
+  await form.getByRole("button", { name: "提出する" }).click();
+  await expect(page.getByText(`「${SUB_KIND_NOTIFY}」（${M_SUB_NOTIFY}）を提出しました`)).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await expect
+    .poll(async () => d.notification.count({ where: { accountId: r7, ...subNotify } }), {
+      timeout: 15_000,
+    })
+    .toBe(before7 + 1);
+  // ⑨には1件も届かない
+  expect(await d.notification.count({ where: { accountId: { in: r9Ids }, ...subNotify } })).toBe(0);
+
+  // ②が差戻し → 提出元（⑧）へ通知。ここでも⑨には配信しない
+  await page.context().clearCookies();
+  await login(page, "R2");
+  await page.goto(`/reports?tab=submissions&q=${encodeURIComponent(SUB_MEMO_NOTIFY)}`);
+  const row = page.locator("tr").filter({ hasText: SUB_MEMO_NOTIFY });
+  await expect(row).toHaveCount(1);
+  await row.locator('input[name="reason"]').fill("QA5 通知宛先検証のため差戻し");
+  await row.getByRole("button", { name: "差戻し" }).click();
+  await expect
+    .poll(async () => d.notification.count({ where: { accountId: r8, ...subNotify } }), {
+      timeout: 15_000,
+    })
+    .toBe(before8 + 1);
+  expect(await d.notification.count({ where: { accountId: { in: r9Ids }, ...subNotify } })).toBe(0);
+
+  // 後片付け（他スイートの提出物集計に影響させない）
+  await d.submission.deleteMany({ where: { memo: SUB_MEMO_NOTIFY } });
 });
 
 test("CSVテンプレートDL: 訪販/テレマのヘッダ検証・不正パラメータは400", async ({ page }) => {
@@ -377,7 +577,9 @@ test("R9: CSVアップロード正常（訪販2行）→DBに取込・値検証"
     where: { date_type_salesStaffId: { date: D_CSV1, type: "訪販", salesStaffId: staffId } },
   });
   expect(row1).not.toBeNull();
-  expect(row1!.forecastAcq).toBe(30);
+  // CSV取込でも月初見込ロックが働く: 当月はシード日報（${MONTH}-01）で確定済みのため
+  // 後日日付のCSV行の見込は保存されない（要件6-3 / BUG-007）。他の列は取り込まれる。
+  expect(row1!.forecastAcq).toBeNull();
   expect(row1!.acquisitions).toBe(3);
   expect(row1!.workers).toBe(2);
   expect(row1!.visits).toBe(40);
@@ -443,8 +645,8 @@ test("異常系: 日付未入力では保存できない（必須バリデーシ
 });
 
 test("権限外アクセス: R5(HL窓口)/R10(稼働終了)は /reports に入れない", async ({ page, request }) => {
-  // 未認証はCSVテンプレも401
-  const anon = await request.get("http://localhost:3100/reports/csv?template=visit");
+  // 未認証はCSVテンプレも401（ホストは playwright.config の baseURL / QA_BASE_URL に従う）
+  const anon = await request.get("/reports/csv?template=visit");
   expect(anon.status()).toBe(401);
 
   await login(page, "R5");

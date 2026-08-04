@@ -1,11 +1,15 @@
 import Link from "next/link";
+import type { Prisma } from "@prisma/client";
 import { requirePage, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { canAccess } from "@/lib/roles";
+import { canAccess, SUBMISSION_KINDS } from "@/lib/roles";
 import { Card, PageHeader, SectionTitle, StatCard, InfoBanner } from "@/components/ui";
 import { today } from "@/lib/util";
 
 export const dynamic = "force-dynamic";
+
+// 日報未提出者の母数となる販売員ステータス（日報を提出できるのは仮登録・本登録 §7.5）
+const REPORTABLE_STAFF_STATUS = ["provisional", "registered"];
 
 export default async function DashboardPage() {
   const user = await requirePage("dashboard");
@@ -40,37 +44,63 @@ export default async function DashboardPage() {
 
   // 日報・提出物
   const showReports = canAccess(user.role, "reports");
-  const [reportCount, submissionPending, submissionApproved] = showReports
+  // ⑨販売員は稼働提出物=×（§5.2）。未提出者の集計も管理系ロール向けの指標のため出さない。
+  const showReportAdmin = showReports && user.role !== "R9";
+  const submissionScope = scope === null ? {} : { submitterAgencyId: { in: scope } };
+  const reportCount = showReports
+    ? await prisma.dailyReport.count({
+        where: { date: { startsWith: month }, ...(scope === null ? {} : { agencyId: { in: scope } }) },
+      })
+    : 0;
+  const [submissionPending, submissionApproved] = showReportAdmin
     ? await Promise.all([
-        prisma.dailyReport.count({
-          where: { date: { startsWith: month }, ...(scope === null ? {} : { agencyId: { in: scope } }) },
-        }),
         prisma.submission.count({
           where: {
             status: { in: ["pending_first", "pending_snc"] },
-            ...(scope === null ? {} : { submitterAgencyId: { in: scope } }),
+            ...submissionScope,
           },
         }),
         prisma.submission.count({
           where: {
             status: "approved",
             targetMonth: month,
-            ...(scope === null ? {} : { submitterAgencyId: { in: scope } }),
+            ...submissionScope,
           },
         }),
       ])
-    : [0, 0, 0];
+    : [0, 0];
+
+  // 当月日報の未提出者数（§7.1「当月の日報提出状況（提出件数・未提出者）」）
+  const unsubmittedStaff = showReportAdmin
+    ? await prisma.salesStaff.count({
+        where: {
+          ...agencyFilter,
+          status: { in: REPORTABLE_STAFF_STATUS },
+          dailyReports: { none: { date: { startsWith: month } } },
+        },
+      })
+    : 0;
+
+  // 提出物の提出状況 n/6（§7.1「提出物の提出状況（n/6）」。当月・スコープ内で提出済みの様式数）
+  const submittedKinds = showReportAdmin
+    ? await prisma.submission.findMany({
+        where: { targetMonth: month, status: { not: "rejected" }, ...submissionScope },
+        select: { kind: true },
+        distinct: ["kind"],
+      })
+    : [];
 
   // 下位代理店
   const showAgencies = canAccess(user.role, "agencies");
-  const [agencyTotal, agencyActive] = showAgencies
+  const agencyWhere = scope === null ? { isDummy: user.isDummy } : { id: { in: scope } };
+  const [agencyTotal, agencyActive, agencyClosed] = showAgencies
     ? await Promise.all([
-        prisma.agency.count({ where: scope === null ? { isDummy: user.isDummy } : { id: { in: scope } } }),
-        prisma.agency.count({
-          where: { status: "active", ...(scope === null ? { isDummy: user.isDummy } : { id: { in: scope } }) },
-        }),
+        prisma.agency.count({ where: agencyWhere }),
+        prisma.agency.count({ where: { status: "active", ...agencyWhere } }),
+        // 稼働終了数（§7.1「下位代理店: 代理店数 / 有効数 / 稼働終了数」）
+        prisma.agency.count({ where: { status: "closed", ...agencyWhere } }),
       ])
-    : [0, 0];
+    : [0, 0, 0];
 
   // 窓口案件
   const showCases =
@@ -90,17 +120,41 @@ export default async function DashboardPage() {
     : 0;
 
   // お知らせ
+  // ④ダミー表示（§3.5）: 閲覧アカウントにはシードの架空データ（isDummy=true）のみを出し、
+  // 実データには一切アクセスさせない。逆に非ダミーロールにはサンプルデータを出さない。
   const showAnnouncements = canAccess(user.role, "announcements");
+  const annWhere: Prisma.AnnouncementWhereInput = {
+    status: "sent",
+    isDummy: user.isDummy,
+    ...(user.role === "R8" || user.role === "R9" ? { audience: "all" } : {}),
+  };
   const announcements = showAnnouncements
     ? await prisma.announcement.findMany({
-        where: {
-          status: "sent",
-          ...(user.role === "R8" || user.role === "R9" ? { audience: "all" } : {}),
-        },
+        where: annWhere,
         orderBy: { sentAt: "desc" },
         take: 5,
       })
     : [];
+  // 未読お知らせ件数（§7.1。既読は AnnouncementRead で管理 §7.7）
+  const [annTotal, annRead] = showAnnouncements
+    ? await Promise.all([
+        prisma.announcement.count({ where: annWhere }),
+        prisma.announcementRead.count({ where: { accountId: user.id, announcement: annWhere } }),
+      ])
+    : [0, 0];
+  const annUnread = Math.max(0, annTotal - annRead);
+
+  // 管理画面向け（①②のみ §7.1）: 直近（本日JST）の監査イベント・不正利用アラート
+  const showAdminStats = canAccess(user.role, "admin") && !user.isDummy;
+  const since = new Date(`${today()}T00:00:00+09:00`);
+  const [auditRecent, alertRecent] = showAdminStats
+    ? await Promise.all([
+        prisma.auditLog.count({ where: { createdAt: { gte: since } } }),
+        // TODO: 並行ログイン・普段と異なるIPの検知（§3.3 不正利用防止）は未実装のため、
+        // 暫定で監査ログの失敗・拒否イベント（ログイン失敗／権限外アクセス）件数をアラート数とする。
+        prisma.auditLog.count({ where: { createdAt: { gte: since }, result: { not: "success" } } }),
+      ])
+    : [0, 0];
 
   const casesHref = canAccess(user.role, "agency-cases")
     ? "/agency-cases"
@@ -159,10 +213,24 @@ export default async function DashboardPage() {
             <SectionTitle right={<Link className="text-xs text-blue-600 hover:underline" href="/reports">各種資料の提出 →</Link>}>
               日報・稼働提出物（{month}）
             </SectionTitle>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
               <StatCard value={reportCount} label="当月の日報件数" tone="blue" />
-              <StatCard value={submissionPending} label="提出物 承認待ち" tone="orange" />
-              <StatCard value={submissionApproved} label="提出物 最終承認済み（当月）" tone="green" />
+              {showReportAdmin && (
+                <StatCard value={unsubmittedStaff} label="当月日報の未提出者数" tone="orange" />
+              )}
+              {showReportAdmin && (
+                <StatCard
+                  value={`${submittedKinds.length} / ${SUBMISSION_KINDS.length}`}
+                  label="提出物の提出状況（当月）"
+                  tone="purple"
+                />
+              )}
+              {showReportAdmin && (
+                <StatCard value={submissionPending} label="提出物 承認待ち" tone="orange" />
+              )}
+              {showReportAdmin && (
+                <StatCard value={submissionApproved} label="提出物 最終承認済み（当月）" tone="green" />
+              )}
             </div>
           </section>
         )}
@@ -173,9 +241,10 @@ export default async function DashboardPage() {
                 <SectionTitle right={<Link className="text-xs text-blue-600 hover:underline" href="/agencies">下位代理店 →</Link>}>
                   代理店
                 </SectionTitle>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <StatCard value={agencyTotal} label="代理店数" tone="blue" />
                   <StatCard value={agencyActive} label="有効" tone="green" />
+                  <StatCard value={agencyClosed} label="稼働終了" tone="gray" />
                 </div>
               </section>
             )}
@@ -194,11 +263,28 @@ export default async function DashboardPage() {
             )}
           </div>
         )}
+        {showAdminStats && (
+          <section>
+            <SectionTitle right={<Link className="text-xs text-blue-600 hover:underline" href="/admin">管理画面 →</Link>}>
+              管理（本日 {today()}）
+            </SectionTitle>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard value={auditRecent} label="直近の監査イベント件数" tone="blue" />
+              <StatCard value={alertRecent} label="不正利用アラート件数" tone="red" />
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              ※本日（JST）分の集計です。不正利用アラートは監査ログの失敗・拒否イベント（ログイン失敗・権限外アクセス）の件数です。並行ログイン・IP変化の検知は未実装（§3.3 TODO）。
+            </p>
+          </section>
+        )}
         {showAnnouncements && (
           <section>
             <SectionTitle right={<Link className="text-xs text-blue-600 hover:underline" href="/announcements">お知らせ →</Link>}>
               最新のお知らせ
             </SectionTitle>
+            <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+              <StatCard value={annUnread} label="未読お知らせ件数" tone="orange" />
+            </div>
             <Card>
               {announcements.length === 0 ? (
                 <p className="py-4 text-center text-sm text-slate-400">お知らせはありません。</p>

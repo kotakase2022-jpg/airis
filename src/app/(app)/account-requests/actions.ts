@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, hashPassword } from "@/lib/auth";
 import { REQUESTABLE_ROLES, SNC_ADMIN_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
 import { audit, notify, pushHistory, storeFile } from "@/lib/util";
+import { canFinalApproveRequest, SNC_TARGET_DENIED_MESSAGE } from "./approval-rules";
 
 export type ActionState =
   | {
@@ -188,6 +189,18 @@ export async function finalApproveAction(
   if (!req) return { error: "申請が見つかりません" };
   if (req.status !== "pending_final") return { error: "最終承認待ちの申請ではありません" };
 
+  // 職務分離（§6.1-3 / 要件1-1）: SNC系ロール（①〜⑥）の申請は①②のみ最終承認可能。
+  // ③（SNC運用者）は代理店系（⑦⑧⑩）の最終承認に限定される。
+  if (!canFinalApproveRequest(user.role, req.role)) {
+    await audit(
+      user.loginId,
+      "account_request_final_approve",
+      `${req.requestId} role=${req.role} by=${user.role}`,
+      "denied"
+    );
+    return { error: SNC_TARGET_DENIED_MESSAGE };
+  }
+
   const agency = req.agencyId
     ? await prisma.agency.findUnique({ where: { id: req.agencyId } })
     : null;
@@ -259,13 +272,25 @@ export async function rejectAction(
   if (!pending) return { error: "承認待ちの申請ではありません" };
 
   let allowed = false;
+  let sncTargetDenied = false;
   if (SNC_ADMIN_ROLES.includes(user.role)) {
-    allowed = true;
+    // 却下も最終承認と同じ職務分離制約（§6.1-3 / 要件1-1）:
+    // SNC系ロール（①〜⑥）の申請は①②のみ却下できる（③は⑦⑧⑩に限定）
+    allowed = canFinalApproveRequest(user.role, req.role);
+    sncTargetDenied = !allowed;
   } else if (user.role === "R7" && req.status === "pending_first") {
     const scope = await agencyScope(user);
     allowed = !!req.agencyId && (scope ?? []).includes(req.agencyId);
   }
-  if (!allowed) return { error: "却下の権限がありません" };
+  if (!allowed) {
+    await audit(
+      user.loginId,
+      "account_request_reject",
+      `${req.requestId} role=${req.role} by=${user.role}`,
+      "denied"
+    );
+    return { error: sncTargetDenied ? SNC_TARGET_DENIED_MESSAGE : "却下の権限がありません" };
+  }
 
   await prisma.accountRequest.update({
     where: { id: req.id },

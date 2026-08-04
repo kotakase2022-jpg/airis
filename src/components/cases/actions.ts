@@ -5,12 +5,17 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope, requireUser } from "@/lib/auth";
 import { CASE_STATUSES, CASE_TEMPLATES, PageKey, canAccess } from "@/lib/roles";
+import { can, caseFeature, type Operation } from "@/lib/permissions";
 import { audit, notify, notifyRole, storeFile } from "@/lib/util";
 
 type Series = "HL" | "CSC";
 
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export type CreateCaseState = { error?: string } | undefined;
 export type ReplyState = { error?: string; ok?: boolean } | undefined;
+// ステータス変更・緊急アラートの実行結果（権限不足・不正状態をユーザーへ表示するため）
+export type CaseActionState = { error?: string; ok?: boolean } | undefined;
 
 function sncPageKey(series: Series): PageKey {
   return series === "HL" ? "hotline" : "consumer-center";
@@ -33,10 +38,16 @@ function revalidateCasePaths(series: string, caseId: string) {
 }
 
 // SNC担当窓口ロールの権限チェック（server action側でも必ず実施）
-async function requireSncCaseUser(series: Series): Promise<CurrentUser> {
+// 操作権限は §5.1 の宣言的マップで判定する（§3.2）。
+// ホットライン=①②③⑤ / 消費者センター=①②③⑥ が 作/変/停/削/閲、⑦⑩は閲覧+返信のみ。
+async function requireSncCaseUser(series: Series, op: Operation): Promise<CurrentUser> {
   const user = await requireUser();
   // R4（ダミー表示）は窓口ページ自体にアクセス不可だが、防御的に拒否する
   if (user.isDummy || !canAccess(user.role, sncPageKey(series))) redirect("/dashboard");
+  if (!can(user.role, caseFeature(series), op)) {
+    await audit(user.loginId, `case_${op}`, `series=${series} role=${user.role}`, "denied");
+    redirect("/dashboard");
+  }
   return user;
 }
 
@@ -46,8 +57,9 @@ async function notifyAgencyR7(primaryAgencyId: string, title: string, body: stri
     where: { role: "R7", agencyId: primaryAgencyId, status: "active" },
     select: { id: true },
   });
+  // notify() はアプリ内通知＋メール（SMTP_HOST 設定時。未設定時は開発コンソール出力）を送信する（§3.7）。
   await Promise.all(accounts.map((a) => notify(a.id, title, body, link)));
-  // TODO: Slack（SLACK_WEBHOOK_URL）・メール通知は未実装。設定後に送信処理を追加する（§3.7）。
+  // Slack通知（SLACK_WEBHOOK_URL）は発注者確認により本フェーズ対象外（README「未実装」）。
 }
 
 // 新規起票（SNC側のみ。§7.8）
@@ -56,7 +68,7 @@ export async function createCaseAction(
   _prev: CreateCaseState,
   formData: FormData
 ): Promise<CreateCaseState> {
-  const user = await requireSncCaseUser(series);
+  const user = await requireSncCaseUser(series, "create");
 
   const templateKind = String(formData.get("templateKind") ?? "");
   const primaryAgencyId = String(formData.get("primaryAgencyId") ?? "");
@@ -130,6 +142,10 @@ export async function replyCaseAction(
   if (!c) return { error: "案件が見つかりません。" };
   const series = c.series as Series;
 
+  // 返信権限（§5.1「返信」= send）: ①②③＋担当窓口⑤⑥、代理店側は⑦⑩のみ
+  if (!can(user.role, caseFeature(series), "send")) {
+    return { error: "この案件への返信権限がありません。" };
+  }
   const isAgencySide = user.role === "R7" || user.role === "R10";
   if (isAgencySide) {
     if (!canAccess(user.role, "agency-cases")) return { error: "この案件への返信権限がありません。" };
@@ -192,17 +208,72 @@ export async function replyCaseAction(
   return { ok: true };
 }
 
-// ステータス変更（SNC側のみ。CaseStatusHistoryに記録 §7.8 / 要件9-4）
-export async function changeStatusAction(caseId: string, formData: FormData): Promise<void> {
-  const authUser = await requireUser();
+// 案件の編集（変更。§5.1「変」= ①②③ + 担当窓口⑤⑥。代理店⑦⑩は返信のみで変更不可）
+// 対象は件名と対応期限（§7.8 の起票フォーム項目のうち後から修正が必要になるもの）。
+// 変更前後の値は監査ログに残す（§3.3。Case には変更履歴テーブルが無いため）。
+export async function updateCaseAction(caseId: string, formData: FormData): Promise<void> {
   const c = await prisma.case.findUnique({ where: { id: caseId } });
   if (!c) return;
   const series = c.series as Series;
-  if (authUser.isDummy || !canAccess(authUser.role, sncPageKey(series))) redirect("/dashboard");
-  const user = authUser;
+  const user = await requireSncCaseUser(series, "update");
+
+  const title = String(formData.get("title") ?? "").trim();
+  const deadlineRaw = String(formData.get("deadline") ?? "").trim();
+  if (!title) {
+    await audit(user.loginId, "case_update", `${c.caseNo}: 件名が未入力`, "failure");
+    return;
+  }
+  if (deadlineRaw && !DATE_RE.test(deadlineRaw)) {
+    await audit(user.loginId, "case_update", `${c.caseNo}: 対応期限の形式が不正`, "failure");
+    return;
+  }
+  const deadline = deadlineRaw || null;
+  if (title === c.title && deadline === c.deadline) return; // 変更なし
+
+  await prisma.case.update({ where: { id: c.id }, data: { title, deadline } });
+  await audit(
+    user.loginId,
+    "case_update",
+    `${c.caseNo}: 件名「${c.title}」→「${title}」/ 対応期限 ${c.deadline ?? "-"} → ${deadline ?? "-"}`
+  );
+  revalidateCasePaths(series, c.id);
+}
+
+// ステータス変更・緊急アラート用の権限判定。
+// requireSncCaseUser() と同じ判定を行うが、結果（error）を呼び出し元へ返すためリダイレクトしない。
+// 拒否は監査ログに記録する（§3.3）。
+async function sncCaseOperator(
+  series: Series,
+  op: Operation,
+  action: string,
+  caseNo: string
+): Promise<{ user: CurrentUser } | { error: string }> {
+  const user = await requireUser();
+  if (
+    user.isDummy ||
+    !canAccess(user.role, sncPageKey(series)) ||
+    !can(user.role, caseFeature(series), op)
+  ) {
+    await audit(user.loginId, action, `${caseNo} role=${user.role}`, "denied");
+    return { error: "この操作を行う権限がありません。" };
+  }
+  return { user };
+}
+
+// ステータス変更（SNC側のみ。CaseStatusHistoryに記録 §7.8 / 要件9-4）
+async function changeStatus(caseId: string, formData: FormData): Promise<CaseActionState> {
+  const c = await prisma.case.findUnique({ where: { id: caseId } });
+  if (!c) return { error: "案件が見つかりません。" };
+  const series = c.series as Series;
+  const auth = await sncCaseOperator(series, "update", "case_status_change", c.caseNo);
+  if ("error" in auth) return auth;
+  const user = auth.user;
 
   const toStatus = String(formData.get("status") ?? "");
-  if (!(CASE_STATUSES as readonly string[]).includes(toStatus) || toStatus === c.status) return;
+  if (!(CASE_STATUSES as readonly string[]).includes(toStatus)) {
+    return { error: "ステータスの指定が不正です。" };
+  }
+  if (toStatus === c.status) return { error: `すでに「${c.status}」のため変更はありません。` };
 
   // RLS拡張（クエリ毎にset_configトランザクションで包む）と干渉するため逐次実行（速度優先）
   await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
@@ -212,22 +283,55 @@ export async function changeStatusAction(caseId: string, formData: FormData): Pr
 
   await audit(user.loginId, "case_status_change", `${c.caseNo}: ${c.status} → ${toStatus}`);
   revalidateCasePaths(series, c.id);
+  return { ok: true };
 }
 
 // 緊急アラート（R3全員 + 当該一次店R7全員へ通知。要件9-2③）
-export async function urgentAlertAction(caseId: string): Promise<void> {
-  const authUser = await requireUser();
+// §5.1 の操作列に無い通知機能。担当窓口（SNC側の窓口ページにアクセスできるロール）のみ実施できる。
+async function urgentAlert(caseId: string): Promise<CaseActionState> {
   const c = await prisma.case.findUnique({ where: { id: caseId } });
-  if (!c) return;
+  if (!c) return { error: "案件が見つかりません。" };
   const series = c.series as Series;
-  if (authUser.isDummy || !canAccess(authUser.role, sncPageKey(series))) redirect("/dashboard");
-  const user = authUser;
+  const auth = await sncCaseOperator(series, "view", "case_urgent_alert", c.caseNo);
+  if ("error" in auth) return auth;
+  const user = auth.user;
 
   const title = `【緊急アラート】${c.caseNo} の対応をお願いします`;
+  // notifyRole() / notify() はアプリ内通知＋メールの2チャネルを送信する（§3.7 / lib/util.ts）。
+  // Slack通知は発注者確認により本フェーズ対象外（README「未実装」/ SPEC §2）。
   await notifyRole(["R3"], title, c.title, `${basePath(series)}/${c.id}`);
   await notifyAgencyR7(c.primaryAgencyId, title, c.title, `/agency-cases/${c.id}`);
-  // TODO: メール・Slackへの緊急アラート送信は未実装（アプリ内通知のみ）。
 
   await audit(user.loginId, "case_urgent_alert", c.caseNo);
   revalidateCasePaths(series, c.id);
+  return { ok: true };
+}
+
+// --- server action エントリポイント -----------------------------------------
+// 状態を返す版（useActionState 用）。権限不足・不正状態をフォーム上でメッセージ表示できる。
+export async function changeStatusStateAction(
+  caseId: string,
+  _prev: CaseActionState,
+  formData: FormData
+): Promise<CaseActionState> {
+  return changeStatus(caseId, formData);
+}
+
+export async function urgentAlertStateAction(
+  caseId: string,
+  _prev: CaseActionState
+): Promise<CaseActionState> {
+  void _prev; // useActionState のシグネチャ（prevState を第1引数で受ける）に合わせるための未使用引数
+  return urgentAlert(caseId);
+}
+
+// void を前提とした <form action={...}> 互換版（現行の snc-case-detail.tsx が使用）。
+// 呼び出し側を useActionState 化するまでメッセージは表示されないため、
+// 拒否・失敗は監査ログ（result=denied）に残して追跡可能にする。
+export async function changeStatusAction(caseId: string, formData: FormData): Promise<void> {
+  await changeStatus(caseId, formData);
+}
+
+export async function urgentAlertAction(caseId: string): Promise<void> {
+  await urgentAlert(caseId);
 }

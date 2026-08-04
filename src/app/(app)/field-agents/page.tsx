@@ -21,6 +21,7 @@ import {
   tdCls,
 } from "@/components/ui";
 import { ApplyForm, type StaffOption } from "./apply-form";
+import { CsvBulkForm } from "./csv-bulk-form";
 import {
   firstApproveAction,
   finalApproveAction,
@@ -180,12 +181,19 @@ export default async function FieldAgentsPage({
 
       {/* 申請フォーム（R4ダミーには非表示） */}
       {canApply && <ApplyForm staff={staffOptions} isSnc={isSnc} />}
+      {/* CSV一括申請（ひな形DL + CSV/誓約書PDF同時アップロード §7.4） */}
+      {canApply && <CsvBulkForm />}
 
       <SectionTitle
         right={
-          <a href="/field-agents/csv" className={btnOutline}>
-            訪販員申請一覧CSV出力
-          </a>
+          <div className="flex flex-wrap gap-2">
+            <a href="/field-agents/csv/template" className={btnOutline}>
+              一括申請CSVひな形
+            </a>
+            <a href="/field-agents/csv" className={btnOutline}>
+              訪販員申請一覧CSV出力
+            </a>
+          </div>
         }
       >
         訪販員申請一覧

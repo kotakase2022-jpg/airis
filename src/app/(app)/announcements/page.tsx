@@ -17,6 +17,7 @@ import {
   tdCls,
 } from "@/components/ui";
 import { AnnouncementForm } from "./new-form";
+import { AnnouncementEditForm } from "./edit-form";
 import {
   stopAnnouncementAction,
   deleteAnnouncementAction,
@@ -218,7 +219,15 @@ async function AdminView({ page }: { page: number }) {
                         )}
                       </td>
                       <td className={tdCls}>
-                        <div className="flex items-center gap-2 whitespace-nowrap">
+                        <div className="flex flex-wrap items-start gap-2">
+                          {(a.status === "sent" || a.status === "draft") && (
+                            <AnnouncementEditForm
+                              id={a.id}
+                              title={a.title}
+                              body={a.body}
+                              important={a.important}
+                            />
+                          )}
                           {a.status === "draft" && (
                             <form action={sendAnnouncementAction}>
                               <input type="hidden" name="id" value={a.id} />
