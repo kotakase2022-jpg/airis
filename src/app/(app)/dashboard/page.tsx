@@ -75,14 +75,10 @@ export default async function DashboardPage() {
   // 窓口案件
   const showCases =
     canAccess(user.role, "hotline") || canAccess(user.role, "consumer-center") || canAccess(user.role, "agency-cases");
-  const caseWhere =
-    scope === null
-      ? user.role === "R5"
-        ? { series: "HL" }
-        : user.role === "R6"
-          ? { series: "CSC" }
-          : {}
-      : { primaryAgencyId: { in: scope } };
+  const caseWhere = {
+    ...(user.role === "R5" ? { series: "HL" } : user.role === "R6" ? { series: "CSC" } : {}),
+    ...(scope === null ? {} : { primaryAgencyId: { in: scope } }),
+  };
   const caseCounts = showCases
     ? await prisma.case.groupBy({ by: ["status"], _count: true, where: caseWhere })
     : [];

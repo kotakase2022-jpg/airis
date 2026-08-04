@@ -104,13 +104,17 @@ export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy:
   return { ...user, dummy: isDummyView(user.role, page) };
 }
 
-// データスコープ（§3.1）: 参照可能な代理店IDのリストを返す。null = 全代理店（SNC系）
+// データスコープ（§3.1）: 参照可能な代理店IDのリストを返す。
+// SNC系にも「非ダミー全代理店」の配列を返す（R4用ダミーデータの混入防止）
 export async function agencyScope(user: CurrentUser): Promise<string[] | null> {
   if (user.isDummy) {
     const dummies = await prisma.agency.findMany({ where: { isDummy: true }, select: { id: true } });
     return dummies.map((d) => d.id);
   }
-  if (["R1", "R2", "R3", "R5", "R6"].includes(user.role)) return null;
+  if (["R1", "R2", "R3", "R5", "R6"].includes(user.role)) {
+    const all = await prisma.agency.findMany({ where: { isDummy: false }, select: { id: true } });
+    return all.map((a) => a.id);
+  }
   if (!user.agencyId) return [];
   if (user.role === "R7" || user.role === "R10") {
     const children = await prisma.agency.findMany({
