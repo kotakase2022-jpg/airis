@@ -59,13 +59,21 @@ npm run dev
 - ポリシー適用: `npm run rls`（Neonへは `RLS_DATABASE_URL=<非プールURL> npm run rls`）
 - 注意: RLS拡張の都合で `prisma.$transaction` は使用しない（逐次実行にする）
 
+## 日次バッチ（Vercel Cron）
+
+`/api/cron/daily` を毎日 00:00 UTC（09:00 JST）に実行（`vercel.json`）。認証は `Authorization: Bearer ${CRON_SECRET}`（Vercelが自動付与。環境変数 `CRON_SECRET` 必須）。
+
+1. **期限切れ案件リマインド**（§7.8 / 要件9-2 督促）: 期限超過かつ未完了の窓口案件について、当該1次店のR7へ案件ごとに督促通知、SNC運用者(R3)へサマリ通知。`REMINDER_MAIL_TO` 設定時は指定アドレスへメールも送信
+2. **個人情報匿名化**（§3.4）: 削除後1年経過した Airisアカウント/販売員/訪販員申請 のPII（氏名・生年月日・電話・メール・カナ・業務委託先・誓約書PDF）を匿名化。数値実績は分析用に残す。冪等
+
+バッチはセッションが無くRLSでfail-closedになるため、オーナー接続（`DATABASE_URL_UNPOOLED`）を使用する。
+手動実行: `curl -H "Authorization: Bearer $CRON_SECRET" https://airis-nine.vercel.app/api/cron/daily`
+
 ## 未実装（本番リリース前に対応 — SPEC参照）
 
 - MFA（TOTP/Google Authenticator）§4.2
 - パスワード有効期限・履歴24世代 §4.2
 - Slack通知（不要と確認済み 2026-08-05）
-- 期限切れ案件の自動リマインドバッチ §7.8
-- 個人情報の1年後匿名化バッチ §3.4
 - 監査ログの網羅（閲覧イベント等）§3.3
 - テスト一式 §13
 
