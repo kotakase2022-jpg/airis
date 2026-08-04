@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, isAdminIpAllowed } from "@/lib/auth";
 import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, Role } from "@/lib/roles";
 import { csvResponse, toCsv } from "@/lib/csv";
 import { audit, today } from "@/lib/util";
@@ -21,6 +21,12 @@ export async function GET(req: NextRequest) {
   // R1/R2のみ（R4ダミー閲覧は実データのエクスポート不可）
   if (user.role !== "R1" && user.role !== "R2") {
     await audit(user.loginId, "csv_export", "admin", "denied");
+    return new Response("Forbidden", { status: 403 });
+  }
+  // 管理系エンドポイントのIP許可リスト（§10.1）。ページ（/admin）と同じ制御を必ず適用する
+  const ipCheck = await isAdminIpAllowed();
+  if (!ipCheck.allowed) {
+    await audit(user.loginId, "csv_export", `admin ip=${ipCheck.ip} (allowlist)`, "denied");
     return new Response("Forbidden", { status: 403 });
   }
 

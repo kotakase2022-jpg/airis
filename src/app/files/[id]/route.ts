@@ -13,15 +13,20 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
-  const file = await prisma.storedFile.findUnique({ where: { id } });
-  if (!file) return new Response("Not found", { status: 404 });
+  // まずメタデータのみ取得（未認可のリクエストで最大20MBのblobをDBから読ませない）
+  const meta = await prisma.storedFile.findUnique({
+    where: { id },
+    select: { id: true, name: true },
+  });
 
   // 参照元エンティティのスコープ・公開範囲で認可（§3.1 / §10.5 IDOR防止）
-  if (!(await canAccessFile(user, id))) {
-    await audit(user.loginId, "file_download", `${id}`, "denied");
+  // 未認可時はファイルの存在有無を漏らさないため、存在しない場合と同じ403を返す（存在オラクル対策）
+  if (!meta || !(await canAccessFile(user, id))) {
+    if (meta) await audit(user.loginId, "file_download", `${id}`, "denied");
     return new Response("Forbidden", { status: 403 });
   }
 
+  const file = await prisma.storedFile.findUniqueOrThrow({ where: { id } });
   // ファイルダウンロードの監査（§3.3）
   await audit(user.loginId, "file_download", `${file.name} (${id})`);
 

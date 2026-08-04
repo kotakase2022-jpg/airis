@@ -465,7 +465,7 @@ test("R4ダミー表示: お知らせ・ドキュメントも偽データのみ�
   }
 });
 
-test("ファイルダウンロード /files/[id]: ログイン時200+内容一致+監査ログ、未ログイン401、存在しないID404", async ({ page, request }) => {
+test("ファイルダウンロード /files/[id]: ログイン時200+内容一致+監査ログ、未ログイン401、存在しないID403", async ({ page, request }) => {
   test.setTimeout(120_000);
   const d = db();
   // 準備: 公開範囲allのドキュメント（DB直接作成で自己完結）
@@ -505,9 +505,9 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
     });
     expect(log, "file_download の監査ログが残ること").not.toBeNull();
 
-    // 存在しないファイルID → 404（ログイン済み）
+    // 存在しないファイルID → 403（存在オラクル対策で認可拒否と同一応答 §10.5）
     const nf = await page.request.get("/files/qa7-not-exist-file");
-    expect(nf.status()).toBe(404);
+    expect(nf.status()).toBe(403);
 
     // 参照元エンティティを持たない孤立ファイルは拒否（fail-closed §10.5）
     const orphan = await d.storedFile.create({

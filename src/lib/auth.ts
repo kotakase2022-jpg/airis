@@ -105,24 +105,41 @@ export function verifyPassword(pw: string, hash: string): PasswordVerification {
 //  2. それ以外は x-forwarded-for の「末尾から TRUSTED_PROXY_HOPS（既定1）番目」を採用する。
 //     信頼できるプロキシは自分が見た接続元を末尾に追記するため、末尾側はクライアントから
 //     偽装できない。プロキシを多段で挟む構成では TRUSTED_PROXY_HOPS を段数に合わせる。
+//  3. x-forwarded-for は **TRUST_PROXY=true を明示的にオプトインした場合のみ** 採用する。
+//     信頼できるプロキシ配下でない環境では、クライアントが要素1個のXFFを送るだけで
+//     任意のIPを名乗れてしまうため（レート制限・IP許可リストのバイパス）、既定では無視する。
+//     信頼できるIPが決定できない場合は "unknown" を返し、IP許可リストは fail-closed とする。
 const TRUSTED_PROXY_HOPS = Math.max(1, Math.trunc(Number(process.env.TRUSTED_PROXY_HOPS)) || 1);
+const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+export const UNKNOWN_IP = "unknown";
 
 function pickFromEnd(headerValue: string, hops: number): string | null {
   const list = headerValue
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  if (list.length === 0) return null;
-  const idx = Math.max(0, list.length - hops); // 段数が足りない場合は最左（偽装できる要素が無い）
-  return list[idx] ?? null;
+  // 信頼できるプロキシは「自分が見た接続元」を末尾へ追記するため、末尾の hops 個だけが
+  // プロキシ由来（偽装不可）。実クライアントIPはそのうち最も左＝末尾から hops 番目。
+  // 要素数が hops に満たない＝想定した段数のプロキシを経ていない → 信頼できる値なし
+  if (list.length < hops) return null;
+  return list[list.length - hops] ?? null;
 }
 
 export function trustedIpFrom(h: Headers): string {
+  // Vercel が付与するヘッダ（クライアント指定値は上書きされる）を最優先
   const vercel = h.get("x-vercel-forwarded-for");
-  if (vercel) return pickFromEnd(vercel, 1) ?? "local";
-  const fwd = h.get("x-forwarded-for");
-  if (fwd) return pickFromEnd(fwd, TRUSTED_PROXY_HOPS) ?? "local";
-  return "local";
+  if (vercel) {
+    const v = vercel.split(",")[0]?.trim();
+    if (v) return v;
+  }
+  if (TRUST_PROXY) {
+    const fwd = h.get("x-forwarded-for");
+    if (fwd) {
+      const ip = pickFromEnd(fwd, TRUSTED_PROXY_HOPS);
+      if (ip) return ip;
+    }
+  }
+  return UNKNOWN_IP;
 }
 
 // 実効ロールの解決（§14-2）: 稼働終了代理店（agency.status=closed）に属する⑦⑧は⑩として扱う。
@@ -167,22 +184,31 @@ export async function requireUser(): Promise<CurrentUser> {
   return user;
 }
 
+// 管理系エンドポイントのIP許可リスト判定（§10.1 / SEC②#10）。
+// ADMIN_IP_ALLOWLIST 未設定時は無効。設定時は「信頼できる接続元IPが許可リストに含まれる」
+// 場合のみ true。信頼できるIPが決定できない（trustedIpFrom が unknown）場合は **拒否**（fail-closed）。
+// ページだけでなく管理系のRoute Handler（/admin/csv 等）からも必ず呼ぶこと。
+export async function isAdminIpAllowed(): Promise<{ allowed: boolean; ip: string }> {
+  const list = process.env.ADMIN_IP_ALLOWLIST;
+  if (!list) return { allowed: true, ip: "-" };
+  let ip = UNKNOWN_IP;
+  try {
+    ip = trustedIpFrom(await headers());
+  } catch {
+    return { allowed: false, ip: UNKNOWN_IP };
+  }
+  if (ip === UNKNOWN_IP) return { allowed: false, ip };
+  const allowed = list.split(",").map((s) => s.trim()).includes(ip);
+  return { allowed, ip };
+}
+
 export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy: boolean }> {
   const user = await requireUser();
-  // 管理系画面へのIP許可リスト制御（§10.1 / SEC②#10）。ADMIN_IP_ALLOWLIST未設定時は無効。
-  // 設定はカンマ区切りIPリスト。接続元は trustedIpFrom（偽装できない末尾hop）で判定する。
-  if (page === "admin" && process.env.ADMIN_IP_ALLOWLIST) {
-    try {
-      const h = await headers();
-      const ip = trustedIpFrom(h);
-      const allowed = process.env.ADMIN_IP_ALLOWLIST.split(",").map((s) => s.trim());
-      if (!allowed.includes(ip)) {
-        await audit(user.loginId, "access_denied", `page=admin ip=${ip} (allowlist)`, "denied");
-        redirect("/dashboard");
-      }
-    } catch (e) {
-      // redirect()はthrowで実現されるため再スロー。headers()不可時のみ通過
-      if ((e as Error & { digest?: string })?.digest?.startsWith("NEXT_REDIRECT")) throw e;
+  if (page === "admin") {
+    const { allowed, ip } = await isAdminIpAllowed();
+    if (!allowed) {
+      await audit(user.loginId, "access_denied", `page=admin ip=${ip} (allowlist)`, "denied");
+      redirect("/dashboard");
     }
   }
   if (!canAccess(user.role, page)) {

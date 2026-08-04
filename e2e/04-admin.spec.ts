@@ -476,10 +476,10 @@ test.describe("CSV出力・監査ログ", () => {
     ).toBeVisible();
   });
 
-  test("存在しないファイルIDは404・未認証は401（異常系）", async ({ page, browser }) => {
+  test("存在しないファイルIDは403（存在オラクル対策 §10.5）・未認証は401（異常系）", async ({ page, browser }) => {
     await login(page, "R2");
     const res = await page.request.get("/files/qa2_no_such_file_id");
-    expect(res.status()).toBe(404);
+    expect(res.status()).toBe(403);
 
     // 未認証は401
     const anon = await browser.newContext({

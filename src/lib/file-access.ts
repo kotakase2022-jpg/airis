@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "./prisma";
 import { agencyScope, type CurrentUser } from "./auth";
-import { can, announcementFeature, caseFeature } from "./permissions";
+import { can, canApproveFirst, announcementFeature, caseFeature } from "./permissions";
 
 // ファイルの認可（§3.1 / §3.8 / §10.5）。
 // fileId を参照するエンティティを特定し、そのエンティティの閲覧可否ルールを適用する。
@@ -27,14 +27,17 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
   });
   if (req) {
     if (user.isDummy) return false;
-    if (!can(user.role, "airis-account", "view")) {
-      // 閲覧権限が無いロール（⑨⑩や申請のみの④⑤⑥⑧）は、自分が作成した申請に限り許可
-      return req.createdBy === user.loginId;
+    // AccountRequest.createdBy は Account.id（cuid）で保存される（account-requests/actions.ts）
+    const isOwnRequest = !!req.createdBy && req.createdBy === user.id;
+    // 申請者本人は自分が添付した証跡を参照できる（④⑤⑥⑧など閲覧権限が無いロールを含む）
+    if (isOwnRequest) return true;
+    // ①②（閲覧権限）と③（最終承認権限 §5.1「承」）は承認判断のため全件参照可
+    if (can(user.role, "airis-account", "view") || can(user.role, "airis-account", "approve_final")) {
+      return true;
     }
-    // ①②（閲覧権限保持）は全件。③は承認権限者として全件参照を許可（§6.1-3）
-    if (["R1", "R2", "R3"].includes(user.role)) return true;
-    // ⑦（1次承認者）はスコープ内のみ。agencyId=NULL は不可
-    return req.createdBy === user.loginId || inScope(req.agencyId);
+    // ⑦（1次承認権限 §6.1-3）は自店スコープ内の申請のみ。agencyId=NULL（SNC内部申請）は不可
+    if (canApproveFirst(user.role, "airis-account")) return inScope(req.agencyId);
+    return false;
   }
 
   // 2) 訪販員申請の誓約書PDF（§5.1 訪販員申請）

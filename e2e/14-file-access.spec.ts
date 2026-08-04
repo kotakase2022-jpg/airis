@@ -134,9 +134,9 @@ const PRINCIPALS: Principal[] = [
     label: "③SNC運用者",
     loginId: ACCOUNTS.R3.loginId,
     pw: ACCOUNTS.R3.pw,
-    // ③は §5.1 の Airisアカウント行が「承/申」＝「閲」を持たない。
-    // よって証跡は「自分が作成した申請」に限り取得できる（reqSnc の作成者=③）。
-    allow: SNC_VIEW_ALLOW.filter((k) => k !== "reqAgency"),
+    // ③は §5.1 の Airisアカウント行で「承」（最終承認）を持つ。§6.1-2 のとおり
+    // 承認判断には上長承認証跡の確認が前提となるため、全申請の証跡を取得できる。
+    allow: SNC_VIEW_ALLOW,
   },
   {
     id: "R4",
@@ -167,7 +167,11 @@ const PRINCIPALS: Principal[] = [
     label: "⑦1次店管理者（110001）",
     loginId: ACCOUNTS.R7.loginId,
     pw: ACCOUNTS.R7.pw,
+    // ⑦は §5.1「申/一承」＝1次承認権限を持つ。§6.1-3 のとおり自店スコープ内の申請
+    // （reqAgency: 配下2次店210001の申請）の証跡を承認判断のため取得できる。
+    // SNC内部申請（reqSnc: agencyId=NULL）はスコープ外のため取得できない。
     allow: [
+      "reqAgency",
       "pledgeP1",
       "pledgeR9Self",
       "subP1",
@@ -300,7 +304,7 @@ test.beforeAll(async () => {
       agencyId: null, // SNC内部申請（代理店に紐づかない）
       evidenceFileId: reqSncFile.id,
       status: "pending_final",
-      createdBy: ACCOUNTS.R3.loginId, // ③が代行作成（＝作成者本人）
+      createdBy: (await d.account.findUniqueOrThrow({ where: { loginId: ACCOUNTS.R3.loginId }, select: { id: true } })).id, // ③が代行作成（本番同様 Account.id を保存）
       history: [{ event: "requested", at: "2026-08-01", by: ACCOUNTS.R3.loginId }],
     },
   });
@@ -316,7 +320,7 @@ test.beforeAll(async () => {
       agencyId: s1.id, // 210001
       evidenceFileId: reqAgencyFile.id,
       status: "pending_first",
-      createdBy: ACCOUNTS.R8.loginId, // ⑧が作成（＝作成者本人）
+      createdBy: (await d.account.findUniqueOrThrow({ where: { loginId: ACCOUNTS.R8.loginId }, select: { id: true } })).id, // ⑧が作成（本番同様 Account.id を保存）
       history: [{ event: "requested", at: "2026-08-01", by: ACCOUNTS.R8.loginId }],
     },
   });
@@ -822,10 +826,10 @@ test("未認証のファイル取得は401", async ({ request }) => {
   expect(await res.text()).not.toContain(MARKER);
 });
 
-test("ログイン済みでも存在しないファイルIDは404", async ({ page }) => {
+test("ログイン済みでも存在しないファイルIDは403（存在オラクル対策で403に統一 §10.5）", async ({ page }) => {
   await loginRole(page, "R2");
   const res = await page.request.get(`/files/${P}-no-such-file-id`);
-  expect(res.status()).toBe(404);
+  expect(res.status()).toBe(403);
 });
 
 // ================================================================

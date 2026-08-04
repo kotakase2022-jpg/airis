@@ -413,3 +413,46 @@ test.describe("AccessLog書き込み失敗時の fail-closed", () => {
     }
   });
 });
+
+// ============================================================================
+// TRUST_PROXY 未設定（本番既定）では x-forwarded-for を信頼しない（§10.1 fail-closed）
+// ※このテストは TRUST_PROXY=true で起動した検証サーバーでは skip される
+// ============================================================================
+test.describe("TRUST_PROXY のオプトイン", () => {
+  test("TRUST_PROXY未設定時はXFFを信頼せず、接続元IPは unknown として記録される", async ({ page }) => {
+    // 検証サーバーがTRUST_PROXY=trueで起動している場合はこのケースを検証できない
+    test.skip(
+      process.env.QA_TRUST_PROXY !== "false",
+      "TRUST_PROXY=false で起動したサーバーが必要（QA_TRUST_PROXY=false を指定して実行）"
+    );
+    const d = db();
+    const ID = `qa18_untrusted_${RUN}`;
+    await d.account.create({
+      data: {
+        loginId: ID,
+        role: "R5",
+        name: "QA18 XFF非信頼検証",
+        status: "active",
+        passwordHash: "x",
+        mustChangePassword: false,
+      },
+    });
+    try {
+      await page.setExtraHTTPHeaders({ "x-forwarded-for": "203.0.113.77" });
+      await page.goto("/login");
+      await page.locator('input[name="loginId"]').fill(ID);
+      await page.locator('input[name="password"]').fill("wrong-password");
+      await page.getByRole("button", { name: "ログイン" }).click();
+      await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible();
+
+      const logs = await d.accessLog.findMany({ where: { loginId: ID } });
+      expect(logs).toHaveLength(1);
+      expect(logs[0].ip, "偽装XFFは採用されない").not.toBe("203.0.113.77");
+      expect(logs[0].ip, "信頼できるIPが決定できない場合は unknown").toBe("unknown");
+    } finally {
+      await d.accessLog.deleteMany({ where: { loginId: ID } });
+      await d.auditLog.deleteMany({ where: { actor: ID } });
+      await d.account.deleteMany({ where: { loginId: ID } });
+    }
+  });
+});
