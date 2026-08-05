@@ -21,6 +21,7 @@ export type CurrentUser = {
   agencyTier: number | null;
   agencyStatus: string | null;
   mustChangePassword: boolean;
+  mfaEnabled: boolean; // MFA登録済みか（⑨の任意登録リンク表示などに使用）
   isDummy: boolean; // R4 か
 };
 
@@ -45,6 +46,9 @@ export const resolveSession = cache(async (): Promise<SessionData | null> => {
     include: { account: { include: { agency: true } } },
   });
   if (!session) return null;
+  // MFA未完了セッションはアプリ全体で「未ログイン」扱い（fail-closed §4.2）。
+  // /mfa の各ページだけが auth.ts の getMfaPendingSession() で明示的に参照する。
+  if (session.mfaPending) return null;
   const now = new Date();
   if (session.expiresAt < now) return null;
   if (now.getTime() - session.lastSeenAt.getTime() > IDLE_MIN * 60 * 1000) return null;
@@ -69,6 +73,7 @@ export const resolveSession = cache(async (): Promise<SessionData | null> => {
     agencyTier: a.agency?.tier ?? null,
     agencyStatus: a.agency?.status ?? null,
     mustChangePassword: a.mustChangePassword,
+    mfaEnabled: a.mfaEnabled,
     isDummy: role === "R4",
   };
 

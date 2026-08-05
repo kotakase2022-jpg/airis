@@ -174,11 +174,6 @@ export default async function AdminPage({
         </InfoBanner>
       )}
 
-      {/* TODOバナー（SPEC §4.2） */}
-      <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        TODO: MFA(TOTP)は本番リリースまでに実装（SPEC §4.2）
-      </div>
-
       {/* 統計カード */}
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
         {/* 統計カード4枚（§7.2 プロトタイプ踏襲: 表示対象 / 承認待ち / 登録済み / 停止・削除） */}
@@ -288,6 +283,7 @@ export default async function AdminPage({
                             id={a.id}
                             status={a.status}
                             isSelf={a.id === user.id}
+                            mfaEnabled={a.mfaEnabled}
                           />
                           {a.status !== "deleted" && a.role !== "R9" && (
                             <AccountEditButton

@@ -14,7 +14,7 @@
  * シードアカウントには一切触れない。
  */
 import { test, expect, Page } from "@playwright/test";
-import { ACCOUNTS, PW_ADMIN, db, login } from "./helpers";
+import { completeMfaIfNeeded, ACCOUNTS, PW_ADMIN, db, login } from "./helpers";
 
 const P = "QA21";
 const RUN = Date.now().toString().slice(-7);
@@ -42,7 +42,7 @@ async function loginAs(page: Page, loginId: string, password: string) {
   await page.locator('input[name="loginId"]').fill(loginId);
   await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: "ログイン" }).click();
-  await page.waitForURL(/\/(dashboard|password)/, { timeout: 15_000 });
+  await completeMfaIfNeeded(page, loginId); // MFA画面なら通過
 }
 
 // QA21専用アカウント（パスワードはシードアカウントのハッシュを流用＝PW_ADMIN）

@@ -20,6 +20,7 @@ const ADMIN_OP_PERMISSION: Record<string, Operation> = {
   delete: "delete", // 削（§3.4 論理削除）
   restore: "delete", // 論理削除の復旧は「削」権限の範囲（§3.4 / 要件1-5）
   reset_password: "update", // パスワードリセットの管理者代行（§4.2）は「変」の範囲
+  mfa_reset: "update", // 認証アプリ紛失時のMFAリセット（§4.2）も「変」の範囲
 };
 
 // 一時パスワード生成（大文字・小文字・数字を必ず含む。紛らわしい文字は除外）
@@ -138,6 +139,19 @@ export async function accountAction(
       revalidatePath("/admin");
       // 一時パスワードは戻り値でのみ返し、DB・URLには残さない（一度だけインライン表示）
       return { tempPassword: temp, targetLoginId: account.loginId };
+    }
+    case "mfa_reset": {
+      if (account.status === "deleted") return { error: "削除済のアカウントはリセットできません" };
+      if (!account.mfaEnabled && !account.mfaSecret) return { error: "MFAが未登録のアカウントです" };
+      // 認証アプリ紛失時のリセット（§4.2）。次回ログイン時にQRコードから再登録させる
+      await prisma.account.update({
+        where: { id },
+        data: { mfaEnabled: false, mfaSecret: null },
+      });
+      await prisma.session.deleteMany({ where: { accountId: id } }); // 即時セッション破棄
+      await audit(user.loginId, "mfa_reset", account.loginId);
+      revalidatePath("/admin");
+      return { message: `${account.loginId} のMFAをリセットしました（次回ログイン時に再登録）` };
     }
     default:
       return { error: "不明な操作です" };

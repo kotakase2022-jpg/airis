@@ -13,7 +13,7 @@
  * 実行効率のため 1ロール = 1テストとし、ログイン1回で全ファイルの可否行列を検証する。
  */
 import { test, expect, Page } from "@playwright/test";
-import { ACCOUNTS, PW_ADMIN, RoleKey, db } from "./helpers";
+import { completeMfaIfNeeded, ACCOUNTS, PW_ADMIN, RoleKey, db } from "./helpers";
 
 const P = "QA14";
 // 403時に本体が1バイトも返っていないことを確認するための共通マーカー
@@ -256,7 +256,7 @@ async function loginAs(page: Page, loginId: string, password: string) {
   await page.locator('input[name="loginId"]').fill(loginId);
   await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: "ログイン" }).click();
-  await page.waitForURL(/\/(dashboard|password)/, { timeout: 15_000 });
+  await completeMfaIfNeeded(page, loginId); // MFA画面なら通過
 }
 
 async function loginRole(page: Page, role: RoleKey) {

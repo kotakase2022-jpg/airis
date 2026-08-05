@@ -7,6 +7,7 @@ import { defineConfig } from "@playwright/test";
 //   CRON_SECRET=qa-test-secret npx next start -p 3100
 export default defineConfig({
   testDir: "./e2e",
+  globalSetup: "./e2e/global-setup.ts", // シードアカウントへテスト用MFA秘密鍵を事前登録
   fullyParallel: false,
   workers: 1, // DBを共有するため直列実行（決定性優先）
   timeout: 30_000,

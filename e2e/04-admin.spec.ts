@@ -4,7 +4,7 @@
  */
 import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
-import {
+import { completeMfaIfNeeded,
   ACCOUNTS,
   db,
   login,
@@ -343,6 +343,7 @@ test.describe.serial("パスワードリセット（管理者代行 §4.2）", (
     await page.locator('input[name="loginId"]').fill(prId);
     await page.locator('input[name="password"]').fill(tempPassword);
     await page.getByRole("button", { name: "ログイン" }).click();
+    await completeMfaIfNeeded(page, prId); // PWリセット後もMFAは維持され検証を通過（§4.2）
     await page.waitForURL(/\/password/, { timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "パスワードの変更" })

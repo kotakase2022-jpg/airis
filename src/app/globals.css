@@ -24,3 +24,15 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* 入力値が薄いグレーで見にくい問題への全画面対策（発注者指摘 2026-08-05）。
+   個別クラスの指定漏れがあっても入力・選択・テキストエリアの文字は濃色にする */
+input,
+select,
+textarea {
+  color: #0f172a; /* slate-900 */
+}
+input::placeholder,
+textarea::placeholder {
+  color: #94a3b8; /* slate-400: プレースホルダは薄いまま維持 */
+}

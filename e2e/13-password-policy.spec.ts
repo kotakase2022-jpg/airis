@@ -11,7 +11,7 @@ import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
 import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
-import { db } from "./helpers";
+import { completeMfaIfNeeded, db } from "./helpers";
 
 const RUN = Date.now();
 const REUSE_ERROR = "過去24世代と同じパスワードは使用できません";
@@ -80,6 +80,13 @@ async function submitLogin(page: Page, loginId: string, password: string) {
   });
   await page.getByRole("button", { name: "ログイン" }).click();
   await resp;
+  // MFA画面へ遷移した場合は通過する（失敗ケースは /login に留まるため何もしない）
+  try {
+    await page.waitForURL(/\/(mfa|dashboard|password)/, { timeout: 2000 });
+  } catch {
+    return;
+  }
+  if (page.url().includes("/mfa")) await completeMfaIfNeeded(page, loginId);
 }
 
 async function submitPasswordChange(page: Page, current: string, next: string) {

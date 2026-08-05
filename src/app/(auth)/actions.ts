@@ -8,11 +8,13 @@ import {
   destroySession,
   effectiveRole,
   getCurrentUser,
+  getMfaPendingSession,
   hashPassword,
   trustedIpFrom,
   verifyPassword,
   verifyPasswordLenient,
 } from "@/lib/auth";
+import { MFA_MAX_ATTEMPTS, mfaRequiredForRole, verifyMfaCode } from "@/lib/mfa";
 import { ADMIN_PW_ROLES, Role } from "@/lib/roles";
 import { audit } from "@/lib/util";
 
@@ -184,41 +186,193 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
     return { error: logged ? GENERIC_LOGIN_ERROR : ACCESS_LOG_ERROR };
   }
 
+  // 旧アルゴリズム（bcrypt）・ペッパー未適用の旧ハッシュは、パスワード検証を通過した時点で
+  // Argon2id + 現行ペッパーへ再ハッシュ（§10.3 / SEC②#42）。passwordUpdatedAt は据え置く。
+  if (check.needsRehash) {
+    await prisma.account.update({
+      where: { id: account.id },
+      data: { passwordHash: hashPassword(check.matched) },
+    });
+    await audit(loginId, "password_rehash", "algorithm=argon2id pepper_version=v1");
+  }
+
+  // ===== MFA（TOTP §4.2）=====
+  // 登録済みアカウントはコード検証（/mfa）へ、未登録でも必須ロール（⑨以外）は登録（/mfa/setup）へ。
+  // この時点ではログイン完了ではない: 成功ログ・失敗カウンタのリセットはMFA完了時（finalizeLogin）に行い、
+  // それまでのセッションは mfaPending=true（アプリ全体では未ログイン扱い・fail-closed）。
+  if (account.mfaEnabled || mfaRequiredForRole(account.role as Role)) {
+    const logged = await recordAccess({
+      loginId,
+      accountId: account.id,
+      result: "denied",
+      ip,
+      ua,
+      reason: "mfa_pending",
+    });
+    if (!logged) return { error: ACCESS_LOG_ERROR };
+    await createSession(account.id, { mfaPending: true });
+    redirect(account.mfaEnabled ? "/mfa" : "/mfa/setup");
+  }
+
+  // ⑨（販売員）でMFA未登録の場合のみ、パスワードのみでログイン完了（§4.2 利用任意）
+  const fin = await finalizeLogin(account, ip, ua);
+  if (!fin.ok) return { error: ACCESS_LOG_ERROR };
+  await createSession(account.id);
+  redirect(fin.mustChange ? "/password" : "/dashboard");
+}
+
+// ログイン完了処理（パスワードのみで完了する⑨と、MFA完了時の共通処理）。
+// アクセスログ（§3.3 / 要件1-6）はセッション有効化より前に記録する。
+// 記録できない場合はレート制限・ロック判定の情報源が欠落するため、ログインを許可しない（fail-closed）。
+async function finalizeLogin(
+  account: {
+    id: string;
+    loginId: string;
+    role: string;
+    mustChangePassword: boolean;
+    passwordUpdatedAt: Date;
+    agency: { status: string } | null;
+  },
+  ip: string,
+  ua: string
+): Promise<{ ok: boolean; mustChange: boolean }> {
   // パスワード有効期限（§4.2）: 期限超過なら強制変更フラグを立てて/passwordへ誘導。
   // 実効ロールで判定する（稼働終了代理店の⑦⑧=⑩は一般ポリシー180日）。
-  const role = effectiveRole(account.role, account.agency?.status);
+  const role = effectiveRole(account.role as Role, account.agency?.status);
   const maxAgeMs = passwordMaxAgeDays(role) * 24 * 3600 * 1000;
   const expired = Date.now() - account.passwordUpdatedAt.getTime() > maxAgeMs;
-  const mustChangePassword = account.mustChangePassword || expired;
-
-  // アクセスログ（§3.3 / 要件1-6）はセッション発行より前に記録する。
-  // 記録できない場合はレート制限・ロック判定の情報源が欠落するため、ログインを許可しない
-  // （fail-closed。監査ログ側の失敗は業務を止めない設計なので、こちらで担保する）。
   const logged = await recordAccess({
-    loginId,
+    loginId: account.loginId,
     accountId: account.id,
     result: "success",
     ip,
     ua,
   });
-  if (!logged) return { error: ACCESS_LOG_ERROR };
-
+  if (!logged) return { ok: false, mustChange: false };
   await prisma.account.update({
     where: { id: account.id },
     data: {
       failedAttempts: 0,
       lockedUntil: null,
-      // 旧アルゴリズム（bcrypt）・ペッパー未適用の旧ハッシュは成功時に
-      // Argon2id + 現行ペッパーで再ハッシュ（§10.3 / SEC②#42）。
-      // passwordUpdatedAt は据え置く（有効期限の起点を変えない）。
-      ...(check.needsRehash ? { passwordHash: hashPassword(check.matched) } : {}),
       ...(expired ? { mustChangePassword: true } : {}),
     },
   });
-  await createSession(account.id);
-  await audit(loginId, "login", undefined, "success", ip);
-  if (check.needsRehash) await audit(loginId, "password_rehash", "algorithm=argon2id pepper_version=v1");
-  redirect(mustChangePassword ? "/password" : "/dashboard");
+  await audit(account.loginId, "login", undefined, "success", ip);
+  return { ok: true, mustChange: account.mustChangePassword || expired };
+}
+
+// ===== MFAコード検証（登録済みアカウントのログイン時 §4.2）=====
+export async function verifyMfaAction(
+  _prev: { error?: string } | undefined,
+  formData: FormData
+) {
+  const pending = await getMfaPendingSession();
+  if (!pending) redirect("/login");
+  const acc = pending.account;
+  if (!acc.mfaEnabled || !acc.mfaSecret) redirect("/mfa/setup");
+  const code = String(formData.get("code") ?? "");
+  const { ip, ua } = await requestMeta();
+
+  if (!verifyMfaCode(code, acc.mfaSecret)) {
+    // TOTP総当たり対策: 失敗はアカウントロック（30分/10回）に算入し、
+    // セッション単位でも5回でセッション破棄（ログインからやり直し）。
+    await recordAccess({
+      loginId: acc.loginId,
+      accountId: acc.id,
+      result: "failure",
+      ip,
+      ua,
+      reason: "mfa_bad_code",
+    });
+    await audit(acc.loginId, "login", "mfa_bad_code", "failure", ip);
+    const attempts = pending.mfaAttempts + 1;
+    if (attempts >= MFA_MAX_ATTEMPTS) {
+      await destroySession();
+      redirect("/login");
+    }
+    await prisma.session.update({
+      where: { id: pending.sessionId },
+      data: { mfaAttempts: attempts },
+    });
+    return { error: "認証コードが正しくありません" };
+  }
+
+  const account = await prisma.account.findUnique({
+    where: { id: acc.id },
+    include: { agency: true },
+  });
+  if (!account) redirect("/login");
+  const fin = await finalizeLogin(account, ip, ua);
+  if (!fin.ok) return { error: ACCESS_LOG_ERROR };
+  await prisma.session.update({
+    where: { id: pending.sessionId },
+    data: { mfaPending: false, mfaAttempts: 0, lastSeenAt: new Date() },
+  });
+  redirect(fin.mustChange ? "/password" : "/dashboard");
+}
+
+// ===== MFA登録（QRコード読み取り後のコード確認 §4.2）=====
+// (a) mfaPendingセッション（必須ロールの初回登録）と (b) 通常セッションの任意登録（⑨）の両方に対応。
+export async function enrollMfaAction(
+  _prev: { error?: string } | undefined,
+  formData: FormData
+) {
+  const code = String(formData.get("code") ?? "");
+  const { ip, ua } = await requestMeta();
+
+  const pending = await getMfaPendingSession();
+  if (pending) {
+    const acc = pending.account;
+    if (acc.mfaEnabled) redirect("/mfa");
+    if (!acc.mfaSecret) return { error: "秘密鍵が未発行です。ページを再読み込みしてください" };
+    if (!verifyMfaCode(code, acc.mfaSecret)) {
+      await recordAccess({
+        loginId: acc.loginId,
+        accountId: acc.id,
+        result: "denied",
+        ip,
+        ua,
+        reason: "mfa_enroll_bad_code",
+      });
+      const attempts = pending.mfaAttempts + 1;
+      if (attempts >= MFA_MAX_ATTEMPTS) {
+        await destroySession();
+        redirect("/login");
+      }
+      await prisma.session.update({
+        where: { id: pending.sessionId },
+        data: { mfaAttempts: attempts },
+      });
+      return { error: "認証コードが正しくありません。認証アプリの登録をやり直してください" };
+    }
+    await prisma.account.update({ where: { id: acc.id }, data: { mfaEnabled: true } });
+    await audit(acc.loginId, "mfa_enroll", "totp", "success", ip);
+    const account = await prisma.account.findUnique({
+      where: { id: acc.id },
+      include: { agency: true },
+    });
+    if (!account) redirect("/login");
+    const fin = await finalizeLogin(account, ip, ua);
+    if (!fin.ok) return { error: ACCESS_LOG_ERROR };
+    await prisma.session.update({
+      where: { id: pending.sessionId },
+      data: { mfaPending: false, mfaAttempts: 0, lastSeenAt: new Date() },
+    });
+    redirect(fin.mustChange ? "/password" : "/dashboard");
+  }
+
+  // 通常セッションからの任意登録（⑨販売員など）
+  const user = await getCurrentUser();
+  if (!user) redirect("/login");
+  if (user.mfaEnabled) redirect("/dashboard");
+  const account = await prisma.account.findUnique({ where: { id: user.id } });
+  if (!account?.mfaSecret) return { error: "秘密鍵が未発行です。ページを再読み込みしてください" };
+  if (!verifyMfaCode(code, account.mfaSecret)) {
+    return { error: "認証コードが正しくありません。認証アプリの登録をやり直してください" };
+  }
+  await prisma.account.update({ where: { id: user.id }, data: { mfaEnabled: true } });
+  await audit(user.loginId, "mfa_enroll", "totp voluntary", "success", ip);
+  redirect("/dashboard");
 }
 
 export async function changePasswordAction(_prev: { error?: string } | undefined, formData: FormData) {

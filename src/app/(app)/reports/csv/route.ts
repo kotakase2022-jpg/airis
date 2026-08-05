@@ -1,4 +1,4 @@
-// 日報CSVテンプレートのダウンロード（ヘッダのみのCSV。要件6-1）
+// 日報CSVテンプレートのダウンロード（ヘッダ + 2行目に記入例。要件6-1 / 発注者指示 2026-08-05）
 // GET /reports/csv?template=visit | tele
 
 import { NextRequest } from "next/server";
@@ -6,7 +6,12 @@ import { getCurrentUser } from "@/lib/auth";
 import { canAccess } from "@/lib/roles";
 import { toCsv, csvResponse } from "@/lib/csv";
 import { audit, canViewFeatureInScope } from "@/lib/util";
-import { VISIT_CSV_HEADERS, TELE_CSV_HEADERS } from "../defs";
+import {
+  VISIT_CSV_HEADERS,
+  TELE_CSV_HEADERS,
+  VISIT_CSV_EXAMPLE,
+  TELE_CSV_EXAMPLE,
+} from "../defs";
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
@@ -23,11 +28,17 @@ export async function GET(req: NextRequest) {
   const template = req.nextUrl.searchParams.get("template");
   if (template === "visit") {
     await audit(user.loginId, "csv_export", "daily_report_template_visit");
-    return csvResponse("訪販日報CSVテンプレート.csv", toCsv([...VISIT_CSV_HEADERS], []));
+    return csvResponse(
+      "訪販日報CSVテンプレート.csv",
+      toCsv([...VISIT_CSV_HEADERS], [[...VISIT_CSV_EXAMPLE]])
+    );
   }
   if (template === "tele") {
     await audit(user.loginId, "csv_export", "daily_report_template_tele");
-    return csvResponse("テレマ日報CSVテンプレート.csv", toCsv([...TELE_CSV_HEADERS], []));
+    return csvResponse(
+      "テレマ日報CSVテンプレート.csv",
+      toCsv([...TELE_CSV_HEADERS], [[...TELE_CSV_EXAMPLE]])
+    );
   }
   return new Response("Bad Request", { status: 400 });
 }

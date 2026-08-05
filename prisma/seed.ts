@@ -101,6 +101,58 @@ async function main() {
     });
   }
 
+  // ---- MFAデモ用の追加アカウント（発注者指示 2026-08-05: ②〜⑩ 各10 = 計90）----
+  // いずれもMFA未登録の状態で作成し、初回ログイン時にQRコードから登録する。
+  // ⑨は販売員IDのため SalesStaff 行も併せて作成する（下の bulkStaff）。
+  const bulkAccounts: [string, string, string, string | null, string][] = [];
+  for (let i = 2; i <= 11; i++) {
+    const n3 = String(i).padStart(3, "0");
+    const n4 = String(i).padStart(4, "0");
+    bulkAccounts.push(
+      [`airis_snc_adm_${n3}`, "R2", `SNC 管理者${i}`, null, PASSWORDS.admin],
+      [`airis_snc_ops_${n4}`, "R3", `SNC 運用担当${i}`, null, PASSWORDS.admin],
+      [`airis_snc_vew_${n3}`, "R4", `SNC 閲覧ユーザー${i}`, null, PASSWORDS.general],
+      [`airis_snc_spt1_${n3}`, "R5", `ホットライン 窓口担当${i}`, null, PASSWORDS.general],
+      [`airis_snc_spt2_${n3}`, "R6", `消費者センター 窓口担当${i}`, null, PASSWORDS.general],
+      [`airis_1110001_${n3}`, "R7", `東都NW 管理者${i}`, p1.id, PASSWORDS.admin],
+      [`airis_2210001_${n3}`, "R8", `セールスパートナー東京 管理者${i}`, s1.id, PASSWORDS.general],
+      [`airis_1190001_${n3}`, "R7", `北海道テレコム 管理者${i}（稼働終了→⑩）`, p3.id, PASSWORDS.admin]
+    );
+  }
+  for (const [loginId, role, name, agencyId, pw] of bulkAccounts) {
+    await prisma.account.upsert({
+      where: { loginId }, update: {},
+      create: {
+        loginId, role, name, agencyId,
+        status: "active",
+        passwordHash: hash(pw),
+        mustChangePassword: false, // デモ用（本番は true にすること）
+        email: `${loginId}@example.com`,
+      },
+    });
+  }
+  // ⑨（販売員）×10: 110001C101〜C110（既存デモ販売員と重複しない番号帯）
+  for (let i = 1; i <= 10; i++) {
+    const salesId = `110001C${String(100 + i)}`;
+    const acc = await prisma.account.upsert({
+      where: { loginId: salesId }, update: {},
+      create: {
+        loginId: salesId, role: "R9", name: `MFAデモ 販売員${i}`, agencyId: p1.id,
+        status: "active", passwordHash: hash(PASSWORDS.general), mustChangePassword: false,
+      },
+    });
+    await prisma.salesStaff.upsert({
+      where: { salesId }, update: {},
+      create: {
+        salesId, lastName: "MFAデモ", firstName: `販売員${i}`,
+        birthDate: "1995-01-15", phone: `080-9999-9${String(100 + i)}`,
+        agencyId: p1.id, status: "registered", firstApproved: true,
+        accountId: acc.id,
+        history: [{ event: "requested", at: "2026-08-05", by: "seed" }],
+      },
+    });
+  }
+
   // ---- 販売員（⑨含む）----
   const staffData: [string, string, string, string, string, string, string][] = [
     // [salesId, last, first, birth, phone, agencyId, status]
@@ -313,6 +365,11 @@ async function main() {
   console.log("== ログイン情報 ==");
   console.log(`管理者系(①②③⑦): パスワード ${PASSWORDS.admin}`);
   console.log(`一般系(④⑤⑥⑧⑨): パスワード ${PASSWORDS.general}`);
+  console.log(
+    "MFAデモ用アカウント(②〜⑩ 各10): airis_snc_adm_002〜011 / airis_snc_ops_0002〜0011 / " +
+      "airis_snc_vew_002〜011 / airis_snc_spt1_002〜011 / airis_snc_spt2_002〜011 / " +
+      "airis_1110001_002〜011 / airis_2210001_002〜011 / 110001C101〜C110 / airis_1190001_002〜011"
+  );
 }
 
 main().finally(() => prisma.$disconnect());

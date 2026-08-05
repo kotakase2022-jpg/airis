@@ -39,10 +39,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </nav>
         <div className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">
           <div className="mb-1 truncate font-medium text-slate-700">{user.name}</div>
-          <div className="mb-2 truncate">{user.loginId}</div>
-          <form action={logoutAction}>
-            <button className="text-blue-600 hover:underline">ログアウト</button>
-          </form>
+          <div className="truncate">{user.loginId}</div>
+          {!user.mfaEnabled && (
+            // ⑨販売員はMFA利用任意（§4.2）。未登録の場合のみ任意登録への導線を出す
+            <Link href="/mfa/setup" className="mt-2 inline-block text-blue-600 hover:underline">
+              MFA設定（推奨）
+            </Link>
+          )}
         </div>
       </aside>
       <div className="ml-64 flex-1">
@@ -53,6 +56,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
             {ROLE_LABELS[user.role]} モード
           </span>
+          <form action={logoutAction}>
+            <button className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">
+              ログアウト
+            </button>
+          </form>
           <Link
             href="/notifications"
             className="relative rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm"

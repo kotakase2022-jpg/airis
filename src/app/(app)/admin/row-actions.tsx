@@ -94,10 +94,12 @@ export function AccountRowActions({
   id,
   status,
   isSelf,
+  mfaEnabled = false,
 }: {
   id: string;
   status: string;
   isSelf: boolean;
+  mfaEnabled?: boolean;
 }) {
   const [state, action, pending] = useActionState<AdminActionState, FormData>(
     accountAction,
@@ -151,6 +153,19 @@ export function AccountRowActions({
             >
               PWリセット
             </button>
+            {mfaEnabled && (
+              <button
+                name="op"
+                value="mfa_reset"
+                disabled={pending}
+                className={btnOutline}
+                onClick={confirmClick(
+                  "MFAをリセットしますか？対象者は次回ログイン時にQRコードから再登録します。"
+                )}
+              >
+                MFAリセット
+              </button>
+            )}
           </>
         )}
         {status === "suspended" && (

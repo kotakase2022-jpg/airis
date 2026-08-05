@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { agencyScope, hashPassword, requirePage, type CurrentUser } from "@/lib/auth";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
+import { UNDER_AGE_ERROR, isUnder15 } from "@/lib/age";
 import { audit, notify, notifyRole, pushHistory } from "@/lib/util";
 import { parseCsv } from "@/lib/csv";
 
@@ -88,6 +89,7 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
     return { error: "必須項目（代理店・姓・名・生年月日・電話番号）を入力してください" };
   }
   if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
+  if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 15歳未満は申請不可（発注者指示）
   // R8 は自店固定（クライアント改ざん対策）
   if (user.role === "R8" && agencyId !== user.agencyId) return { error: "二次代理店は自店のみ申請できます" };
   if (scope && !scope.includes(agencyId)) return { error: "指定された代理店は操作対象外です" };
@@ -187,6 +189,7 @@ export async function csvBulkApplyAction(_prev: CsvApplyState, formData: FormDat
     if (!lastName) rowErrors.push("姓が未入力です");
     if (!firstName) rowErrors.push("名が未入力です");
     if (!DATE_RE.test(birthDate)) rowErrors.push("生年月日は YYYY-MM-DD 形式で入力してください");
+    else if (isUnder15(birthDate)) rowErrors.push(UNDER_AGE_ERROR); // 15歳未満は申請不可
     if (!phone) rowErrors.push("電話番号が未入力です");
     const agencyId = byCode.get(code);
     if (!code) rowErrors.push("代理店コードが未入力です");
@@ -249,6 +252,7 @@ export async function updateStaffAction(
     return { error: "必須項目（姓・名・生年月日・電話番号）を入力してください" };
   }
   if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
+  if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 登録情報変更でも15歳未満は不可
 
   try {
     await prisma.salesStaff.update({

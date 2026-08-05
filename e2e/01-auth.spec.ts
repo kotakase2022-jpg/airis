@@ -4,7 +4,7 @@ import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
 import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
-import {
+import { completeMfaIfNeeded,
   ACCOUNTS,
   PW_ADMIN,
   PW_GENERAL,
@@ -96,6 +96,13 @@ async function submitLogin(page: Page, loginId: string, password: string) {
   });
   await page.getByRole("button", { name: "ログイン" }).click();
   await resp;
+  // MFA画面へ遷移した場合は通過する（失敗ケースは /login に留まるため何もしない）
+  try {
+    await page.waitForURL(/\/(mfa|dashboard|password)/, { timeout: 2000 });
+  } catch {
+    return;
+  }
+  if (page.url().includes("/mfa")) await completeMfaIfNeeded(page, loginId);
 }
 
 // ================================================================

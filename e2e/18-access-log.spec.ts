@@ -14,7 +14,7 @@
 import { test, expect, Page } from "@playwright/test";
 import { hashSync as argon2HashSync } from "@node-rs/argon2";
 import crypto from "crypto";
-import { ACCOUNTS, db, login } from "./helpers";
+import { completeMfaIfNeeded, ACCOUNTS, db, login } from "./helpers";
 
 const RUN = Date.now();
 
@@ -68,6 +68,13 @@ async function submitLogin(page: Page, loginId: string, password: string) {
   const resp = page.waitForResponse((r) => r.request().method() === "POST", { timeout: 15_000 });
   await page.getByRole("button", { name: "ログイン" }).click();
   await resp;
+  // MFA画面へ遷移した場合は通過する（失敗ケースは /login に留まるため何もしない）
+  try {
+    await page.waitForURL(/\/(mfa|dashboard|password)/, { timeout: 2000 });
+  } catch {
+    return;
+  }
+  if (page.url().includes("/mfa")) await completeMfaIfNeeded(page, loginId);
 }
 
 // x-forwarded-for を差し替えてリクエストさせる（偽装プロキシヘッダの再現）。
@@ -107,8 +114,15 @@ test.describe("AccessLogの記録", () => {
       await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
 
       const logs = await accessLogsOf(ID);
-      expect(logs, "成功のアクセスログが1件記録されること").toHaveLength(1);
-      const row = logs[0];
+      // MFA有効化後（§4.2）は「パスワード段階通過=denied/mfa_pending」→「MFA完了=success」の
+      // 2件が記録される。成功レコードは1件だけであること。
+      expect(logs.map((l) => `${l.result}:${l.reason ?? ""}`)).toEqual([
+        "denied:mfa_pending",
+        "success:",
+      ]);
+      const successRows = logs.filter((l) => l.result === "success");
+      expect(successRows, "成功のアクセスログが1件記録されること").toHaveLength(1);
+      const row = successRows[0];
       expect(row.result).toBe("success");
       expect(row.accountId, "アカウント単位で記録されること（§3.3）").toBe(accountId);
       expect(row.ip, "IPアドレスが記録されること").toBeTruthy();
@@ -414,8 +428,9 @@ test.describe("AccessLog書き込み失敗時の fail-closed", () => {
       await submitLogin(page, ID, PW);
       await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
       const logs = await accessLogsOf(ID);
-      expect(logs).toHaveLength(1);
-      expect(logs[0].result).toBe("success");
+      // MFA段階（denied:mfa_pending）+ 完了（success）の2件
+      expect(logs.map((l) => l.result)).toEqual(["denied", "success"]);
+      expect(logs.filter((l) => l.result === "success")).toHaveLength(1);
     } finally {
       await removeAccount(ID);
     }

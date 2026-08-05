@@ -1,5 +1,12 @@
 import { Page, expect } from "@playwright/test";
 import { PrismaClient } from "@prisma/client";
+import { generateSync } from "otplib";
+
+// ===== MFA（§4.2）=====
+// シード済みアカウントは global-setup で既知の秘密鍵を事前登録し、ログイン時のTOTPを
+// このヘルパーで生成する。テスト中に新規作成されたアカウントは初回ログインで登録画面に
+// なるため、DBから秘密鍵（ページ表示時に発行済み）を読んでコードを生成する。
+export const TEST_MFA_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP";
 
 // ===== テストアカウント（prisma/seed.ts 準拠） =====
 export const PW_ADMIN = "Airis-Demo-Admin-2026!x"; // ①②③⑦（20桁以上）
@@ -32,13 +39,26 @@ export function db(): PrismaClient {
 }
 
 // ===== ログイン =====
+// ログイン直後の遷移先が /mfa（検証）または /mfa/setup（初回登録）なら、
+// DBの秘密鍵からTOTPコードを生成して通過する。⑨未登録などMFA無しならそのまま返る。
+export async function completeMfaIfNeeded(page: Page, loginId: string): Promise<void> {
+  await page.waitForURL(/\/(dashboard|password|mfa)/, { timeout: 15_000 });
+  if (!/\/mfa(\/|$|\?)/.test(new URL(page.url()).pathname + "/")) return;
+  // 登録画面の表示時点で mfaSecret はDBに発行済み（リロードでも不変）
+  const acc = await db().account.findUnique({ where: { loginId } });
+  if (!acc?.mfaSecret) throw new Error(`MFA secret not found for ${loginId}`);
+  await page.locator('input[name="code"]').fill(generateSync({ secret: acc.mfaSecret }));
+  await page.getByRole("button", { name: /登録して続行|認証する/ }).click();
+  await page.waitForURL(/\/(dashboard|password)/, { timeout: 15_000 });
+}
+
 export async function login(page: Page, role: RoleKey): Promise<void> {
   const acc = ACCOUNTS[role];
   await page.goto("/login");
   await page.locator('input[name="loginId"]').fill(acc.loginId);
   await page.locator('input[name="password"]').fill(acc.pw);
   await page.getByRole("button", { name: "ログイン" }).click();
-  await page.waitForURL(/\/(dashboard|password)/, { timeout: 15_000 });
+  await completeMfaIfNeeded(page, acc.loginId);
 }
 
 export async function loginExpectDashboard(page: Page, role: RoleKey): Promise<void> {

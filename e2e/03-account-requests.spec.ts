@@ -3,7 +3,7 @@
  * データプレフィクス: QA2
  */
 import { test, expect, Page, Locator } from "@playwright/test";
-import {
+import { completeMfaIfNeeded,
   ACCOUNTS,
   db,
   login,
@@ -293,6 +293,7 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
     await page.locator('input[name="loginId"]').fill(issuedLoginId);
     await page.locator('input[name="password"]').fill(tempPassword);
     await page.getByRole("button", { name: "ログイン" }).click();
+    await completeMfaIfNeeded(page, issuedLoginId); // 新規アカウントはMFA初回登録を通過（§4.2）
     await page.waitForURL(/\/password/, { timeout: 15_000 });
     await expect(
       page.getByRole("heading", { name: "パスワードの変更" })

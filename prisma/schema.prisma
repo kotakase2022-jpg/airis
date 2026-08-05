@@ -48,6 +48,8 @@ model Account {
   passwordUpdatedAt  DateTime  @default(now())
   failedAttempts     Int       @default(0)
   lockedUntil        DateTime?
+  mfaSecret          String? // TOTP秘密鍵（登録開始時に生成、有効化前は enabled=false のまま保持）
+  mfaEnabled         Boolean   @default(false) // MFA登録完了済みか（§4.2）
   isVendor           Boolean   @default(false) // サスラボ保守区分
   deletedAt          DateTime?
   anonymizedAt       DateTime?
@@ -62,13 +64,15 @@ model Account {
 }
 
 model Session {
-  id         String   @id @default(cuid())
-  token      String   @unique
-  accountId  String
-  account    Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
-  lastSeenAt DateTime @default(now())
-  expiresAt  DateTime // 絶対期限24h
+  id          String   @id @default(cuid())
+  token       String   @unique
+  accountId   String
+  account     Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  expiresAt   DateTime // 絶対期限24h
+  mfaPending  Boolean  @default(false) // パスワード認証済み・MFA未完了（このセッションでは/mfa以外に入れない）
+  mfaAttempts Int      @default(0) // MFAコードの連続失敗回数（5回でセッション破棄）
 }
 
 // アカウント申請（Airisアカウント）

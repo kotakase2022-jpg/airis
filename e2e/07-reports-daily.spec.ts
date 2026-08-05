@@ -542,11 +542,19 @@ test("CSVテンプレートDL: 訪販/テレマのヘッダ検証・不正パラ
   expect(visit.headers()["content-type"]).toContain("text/csv");
   const visitBody = (await visit.text()).replace(/^﻿/, "");
   expect(visitBody.split(/\r?\n/)[0]).toBe(VISIT_HEADERS);
+  // 2行目に記入例が入っていること（発注者指示 2026-08-05）。
+  // 日付セルは「(例)」付きのため、例文行を残したまま取り込むと形式エラーで弾かれる
+  const visitExample = visitBody.split(/\r?\n/)[1] ?? "";
+  expect(visitExample.startsWith("(例)2026-08-01")).toBe(true);
+  expect(visitExample).toContain("記入例");
 
   const tele = await page.request.get("/reports/csv?template=tele");
   expect(tele.status()).toBe(200);
   const teleBody = (await tele.text()).replace(/^﻿/, "");
   expect(teleBody.split(/\r?\n/)[0]).toBe(TELE_HEADERS);
+  const teleExample = teleBody.split(/\r?\n/)[1] ?? "";
+  expect(teleExample.startsWith("(例)2026-08-01")).toBe(true);
+  expect(teleExample).toContain("記入例");
 
   // 異常系: 存在しないテンプレート種別
   const bad = await page.request.get("/reports/csv?template=bogus");

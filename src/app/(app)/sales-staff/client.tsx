@@ -4,6 +4,7 @@
 
 import { useActionState, useState } from "react";
 import { btnDanger, btnOutline, btnPrimary, btnSuccess, inputCls, labelCls } from "@/components/ui";
+import { fifteenYearsAgo } from "@/lib/age";
 import {
   applyStaffAction,
   csvBulkApplyAction,
@@ -72,7 +73,15 @@ export function ApplyForm({
         </div>
         <div>
           <label className={labelCls}>生年月日 *</label>
-          <input type="date" name="birthDate" required className={inputCls} />
+          {/* デフォルトは「15年前の今日」= 申請可能な最も新しい生年月日（発注者指示）。
+              これより後（15歳未満）はサーバー側で拒否される */}
+          <input
+            type="date"
+            name="birthDate"
+            required
+            className={inputCls}
+            defaultValue={fifteenYearsAgo()}
+          />
         </div>
         <div>
           <label className={labelCls}>電話番号 *</label>

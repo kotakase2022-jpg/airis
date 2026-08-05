@@ -122,10 +122,12 @@ export function effectiveRole(rawRole: string, agencyStatus?: string | null): Ro
   return rawRole as Role;
 }
 
-export async function createSession(accountId: string) {
+export async function createSession(accountId: string, opts?: { mfaPending?: boolean }) {
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + ABS_HOURS * 3600 * 1000);
-  await prisma.session.create({ data: { token, accountId, expiresAt } });
+  await prisma.session.create({
+    data: { token, accountId, expiresAt, mfaPending: opts?.mfaPending ?? false },
+  });
   const store = await cookies();
   store.set(SESSION_COOKIE, token, {
     httpOnly: true,
@@ -148,6 +150,56 @@ export async function destroySession() {
 export async function getCurrentUser(): Promise<CurrentUser | null> {
   const data = await resolveSession();
   return data?.user ?? null;
+}
+
+// ===== MFA未完了セッション（§4.2）=====
+// resolveSession は mfaPending セッションを「未ログイン」として扱う（fail-closed）。
+// /mfa の登録・検証ページだけがこの関数で当該セッションを明示的に参照する。
+export type MfaPendingSession = {
+  sessionId: string;
+  mfaAttempts: number;
+  account: {
+    id: string;
+    loginId: string;
+    role: Role;
+    mfaSecret: string | null;
+    mfaEnabled: boolean;
+    mustChangePassword: boolean;
+  };
+};
+
+export async function getMfaPendingSession(): Promise<MfaPendingSession | null> {
+  let token: string | undefined;
+  try {
+    const store = await cookies();
+    token = store.get(SESSION_COOKIE)?.value;
+  } catch {
+    return null;
+  }
+  if (!token) return null;
+  const session = await prisma.session.findUnique({
+    where: { token },
+    include: { account: true },
+  });
+  if (!session || !session.mfaPending) return null;
+  const now = new Date();
+  if (session.expiresAt < now) return null;
+  // アイドル期限はログイン画面と同じ扱い（60分放置でやり直し）
+  if (now.getTime() - session.lastSeenAt.getTime() > 60 * 60 * 1000) return null;
+  const a = session.account;
+  if (a.status !== "active" && a.status !== "pending") return null;
+  return {
+    sessionId: session.id,
+    mfaAttempts: session.mfaAttempts,
+    account: {
+      id: a.id,
+      loginId: a.loginId,
+      role: a.role as Role,
+      mfaSecret: a.mfaSecret,
+      mfaEnabled: a.mfaEnabled,
+      mustChangePassword: a.mustChangePassword,
+    },
+  };
 }
 
 export async function requireUser(): Promise<CurrentUser> {

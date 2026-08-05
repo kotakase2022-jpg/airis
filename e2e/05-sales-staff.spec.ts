@@ -4,7 +4,7 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
-import {
+import { completeMfaIfNeeded,
   ACCOUNTS,
   PW_GENERAL,
   collectConsoleErrors,
@@ -34,6 +34,13 @@ async function rawLogin(page: Page, loginId: string, password: string) {
   await page.locator('input[name="loginId"]').fill(loginId);
   await page.locator('input[name="password"]').fill(password);
   await page.getByRole("button", { name: "ログイン" }).click();
+  // MFA画面へ遷移した場合は通過する（失敗ケースは /login に留まるため何もしない）
+  try {
+    await page.waitForURL(/\/(mfa|dashboard|password)/, { timeout: 2000 });
+  } catch {
+    return;
+  }
+  if (page.url().includes("/mfa")) await completeMfaIfNeeded(page, loginId);
 }
 
 function gotoList(page: Page, q?: string) {
@@ -764,4 +771,60 @@ test("異常系: 存在しないIDではログインできない", async ({ page
   await rawLogin(page, `QA3-ghost-${RUN}`, PW_GENERAL);
   await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({ timeout: 10_000 });
   await expect(page).toHaveURL(/\/login/);
+});
+
+// ================================================================
+// 年齢制限（発注者指示 2026-08-05）: 生年月日のデフォルトは「15年前の今日」、
+// 15歳未満（それより後の生年月日）は「15歳未満の方は申請できません」
+// ================================================================
+// 「15年前の今日」（JST）。src/lib/age.ts の fifteenYearsAgo と同じ規則を独立に再計算する
+function cutoffBirthDate(): string {
+  const jst = new Date(Date.now() + 9 * 3600 * 1000);
+  const y = jst.getUTCFullYear() - 15;
+  const m = jst.getUTCMonth() + 1;
+  const d = jst.getUTCDate();
+  const isLeap = (yy: number) => (yy % 4 === 0 && yy % 100 !== 0) || yy % 400 === 0;
+  const day = m === 2 && d === 29 && !isLeap(y) ? 28 : d;
+  return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+test("申請フォーム: 生年月日のデフォルトは15年前の今日（2026年時点=2011年の今日）", async ({ page }) => {
+  // R8は所属代理店が自店固定のためフォーム入力が最小で済む
+  await freshLogin(page, "R8");
+  await gotoList(page);
+  await page.locator("summary", { hasText: "＋ 販売員ID申請" }).click();
+  await expect(page.locator('input[name="birthDate"]')).toHaveValue(cutoffBirthDate());
+});
+
+test("申請フォーム: 15歳未満の生年月日は「15歳未満の方は申請できません」", async ({ page }) => {
+  const lastName = P("未成年");
+  await freshLogin(page, "R8");
+  await gotoList(page);
+  await page.locator("summary", { hasText: "＋ 販売員ID申請" }).click();
+  await page.locator('input[name="lastName"]').fill(lastName);
+  await page.locator('input[name="firstName"]').fill("十四歳");
+  await page.locator('input[name="phone"]').fill("090-1111-0014");
+  // 締切日の翌日 = 15歳の誕生日前日（14歳）
+  const cutoff = new Date(`${cutoffBirthDate()}T00:00:00Z`);
+  cutoff.setUTCDate(cutoff.getUTCDate() + 1);
+  await page.locator('input[name="birthDate"]').fill(cutoff.toISOString().slice(0, 10));
+  await page.getByRole("button", { name: "申請する" }).click();
+  await expect(page.getByText("15歳未満の方は申請できません")).toBeVisible({ timeout: 10_000 });
+  expect(await db().salesStaff.count({ where: { lastName } })).toBe(0);
+});
+
+test("申請フォーム: ちょうど15歳（15年前の今日）は申請できる（境界）", async ({ page }) => {
+  const lastName = P("十五歳");
+  await freshLogin(page, "R8");
+  await gotoList(page);
+  await page.locator("summary", { hasText: "＋ 販売員ID申請" }).click();
+  await page.locator('input[name="lastName"]').fill(lastName);
+  await page.locator('input[name="firstName"]').fill("ちょうど");
+  await page.locator('input[name="phone"]').fill("090-1111-0015");
+  await page.locator('input[name="birthDate"]').fill(cutoffBirthDate());
+  await page.getByRole("button", { name: "申請する" }).click();
+  await expect(page.getByText(`${lastName} ちょうど さんの販売員IDを申請しました（申請中）`)).toBeVisible({
+    timeout: 10_000,
+  });
+  expect(await db().salesStaff.count({ where: { lastName } })).toBe(1);
 });
