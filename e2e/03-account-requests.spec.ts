@@ -154,6 +154,67 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
       /⑧/,
     ]);
   });
+
+  // 発注者指示 2026-08-05: ②は②〜⑩を申請できるが①（サスラボシステム管理）は申請できない
+  test("②の申請可能ロールは②〜⑩（①は選べない）", async ({ page }) => {
+    await login(page, "R2");
+    await openRequestForm(page);
+    expect(await roleOptionValues(page)).toEqual([
+      "R2",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R10",
+    ]);
+    await expect(page.locator('select[name="role"] option')).not.toHaveText([/①/]);
+  });
+
+  test("②が①の申請をAPIへ直接送っても拒否される（UI改ざん耐性）", async ({ page }) => {
+    const name = `QA2禁止ロール-${RUN}`;
+    await login(page, "R2");
+    await openRequestForm(page);
+    // select に無い値をDOM側で注入してサーバ検証を突く
+    await page.locator('select[name="role"]').evaluate((el) => {
+      const s = el as HTMLSelectElement;
+      const opt = document.createElement("option");
+      opt.value = "R1";
+      opt.textContent = "R1";
+      s.appendChild(opt);
+      s.value = "R1";
+      s.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await page.locator('input[name="name"]').fill(name);
+    await page.locator('input[name="email"]').fill(`qa2-deny-${RUN}@example.com`);
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "evidence.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4 qa2 evidence"),
+    });
+    await page.getByRole("button", { name: "申請する" }).click();
+    await expect(
+      page.getByText("このロールを申請する権限がありません", { exact: false })
+    ).toBeVisible({ timeout: 10_000 });
+    expect(await db().accountRequest.count({ where: { name } })).toBe(0);
+  });
+
+  test("①は①を含む全ロールを申請できる（②のみの制限であること）", async ({ page }) => {
+    await login(page, "R1");
+    await openRequestForm(page);
+    expect(await roleOptionValues(page)).toEqual([
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R10",
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

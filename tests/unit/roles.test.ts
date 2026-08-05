@@ -146,9 +146,10 @@ describe("MENU（§11.1 の11項目 + 代理店向け統合ビュー）", () => 
 
 describe("REQUESTABLE_ROLES（§6.1 申請できるロールの範囲）", () => {
   const CASES: { requester: Role; expected: Role[] }[] = [
-    // ①②→①〜⑩すべて（⑨販売員はAirisアカウント対象外 §6.1見出し「①〜⑧⑩」）
+    // ①→①〜⑩すべて（⑨販売員はAirisアカウント対象外 §6.1見出し「①〜⑧⑩」）
     { requester: "R1", expected: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"] },
-    { requester: "R2", expected: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"] },
+    // ②→②〜⑩（①=保守ベンダーは申請不可。発注者指示 2026-08-05）
+    { requester: "R2", expected: ["R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"] },
     // ③→③〜⑩
     { requester: "R3", expected: ["R3", "R4", "R5", "R6", "R7", "R8", "R10"] },
     // ④→④のみ / ⑤→⑤のみ / ⑥→⑥のみ
