@@ -15,6 +15,15 @@ export type AgencyOption = {
   status: string;
 };
 
+// 販売員ID紐付け用（問題一覧No.14）。agencyId/parentIdで選択中の代理店に絞り込む
+export type StaffPick = {
+  id: string;
+  salesId: string;
+  name: string;
+  agencyId: string;
+  agencyParentId: string | null;
+};
+
 // 起票テンプレ雛形（§7.8 一字一句）。「代理店確認依頼」のみ ■顧客要望 → ■確認内容
 const TEMPLATE_BODIES: Record<string, string> = {
   音声提出依頼:
@@ -30,10 +39,12 @@ export function NewCaseForm({
   series,
   basePath,
   agencies,
+  staff = [],
 }: {
   series: "HL" | "CSC";
   basePath: string;
   agencies: AgencyOption[];
+  staff?: StaffPick[];
 }) {
   const [state, formAction, pending] = useActionState(
     (prev: CreateCaseState, fd: FormData) => createCaseAction(series, prev, fd),
@@ -132,6 +143,31 @@ export function NewCaseForm({
         <div>
           <label className={labelCls}>対応期限</label>
           <input name="deadline" type="date" className={inputCls} required />
+        </div>
+        <div>
+          {/* 販売員ID紐付け（任意。問題一覧No.14: ID単位の品質管理・代理店別集計用） */}
+          <label className={labelCls}>販売員ID（任意）</label>
+          <select name="salesStaffId" className={inputCls} defaultValue="" disabled={!primaryId}>
+            <option value="">指定なし</option>
+            {staff
+              .filter(
+                (s) =>
+                  primaryId && (s.agencyId === primaryId || s.agencyParentId === primaryId)
+              )
+              .map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.salesId} {s.name}
+                </option>
+              ))}
+          </select>
+          {!primaryId && (
+            <p className="mt-1 text-[11px] text-slate-400">一次代理店を選択すると絞り込まれます</p>
+          )}
+        </div>
+        <div className="col-span-2">
+          {/* 起票時添付（SNC側は添付可 §14-3。問題一覧No.23） */}
+          <label className={labelCls}>添付ファイル（任意・複数可）</label>
+          <input name="files" type="file" multiple className="text-sm" />
         </div>
         <div className="col-span-3">
           <label className={labelCls}>件名（テンプレ・代理店・ISP受付番号から自動生成）</label>

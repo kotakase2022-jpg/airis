@@ -382,7 +382,7 @@ test.describe("CSV出力・監査ログ", () => {
     expect(body.charCodeAt(0)).toBe(0xfeff);
     const lines = body.replace(/^﻿/, "").split("\r\n");
     expect(lines[0]).toBe(
-      "ログインID,ロール,氏名,メール,所属代理店コード,ステータス,作成日,最終PW変更日"
+      "ログインID,ロール,氏名,メール,所属代理店コード,ステータス,作成日,最終PW変更日,削除日時"
     );
     // 全アカウントが対象（SNC系・代理店系の両方を含む）
     expect(body).toContain("airis_slb_sys_001");
@@ -517,6 +517,8 @@ test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
       await row.locator('input[name="name"]').fill(`QA2編集後 ${RUN}`);
       await row.locator('input[name="email"]').fill(`edited_${loginId}@example.com`);
       await row.locator('select[name="role"]').selectOption("R6");
+      await row.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`); // 変更理由は必須（問題一覧No.15）
+      page.once("dialog", (d) => d.accept());
       await row.getByRole("button", { name: "保存" }).click();
       await expect(row.getByText("を更新しました")).toBeVisible();
       // DB検証
@@ -610,6 +612,8 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       await expect(row2).toHaveCount(1);
       await row2.getByRole("button", { name: "編集" }).click();
       await row2.locator('select[name="role"]').selectOption("R7");
+      await row2.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`);
+      page.once("dialog", (d) => d.accept());
       await row2.getByRole("button", { name: "保存" }).click();
       await expect(
         row2.getByText("一次代理店管理者には1次代理店を選択してください")
@@ -622,6 +626,8 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       await expect(row1).toHaveCount(1);
       await row1.getByRole("button", { name: "編集" }).click();
       await row1.locator('select[name="role"]').selectOption("R8");
+      await row1.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`);
+      page.once("dialog", (d) => d.accept());
       await row1.getByRole("button", { name: "保存" }).click();
       await expect(
         row1.getByText("二次代理店管理者には2次代理店を選択してください")
@@ -633,6 +639,8 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       const row1b = accountRow(page, tier1LoginId);
       await row1b.getByRole("button", { name: "編集" }).click();
       await row1b.locator('input[name="name"]').fill(`QA2 tier1 更新 ${RUN}`);
+      await row1b.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`); // 変更理由は必須（問題一覧No.15）
+      page.once("dialog", (d) => d.accept());
       await row1b.getByRole("button", { name: "保存" }).click();
       await expect(row1b.getByText("を更新しました")).toBeVisible({ timeout: 10_000 });
       const after = await db().account.findUnique({ where: { id: tier1Acc.id } });

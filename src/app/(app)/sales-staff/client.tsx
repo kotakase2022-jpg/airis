@@ -85,7 +85,17 @@ export function ApplyForm({
         </div>
         <div>
           <label className={labelCls}>電話番号 *</label>
-          <input name="phone" required className={inputCls} placeholder="090-1234-5678" />
+          {/* 0始まり10〜11桁・ハイフン任意（問題一覧No.32。入力時点で形式チェック） */}
+          <input
+            name="phone"
+            required
+            className={inputCls}
+            placeholder="090-1234-5678"
+            inputMode="tel"
+            maxLength={13}
+            pattern="0[0-9\-]{9,12}"
+            title="0始まりの10〜11桁（ハイフン任意）で入力してください"
+          />
         </div>
         <div>
           <label className={labelCls}>メールアドレス（任意）</label>
@@ -160,7 +170,16 @@ function StaffEditForm({ staffId, initial }: { staffId: string; initial: StaffEd
         </div>
         <div>
           <label className={labelCls}>電話番号 *</label>
-          <input name="phone" required defaultValue={initial.phone} className={inputCls} />
+          <input
+            name="phone"
+            required
+            defaultValue={initial.phone}
+            className={inputCls}
+            inputMode="tel"
+            maxLength={13}
+            pattern="0[0-9\-]{9,12}"
+            title="0始まりの10〜11桁（ハイフン任意）で入力してください"
+          />
         </div>
         <div className="col-span-2">
           <label className={labelCls}>メールアドレス（任意）</label>

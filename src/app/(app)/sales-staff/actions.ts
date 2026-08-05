@@ -36,6 +36,14 @@ function statusLabel(status: string): string {
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// 電話番号（検収指摘 問題一覧No.32）: ハイフン任意・0始まり10〜11桁（携帯/固定）。
+// 表記ゆれ防止のためハイフンを除いた数字で検証する。※形式は仮確定（発注者確認事項）
+const PHONE_ERROR = "電話番号は0始まりの10〜11桁（ハイフン任意）で入力してください";
+function isValidPhone(phone: string): boolean {
+  if (!/^[\d-]+$/.test(phone)) return false;
+  const digits = phone.replace(/-/g, "");
+  return /^0\d{9,10}$/.test(digits);
+}
 // 権限判定は §5.1 の宣言的マップ（@/lib/permissions）に集約する（§3.2）。
 // 販売員ID: 申=①②③⑦⑧ / 一承=⑦（+最終承認権限者は内含 §6.2-2） / 承=①②③ / 変・停・削=①②③⑦。
 // ⑦の「自店配下のみ」は agencyScope（§3.1）で担保する。
@@ -90,6 +98,7 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
   }
   if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
   if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 15歳未満は申請不可（発注者指示）
+  if (!isValidPhone(phone)) return { error: PHONE_ERROR };
   // R8 は自店固定（クライアント改ざん対策）
   if (user.role === "R8" && agencyId !== user.agencyId) return { error: "二次代理店は自店のみ申請できます" };
   if (scope && !scope.includes(agencyId)) return { error: "指定された代理店は操作対象外です" };
@@ -191,6 +200,7 @@ export async function csvBulkApplyAction(_prev: CsvApplyState, formData: FormDat
     if (!DATE_RE.test(birthDate)) rowErrors.push("生年月日は YYYY-MM-DD 形式で入力してください");
     else if (isUnder15(birthDate)) rowErrors.push(UNDER_AGE_ERROR); // 15歳未満は申請不可
     if (!phone) rowErrors.push("電話番号が未入力です");
+    else if (!isValidPhone(phone)) rowErrors.push(PHONE_ERROR);
     const agencyId = byCode.get(code);
     if (!code) rowErrors.push("代理店コードが未入力です");
     else if (!agencyId) rowErrors.push(`代理店コード「${code}」が存在しないか、操作対象外です`);
@@ -253,6 +263,7 @@ export async function updateStaffAction(
   }
   if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
   if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 登録情報変更でも15歳未満は不可
+  if (!isValidPhone(phone)) return { error: PHONE_ERROR };
 
   try {
     await prisma.salesStaff.update({

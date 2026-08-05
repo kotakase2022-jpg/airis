@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope, requireUser } from "@/lib/auth";
-import { CASE_STATUSES, CASE_TEMPLATES, PageKey, canAccess } from "@/lib/roles";
+import { CASE_STATUSES, CASE_TEMPLATES, PageKey, Role, SNC_ROLES, canAccess } from "@/lib/roles";
 import { can, caseFeature, type Operation } from "@/lib/permissions";
 import { audit, notify, notifyRole, storeFile } from "@/lib/util";
 
@@ -109,6 +109,33 @@ export async function createCaseAction(
     }
   }
 
+  // 販売員ID紐付け（任意。検収指摘 問題一覧No.14: ID単位の品質管理・集計用）。
+  // 対象一次代理店（またはその配下2次店）に属する販売員のみ許可する
+  const salesStaffIdInput = String(formData.get("salesStaffId") ?? "").trim();
+  let salesStaffId: string | null = null;
+  if (salesStaffIdInput) {
+    const staff = await prisma.salesStaff.findUnique({
+      where: { id: salesStaffIdInput },
+      include: { agency: true },
+    });
+    if (!staff || staff.agency.isDummy) return { error: "販売員IDの指定が不正です。" };
+    const inScope =
+      staff.agencyId === primary.id ||
+      staff.agency.parentId === primary.id ||
+      (secondary ? staff.agencyId === secondary.id : false);
+    if (!inScope) return { error: "指定した販売員は対象代理店に所属していません。" };
+    salesStaffId = staff.id;
+  }
+
+  // 起票時の添付（SNC側は添付可 §14-3 / 検収指摘 問題一覧No.23）
+  const attachments: { id: string; name: string }[] = [];
+  const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
+  for (const f of files) {
+    const stored = await storeFile(f, user.loginId);
+    if ("error" in stored) return { error: stored.error };
+    attachments.push({ id: stored.id, name: stored.name });
+  }
+
   // 件名の自動生成: テンプレ名称／代理店名称／ISP受付番号（【】等の接頭辞は付けない §7.8）
   if (!title) title = `${templateKind}／${primary.name}／${ispNumber}`;
 
@@ -124,8 +151,16 @@ export async function createCaseAction(
       ispNumber: ispNumber || null,
       deadline,
       status: CASE_STATUSES[0], // 未対応
+      salesStaffId,
       createdBy: user.name,
-      messages: { create: { senderSide: "snc", senderName: user.name, body } },
+      messages: {
+        create: {
+          senderSide: "snc",
+          senderName: user.name,
+          body,
+          ...(attachments.length ? { fileIds: attachments as never } : {}),
+        },
+      },
     },
   });
 
@@ -367,6 +402,37 @@ async function changeCaseState(
 }
 
 // 停止（①②③＋担当窓口）: 代理店側の一覧・詳細からは除外される
+// 担当者アサイン（検収指摘 問題一覧No.23）。SNC窓口側の「変」権限で担当者を設定・解除する。
+// 担当者はSNC系ロール（①②③⑤⑥）のactiveアカウントのみ許可。
+export async function assignCaseAction(caseId: string, formData: FormData): Promise<void> {
+  const c = await prisma.case.findUnique({ where: { id: caseId } });
+  if (!c) return;
+  const series = c.series as Series;
+  const user = await requireSncCaseUser(series, "update");
+  const assigneeId = String(formData.get("assigneeAccountId") ?? "").trim();
+  let assigneeLabel = "（解除）";
+  if (assigneeId) {
+    const assignee = await prisma.account.findUnique({ where: { id: assigneeId } });
+    // 担当者になれるのはSNC本体の稼働アカウント（§4.1 SNC_ROLES）のうち、
+    // 当該窓口機能に「変」権限を持つロール。④閲覧者は宣言的マップ側で除外される。
+    const assignable =
+      !!assignee &&
+      assignee.status === "active" &&
+      SNC_ROLES.includes(assignee.role as Role) &&
+      can(assignee.role as Role, caseFeature(series), "update");
+    if (!assignable) {
+      return; // 不正な指定は無視（UIはセレクトのため通常到達しない）
+    }
+    assigneeLabel = `${assignee.loginId}（${assignee.name}）`;
+  }
+  await prisma.case.update({
+    where: { id: caseId },
+    data: { assigneeAccountId: assigneeId || null },
+  });
+  await audit(user.loginId, "case_assign", `${c.caseNo} -> ${assigneeLabel}`);
+  revalidateCasePaths(series, caseId);
+}
+
 export async function suspendCaseAction(caseId: string): Promise<void> {
   await changeCaseState(caseId, "suspend", CASE_SUSPENDED, "case_suspend");
 }

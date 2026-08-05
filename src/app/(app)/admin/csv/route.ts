@@ -72,7 +72,8 @@ export async function GET(req: NextRequest) {
     orderBy: { loginId: "asc" },
   });
   const csv = toCsv(
-    ["ログインID", "ロール", "氏名", "メール", "所属代理店コード", "ステータス", "作成日", "最終PW変更日"],
+    // 削除日時（§3.4 論理削除・1年保持）を含める（検収指摘 問題一覧No.10）
+    ["ログインID", "ロール", "氏名", "メール", "所属代理店コード", "ステータス", "作成日", "最終PW変更日", "削除日時"],
     accounts.map((a) => [
       a.loginId,
       ROLE_LABELS[a.role as Role] ?? a.role,
@@ -82,6 +83,7 @@ export async function GET(req: NextRequest) {
       ACCOUNT_STATUS_LABELS[a.status] ?? a.status,
       jst(a.createdAt, 10),
       jst(a.passwordUpdatedAt, 10),
+      a.deletedAt ? jst(a.deletedAt, 16) : "",
     ])
   );
   await audit(user.loginId, "csv_export", "accounts_inventory");

@@ -11,8 +11,14 @@ export const dynamic = "force-dynamic";
 // 日報未提出者の母数となる販売員ステータス（日報を提出できるのは仮登録・本登録 §7.5）
 const REPORTABLE_STAFF_STATUS = ["provisional", "registered"];
 
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ denied?: string }>;
+}) {
   const user = await requirePage("dashboard");
+  // 権限拒否でリダイレクトされてきた場合のバナー表示（404との区別。問題一覧No.34）
+  const denied = (await searchParams)?.denied;
   const scope = await agencyScope(user);
   const agencyFilter = scope === null ? {} : { agencyId: { in: scope } };
   const month = today().slice(0, 7);
@@ -165,6 +171,11 @@ export default async function DashboardPage() {
   return (
     <div>
       <PageHeader title="ダッシュボード" />
+      {denied && (
+        <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          アクセスしようとしたページを表示する権限がありません（ご利用のロールでは利用できない機能です）。
+        </div>
+      )}
       {user.isDummy && (
         <InfoBanner>閲覧用アカウントのため、表示されているのはサンプルデータです。</InfoBanner>
       )}

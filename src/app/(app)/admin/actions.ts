@@ -97,8 +97,8 @@ export async function accountAction(
     }
     case "delete": {
       if (account.status === "deleted") return { error: "すでに削除済です" };
-      // §3.4 論理削除（物理削除しない・1年間保持）
-      // TODO: 1年経過後の個人情報カラム匿名化は日次バッチで実装（本モジュール外）
+      // §3.4 論理削除（物理削除しない・1年間保持）。
+      // 1年経過後の個人情報匿名化は日次バッチ（/api/cron/daily）で実施済み
       await prisma.account.update({
         where: { id },
         data: { status: "deleted", deletedAt: new Date() },
@@ -187,6 +187,15 @@ export async function updateAccountAction(
   if (account.agency?.isDummy) return { error: "サンプルデータのアカウントは操作できません" };
   if (account.role === "R9") return { error: "販売員IDのアカウントは販売員ID管理から変更してください" };
 
+  // メール重複チェック（問題一覧No.39 / §4.1「1人1ID」）: 他の有効アカウントと同一メールは不可
+  if (email) {
+    const dup = await prisma.account.findFirst({
+      where: { email, status: { not: "deleted" }, id: { not: id } },
+      select: { loginId: true },
+    });
+    if (dup) return { error: "このメールアドレスは他のアカウントで使用されています" };
+  }
+
   // 付与できるロールの範囲（ハードコード配列を使わず宣言的マップから導出する §3.2）:
   //  - 操作者自身が申請・発行できるロールに限る（§6.1-1 の REQUESTABLE_ROLES）
   //  - ⑩は実効ロール（§14-2: Agency.status=closed から解決される）なので直接付与しない
@@ -210,6 +219,10 @@ export async function updateAccountAction(
     return { error: "自分自身のロールは変更できません" };
   }
 
+  // 変更理由（必須・監査ログに記録。検収指摘 問題一覧No.15）
+  const reason = String(formData.get("reason") ?? "").trim().slice(0, 200);
+  if (!reason) return { error: "変更理由を入力してください" };
+
   const roleChanged = role !== account.role;
   await prisma.account.update({
     where: { id },
@@ -222,9 +235,11 @@ export async function updateAccountAction(
   await audit(
     user.loginId,
     roleChanged ? "account_role_change" : "account_update",
-    roleChanged
-      ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
-      : account.loginId
+    `${
+      roleChanged
+        ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
+        : account.loginId
+    } reason=${reason}`
   );
   revalidatePath("/admin");
   return { message: `${account.loginId} を更新しました` };

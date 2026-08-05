@@ -233,13 +233,15 @@ export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy:
     const { allowed, ip } = await isAdminIpAllowed();
     if (!allowed) {
       await audit(user.loginId, "access_denied", `page=admin ip=${ip} (allowlist)`, "denied");
-      redirect("/dashboard");
+      redirect("/dashboard?denied=admin");
     }
   }
   if (!canAccess(user.role, page)) {
-    // 権限外アクセスの試みも記録（§3.3 / SEC②#35）
+    // 権限外アクセスの試みも記録（§3.3 / SEC②#35）。
+    // 無言のリダイレクトでは404と区別できないため（検収指摘 問題一覧No.34）、
+    // ダッシュボード側で「権限がありません」バナーを表示するクエリを付ける
     await audit(user.loginId, `access_denied`, `page=${page} role=${user.role}`, "denied");
-    redirect("/dashboard");
+    redirect(`/dashboard?denied=${page}`);
   }
   // 閲覧イベント監査（§3.3）: ページ表示のみ記録。server action経由（next-actionヘッダあり）は
   // 操作ごとの監査が別途あるため二重記録しない。SNC系のテナント横断参照は role で識別可能。

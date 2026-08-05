@@ -190,9 +190,16 @@ export function formatHistory(history: unknown): string {
 }
 
 // アップロード許可拡張子・MIMEホワイトリスト（§3.8）
+// 検収指摘（問題一覧No.13）: 実運用の周知資料・上長承認証跡に合わせ、Office文書と
+// Outlookメール(.msg)を追加（2026-08-05）。形式の増減は発注者確認のうえhere一箇所で行う。
 const ALLOWED_EXT: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   xls: "application/vnd.ms-excel",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  doc: "application/msword",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ppt: "application/vnd.ms-powerpoint",
+  msg: "application/vnd.ms-outlook",
   pdf: "application/pdf",
   png: "image/png",
   jpg: "image/jpeg",

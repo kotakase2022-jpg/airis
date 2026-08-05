@@ -27,6 +27,27 @@ export type ActionState =
     }
   | undefined;
 
+// メール重複チェック（問題一覧No.39 / §4.1「1人1ID」）。
+// 有効なアカウント（削除済みを除く）と審査中の申請を対象に重複を検出する。
+// 戻り値: 重複ありならエラーメッセージ / なければ null
+async function emailInUse(email: string, excludeRequestId?: string): Promise<string | null> {
+  const account = await prisma.account.findFirst({
+    where: { email, status: { not: "deleted" } },
+    select: { loginId: true },
+  });
+  if (account) return "このメールアドレスは既存のアカウントで使用されています";
+  const pending = await prisma.accountRequest.findFirst({
+    where: {
+      email,
+      status: { in: ["pending_first", "pending_final"] },
+      ...(excludeRequestId ? { id: { not: excludeRequestId } } : {}),
+    },
+    select: { requestId: true },
+  });
+  if (pending) return "このメールアドレスは審査中の申請で使用されています";
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // 申請作成（§6.1 / §7.2）
 // ---------------------------------------------------------------------------
@@ -55,6 +76,10 @@ export async function createRequestAction(
   if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
     return { error: "メールアドレスを正しく入力してください" };
   }
+  // メール重複チェック（検収指摘 問題一覧No.39）: 1人1ID原則（§4.1）のため、
+  // 既存アカウント（削除済み除く）・審査中の申請と同一メールは受け付けない
+  const dup = await emailInUse(email);
+  if (dup) return { error: dup };
 
   // 代理店系ロール（⑦⑧⑩）は所属代理店が必須（§4 のID体系）
   const needsAgency = requiresAgency(role);
@@ -220,6 +245,12 @@ export async function finalApproveAction(
       "denied"
     );
     return { error: SNC_TARGET_DENIED_MESSAGE };
+  }
+
+  // 承認時にも重複を再検証（申請後に同一メールのアカウントが発行された場合の抜け対策）
+  const dupAtApproval = await emailInUse(req.email, req.id);
+  if (dupAtApproval) {
+    return { error: `${dupAtApproval}。申請内容を確認し、必要なら却下してください` };
   }
 
   const agency = req.agencyId

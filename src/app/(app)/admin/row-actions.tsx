@@ -71,8 +71,25 @@ export function AccountEditButton({
             </select>
             {isSelf && <input type="hidden" name="role" value={role} />}
           </div>
+          <div>
+            {/* 変更理由は必須・監査ログに記録（検収指摘 問題一覧No.15） */}
+            <label className={labelCls}>変更理由（必須・監査ログに記録されます）</label>
+            <input
+              name="reason"
+              className={inputCls}
+              required
+              maxLength={200}
+              placeholder="例: 組織変更に伴う権限見直し"
+            />
+          </div>
           <div className="flex gap-2">
-            <button className={btnPrimary} disabled={pending}>
+            <button
+              className={btnPrimary}
+              disabled={pending}
+              onClick={(e) => {
+                if (!confirm("この内容でアカウント情報を変更しますか？")) e.preventDefault();
+              }}
+            >
               {pending ? "保存中..." : "保存"}
             </button>
             <button type="button" className={btnOutline} onClick={() => setOpen(false)}>

@@ -139,6 +139,32 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
   // フォーム側で該当月の見込フィールドをdisabledにする（確定判定はサーバ側でも行う）。
   const forecastHolders: Record<string, string> = {};
   const staffIds = fixedStaff ? [fixedStaff.id] : staffOptions.map((s) => s.id);
+
+  // 提出済み日報の既存値プリフィル用（検収指摘 問題一覧No.1 / D-011）:
+  // 「販売員ID|日付|タイプ」→ 既存レコードの値。フォームで同じ組み合わせを選ぶと
+  // 既存値が読み込まれ、未変更の項目が0/空欄で上書きされる事故を防ぐ。
+  // 直近92日分に限定（それ以前の修正は稀。全件は転送量が過大になるため）。
+  const existingReports: Record<string, Record<string, number | string | null>> = {};
+  if (!user.dummy && staffIds.length > 0) {
+    const sinceBase = new Date(`${today()}T00:00:00Z`);
+    sinceBase.setUTCDate(sinceBase.getUTCDate() - 92);
+    const since = sinceBase.toISOString().slice(0, 10);
+    const recent = await prisma.dailyReport.findMany({
+      where: { salesStaffId: { in: staffIds }, date: { gte: since } },
+      select: {
+        salesStaffId: true, date: true, type: true, area: true,
+        forecastAcq: true, acquisitions: true, workers: true, visits: true,
+        meetings: true, negotiations: true, contracts: true,
+        forecastHours: true, forecastEntries: true, actualHours: true,
+        entries: true, appointments: true, closePassed: true, preConfirmPassed: true,
+        activityContent: true, activityResult: true, notes: true,
+      },
+    });
+    for (const r of recent) {
+      const { salesStaffId, date, type, ...values } = r;
+      existingReports[`${salesStaffId}|${date}|${type}`] = values;
+    }
+  }
   if (!user.dummy && staffIds.length > 0) {
     const forecastReports = await prisma.dailyReport.findMany({
       where: {
@@ -189,6 +215,7 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
               fixedStaff={fixedStaff}
               defaultDate={today()}
               forecastHolders={forecastHolders}
+              existing={existingReports}
             />
           )}
         </Card>

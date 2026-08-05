@@ -41,12 +41,16 @@ export function DailyReportForm({
   fixedStaff,
   defaultDate,
   forecastHolders,
+  existing = {},
 }: {
   staffOptions: StaffOption[];
   fixedStaff: StaffOption | null; // R9は自分のSalesStaff固定
   defaultDate: string;
   // 「販売員ID:タイプ:月:フィールド」→ 月初見込が最初に入ったレコードの日付（BUG-007）
   forecastHolders: Record<string, string>;
+  // 「販売員ID|日付|タイプ」→ 提出済み日報の既存値（問題一覧No.1 / D-011）。
+  // 該当があればフォームへプリフィルし、未変更項目の消失（0/空欄上書き）を防ぐ
+  existing?: Record<string, Record<string, number | string | null>>;
 }) {
   const [state, formAction, pending] = useActionState<DailyFormState, FormData>(
     saveDailyReport,
@@ -59,6 +63,15 @@ export function DailyReportForm({
     ? fixedStaff.agencyName
     : staffOptions.find((s) => s.id === staffId)?.agencyName ?? "-";
   const currentStaffId = fixedStaff ? fixedStaff.id : staffId;
+
+  // 選択中の（販売員×日付×タイプ）に提出済み日報があれば既存値を読み込む（問題一覧No.1）。
+  // recKey を input の key に使い、選択が変わるたびに defaultValue を再適用（remount）する
+  const recKey = `${currentStaffId}|${date}|${type}`;
+  const rec = existing[recKey];
+  const pre = (name: string): string => {
+    const v = rec?.[name];
+    return v === null || v === undefined ? "" : String(v);
+  };
 
   // 月初見込は初回提出時のみ入力（要件6-3 / BUG-007）:
   // 選択中の販売員×タイプ×月に既存の見込があり、その「最初の見込」を書き換えうる
@@ -132,9 +145,20 @@ export function DailyReportForm({
             ))}
           </div>
         </div>
+        {rec && (
+          <div className="sm:col-span-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            この日付・タイプの提出済み日報を読み込みました（編集モード）。変更した項目だけ書き換えて保存できます。
+          </div>
+        )}
         <div className="sm:col-span-2">
           <label className={labelCls}>エリア</label>
-          <input name="area" placeholder="例: 東京都世田谷区" className={bigInput} />
+          <input
+            key={`area-${recKey}`}
+            name="area"
+            defaultValue={pre("area")}
+            placeholder="例: 東京都世田谷区"
+            className={bigInput}
+          />
         </div>
 
         {(type === "訪販" ? VISIT_FIELDS : TELE_FIELDS).map((f) => {
@@ -143,8 +167,10 @@ export function DailyReportForm({
             <div key={`${type}-${f.name}`}>
               <label className={labelCls}>{f.label}</label>
               <input
+                key={`${f.name}-${recKey}`}
                 type="number"
                 name={f.name}
+                defaultValue={pre(f.name)}
                 min={0}
                 step={"float" in f && f.float ? "0.5" : "1"}
                 inputMode="numeric"
@@ -161,15 +187,33 @@ export function DailyReportForm({
 
         <div className="sm:col-span-3">
           <label className={labelCls}>活動実施内容</label>
-          <textarea name="activityContent" rows={3} className={bigInput} />
+          <textarea
+            key={`activityContent-${recKey}`}
+            name="activityContent"
+            defaultValue={pre("activityContent")}
+            rows={3}
+            className={bigInput}
+          />
         </div>
         <div className="sm:col-span-3">
           <label className={labelCls}>活動実施結果</label>
-          <textarea name="activityResult" rows={3} className={bigInput} />
+          <textarea
+            key={`activityResult-${recKey}`}
+            name="activityResult"
+            defaultValue={pre("activityResult")}
+            rows={3}
+            className={bigInput}
+          />
         </div>
         <div className="sm:col-span-3">
           <label className={labelCls}>備考（その他トピックス）</label>
-          <textarea name="notes" rows={2} className={bigInput} />
+          <textarea
+            key={`notes-${recKey}`}
+            name="notes"
+            defaultValue={pre("notes")}
+            rows={2}
+            className={bigInput}
+          />
         </div>
 
         <div className="sm:col-span-3">

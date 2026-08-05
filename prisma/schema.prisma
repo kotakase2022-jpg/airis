@@ -117,6 +117,7 @@ model SalesStaff {
 
   fieldApplications FieldAgentApplication[]
   dailyReports      DailyReport[]
+  cases             Case[] // 窓口案件の販売員ID紐付け（問題一覧No.14）
 }
 
 // 訪販員申請
@@ -252,6 +253,11 @@ model Case {
   ispNumber    String?
   deadline     String? // YYYY-MM-DD
   status       String   @default("未対応") // 未対応|確認中|対応中|問題発生|完了
+  // 販売員ID紐付け（検収指摘 問題一覧No.14: ID単位の品質管理・集計用。任意）
+  salesStaffId String?
+  salesStaff   SalesStaff? @relation(fields: [salesStaffId], references: [id])
+  // 担当者（SNC窓口側のアサイン先。検収指摘 問題一覧No.23。任意）
+  assigneeAccountId String?
   createdBy    String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt

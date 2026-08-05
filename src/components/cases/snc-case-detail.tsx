@@ -10,6 +10,7 @@ import { DeadlineBadge, fmtDateTime, seriesBasePath, seriesLabel } from "./badge
 import { CaseThread, parseMessageFiles } from "./thread";
 import { ReplyForm } from "./reply-form";
 import {
+  assignCaseAction,
   changeStatusAction,
   deleteCaseAction,
   restoreCaseAction,
@@ -40,12 +41,32 @@ export async function SncCaseDetailPage({
     include: {
       primaryAgency: true,
       secondaryAgency: true,
+      salesStaff: true,
       messages: { orderBy: { createdAt: "asc" } },
       statusHistory: { orderBy: { changedAt: "desc" } },
       reads: true,
     },
   });
   if (!c || c.series !== series) notFound();
+
+  // 担当者（問題一覧No.23）: 現担当と候補（SNC窓口系のactiveアカウント）
+  const assignee = c.assigneeAccountId
+    ? await prisma.account.findUnique({
+        where: { id: c.assigneeAccountId },
+        select: { id: true, loginId: true, name: true },
+      })
+    : null;
+  const assigneeOptions = await prisma.account.findMany({
+    where: { status: "active", role: { in: ["R1", "R2", "R3", series === "HL" ? "R5" : "R6"] } },
+    select: { id: true, loginId: true, name: true, role: true },
+    orderBy: { loginId: "asc" },
+  });
+  // 代理店連絡先（問題一覧No.23）: 当該1次店の⑦アカウントのメールアドレス
+  const agencyContacts = await prisma.account.findMany({
+    where: { agencyId: c.primaryAgencyId, role: "R7", status: "active", email: { not: null } },
+    select: { email: true },
+    take: 3,
+  });
 
   // 代理店スコープ検証（SNC系はnull=全代理店 §3.1）
   const scope = await agencyScope(user);
@@ -200,6 +221,52 @@ export async function SncCaseDetailPage({
           <div>
             <div className="text-xs font-semibold text-slate-500">起票日時</div>
             <div className="text-slate-800">{fmtDateTime(c.createdAt)}</div>
+          </div>
+          <div>
+            {/* 販売員ID紐付け（問題一覧No.14） */}
+            <div className="text-xs font-semibold text-slate-500">販売員ID</div>
+            <div className="text-slate-800">
+              {c.salesStaff
+                ? `${c.salesStaff.salesId ?? "-"}（${c.salesStaff.lastName} ${c.salesStaff.firstName}）`
+                : "-"}
+            </div>
+          </div>
+          <div>
+            {/* 代理店連絡先（問題一覧No.23）: 1次店⑦アカウントのメール */}
+            <div className="text-xs font-semibold text-slate-500">代理店メール（⑦管理者）</div>
+            <div className="break-all text-slate-800">
+              {agencyContacts.length
+                ? agencyContacts.map((a) => a.email).join(" / ")
+                : "-（未登録）"}
+            </div>
+          </div>
+          <div>
+            {/* 担当者（問題一覧No.23）: 表示 + 「変」権限者は変更可能 */}
+            <div className="text-xs font-semibold text-slate-500">担当者</div>
+            {canUpdate ? (
+              <form
+                action={assignCaseAction.bind(null, c.id)}
+                className="mt-0.5 flex items-center gap-2"
+              >
+                <select
+                  name="assigneeAccountId"
+                  defaultValue={assignee?.id ?? ""}
+                  className={`${inputCls} w-44`}
+                >
+                  <option value="">未割当</option>
+                  {assigneeOptions.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.loginId}（{a.name}）
+                    </option>
+                  ))}
+                </select>
+                <button className={btnOutline + " whitespace-nowrap"}>担当変更</button>
+              </form>
+            ) : (
+              <div className="text-slate-800">
+                {assignee ? `${assignee.loginId}（${assignee.name}）` : "未割当"}
+              </div>
+            )}
           </div>
         </div>
       </Card>

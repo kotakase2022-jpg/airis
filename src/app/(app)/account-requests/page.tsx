@@ -21,6 +21,9 @@ import {
   thCls,
   tdCls,
   btnOutline,
+  btnPrimary,
+  inputCls,
+  labelCls,
 } from "@/components/ui";
 import { RequestForm, type Option } from "./request-form";
 import { RowActions } from "./row-actions";
@@ -31,12 +34,16 @@ const PAGE_SIZE = 50;
 export default async function AccountRequestsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ page?: string; q?: string; filterRole?: string; status?: string }>;
 }) {
   const user = await requirePage("account-requests");
   const scope = await agencyScope(user);
   const sp = await searchParams;
   const page = Math.max(1, Number(sp.page) || 1);
+  // 検索・絞り込み（検収指摘 問題一覧No.19: 棚卸・調査用）
+  const q = (sp.q ?? "").trim();
+  const roleFilter = (sp.filterRole ?? "").trim();
+  const statusFilter = (sp.status ?? "").trim();
 
   // §7.2「承認操作権限は申請中レコードの閲覧を内含する」= §5.1「Airisアカウント / 承」（①②③）
   const isFinalApprover = can(user.role, "airis-account", "approve_final");
@@ -45,11 +52,33 @@ export default async function AccountRequestsPage({
 
   // 表示スコープ: ①②③=全件 / ⑦⑧=自店スコープ+自分の申請 / ④⑤⑥=自分の申請のみ
   // TODO: ④⑤⑥の閲覧範囲は仕様上明示が無いため「自分が作成した申請のみ」と暫定判断（§7.2）
-  const baseWhere: Prisma.AccountRequestWhereInput = isFinalApprover
+  const scopeWhere: Prisma.AccountRequestWhereInput = isFinalApprover
     ? {}
     : isAgencyScoped
       ? { OR: [{ agencyId: { in: scope ?? [] } }, { createdBy: user.id }] }
       : { createdBy: user.id };
+
+  // 検索条件（氏名・メール・申請ID）+ ロール + ステータス（スコープとANDで合成）
+  const filters: Prisma.AccountRequestWhereInput[] = [scopeWhere];
+  if (q) {
+    filters.push({
+      OR: [
+        { name: { contains: q, mode: "insensitive" } },
+        { email: { contains: q, mode: "insensitive" } },
+        { requestId: { contains: q, mode: "insensitive" } },
+        { issuedLoginId: { contains: q, mode: "insensitive" } },
+      ],
+    });
+  }
+  if (roleFilter) filters.push({ role: roleFilter });
+  if (statusFilter) {
+    filters.push(
+      statusFilter === "pending"
+        ? { status: { in: ["pending_first", "pending_final"] } }
+        : { status: statusFilter }
+    );
+  }
+  const baseWhere: Prisma.AccountRequestWhereInput = { AND: filters };
 
   const [total, pendingCount, approvedCount, rejectedCount, requests] = await Promise.all([
     prisma.accountRequest.count({ where: baseWhere }),
@@ -122,8 +151,44 @@ export default async function AccountRequestsPage({
           </span>
         </div>
 
+        {/* 検索・絞り込み（問題一覧No.19: 氏名/メール/申請ID/発行ID・ロール・状態） */}
+        <form method="get" action="/account-requests" className="mb-4 flex flex-wrap items-end gap-3">
+          <div className="w-64">
+            <label className={labelCls}>検索（氏名・メール・申請ID・発行ID）</label>
+            <input name="q" defaultValue={q} placeholder="キーワード" className={inputCls} />
+          </div>
+          <div className="w-52">
+            <label className={labelCls}>ロール</label>
+            <select name="filterRole" defaultValue={roleFilter} className={inputCls}>
+              <option value="">すべて</option>
+              {(Object.keys(ROLE_LABELS) as Role[])
+                .filter((r) => r !== "R9")
+                .map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_NUM[r]} {ROLE_LABELS[r]}
+                  </option>
+                ))}
+            </select>
+          </div>
+          <div className="w-44">
+            <label className={labelCls}>状態</label>
+            <select name="status" defaultValue={statusFilter} className={inputCls}>
+              <option value="">すべて</option>
+              <option value="pending">承認待ち（一次含む）</option>
+              <option value="pending_first">一次承認待ち</option>
+              <option value="pending_final">承認待ち</option>
+              <option value="approved">登録済み</option>
+              <option value="rejected">差戻し・却下</option>
+            </select>
+          </div>
+          <button className={btnPrimary}>絞り込み</button>
+          <Link href="/account-requests" className={btnOutline}>
+            クリア
+          </Link>
+        </form>
+
         {requests.length === 0 ? (
-          <EmptyState message="申請はまだありません" />
+          <EmptyState message={q || roleFilter || statusFilter ? "条件に一致する申請がありません" : "申請はまだありません"} />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[960px] border-collapse">
@@ -232,14 +297,20 @@ export default async function AccountRequestsPage({
             </span>
             <div className="flex gap-2">
               {page > 1 ? (
-                <Link href={`/account-requests?page=${page - 1}`} className={btnOutline}>
+                <Link
+                  href={`/account-requests?${new URLSearchParams({ ...(q && { q }), ...(roleFilter && { filterRole: roleFilter }), ...(statusFilter && { status: statusFilter }), page: String(page - 1) })}`}
+                  className={btnOutline}
+                >
                   前へ
                 </Link>
               ) : (
                 <span className={`${btnOutline} pointer-events-none opacity-40`}>前へ</span>
               )}
               {page < totalPages ? (
-                <Link href={`/account-requests?page=${page + 1}`} className={btnOutline}>
+                <Link
+                  href={`/account-requests?${new URLSearchParams({ ...(q && { q }), ...(roleFilter && { filterRole: roleFilter }), ...(statusFilter && { status: statusFilter }), page: String(page + 1) })}`}
+                  className={btnOutline}
+                >
                   次へ
                 </Link>
               ) : (

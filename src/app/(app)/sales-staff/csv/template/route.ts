@@ -11,6 +11,11 @@ export async function GET() {
     await audit(user.loginId, "csv_export_sales_staff_template", `role=${user.role}`, "denied");
     return new Response("Forbidden", { status: 403 });
   }
-  const csv = toCsv(["姓", "名", "生年月日", "電話番号", "代理店コード", "メールアドレス"], []);
+  // 2行目に記入例（検収指摘 問題一覧No.29）。生年月日セルに「(例)」を付けているため、
+  // 例文行を残したまま取り込むと形式エラー（全件不登録）になり、記入例の誤登録を防げる
+  const csv = toCsv(
+    ["姓", "名", "生年月日", "電話番号", "代理店コード", "メールアドレス"],
+    [["(例)山田", "太郎", "(例)1990-01-01", "090-1234-5678", "110001", "taro@example.com"]]
+  );
   return csvResponse("販売員ID一括申請ひな形.csv", csv);
 }
