@@ -240,15 +240,17 @@ export async function eraseAgencyData(input: EraseAgencyInput): Promise<ErasureR
   }
   items.push({ dataType: "販売員ID", count: staff.length, treatment: "論理削除" });
 
-  // 3) 訪販員申請（代理店スコープ列 §3.1。旧レコードは親販売員の所属でも判定する）
+  // 3) 訪販員申請
+  //
+  // 削除対象は「そのテナントに**帰属する**申請」= 親販売員の所属代理店が対象に含まれるもの。
+  // スコープ列（primaryAgencyId / secondaryAgencyId）は §3.1 の**参照範囲**を表すもので帰属ではない。
+  // 2次店所属の販売員の申請は primaryAgencyId=親1次店 を持つため、スコープ列で判定すると
+  // 「1次店のみ」を指定したときに配下2次店の申請まで論理削除してしまう（レポートの範囲と不一致になる）。
+  // そのため帰属は salesStaff.agencyId で判定する。
   const apps = await prisma.fieldAgentApplication.findMany({
     where: {
       status: { not: "deleted" },
-      OR: [
-        { primaryAgencyId: { in: agencyIds } },
-        { secondaryAgencyId: { in: agencyIds } },
-        { salesStaff: { agencyId: { in: agencyIds } } },
-      ],
+      salesStaff: { agencyId: { in: agencyIds } },
     },
     select: { id: true, status: true },
   });

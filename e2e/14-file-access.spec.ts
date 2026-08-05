@@ -876,6 +876,16 @@ test("mustChangePassword=true のアカウントは403（§10.1）", async ({ pa
     const res = await page.request.get(`/files/${fileIds.pledgeP1}`);
     expect(res.status(), "パスワード変更完了まで他機能へ遷移不可").toBe(403);
     expect(await res.text()).not.toContain(MARKER);
+
+    // ファイル配信だけでなく **CSV出力系のRoute Handler全経路** で同じく拒否されること
+    // （SEC-10.1-11。以前は reports/hotline/consumer-center の3経路が素通りしていた）。
+    // これらは middleware を介さず route handler が直接 403 を返すため、403 を厳密に要求する
+    // （リダイレクトを許容すると、ガードを外しても別要因のリダイレクトで合格してしまう）。
+    for (const path of ["/reports/csv?template=visit", "/hotline/csv", "/consumer-center/csv"]) {
+      const csv = await page.request.get(path, { maxRedirects: 0 });
+      expect(csv.status(), `${path} が初回パスワード変更前に到達可能`).toBe(403);
+      expect(await csv.text()).not.toContain(MARKER);
+    }
   } finally {
     await d.account.deleteMany({ where: { loginId: MCP_ID } });
   }

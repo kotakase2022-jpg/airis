@@ -2,7 +2,13 @@ import Link from "next/link";
 import { Paperclip } from "lucide-react";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { SNC_ADMIN_ROLES, ROLE_LABELS, type Role } from "@/lib/roles";
+import {
+  ANNOUNCEMENT_AUDIENCE_ROLES,
+  ANNOUNCEMENT_TARGET_ROLES,
+  SNC_ADMIN_ROLES,
+  ROLE_LABELS,
+  type Role,
+} from "@/lib/roles";
 import { announcementFeature, can } from "@/lib/permissions";
 import {
   Card,
@@ -45,8 +51,9 @@ function fmtJst(d: Date | null): string {
   return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
 }
 
+// 配信対象ロールは src/lib/roles.ts を唯一の情報源にする（§3.2）
 function audienceTargetRoles(audience: string): Role[] {
-  return audience === "all" ? ["R7", "R8", "R9"] : ["R7"];
+  return ANNOUNCEMENT_AUDIENCE_ROLES[audience === "all" ? "all" : "primary"];
 }
 
 export default async function AnnouncementsPage({
@@ -89,7 +96,7 @@ async function AdminView({ page, role }: { page: number; role: Role }) {
   const [targets, reads] = await Promise.all([
     prisma.account.findMany({
       where: {
-        role: { in: ["R7", "R8", "R9"] },
+        role: { in: ANNOUNCEMENT_TARGET_ROLES },
         status: "active",
         OR: [{ agencyId: null }, { agency: { isDummy: false } }],
       },

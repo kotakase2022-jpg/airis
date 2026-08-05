@@ -12,6 +12,8 @@ import { seriesLabel } from "./badges";
 export async function exportCasesCsv(series: "HL" | "CSC"): Promise<Response> {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
+  // 初回パスワード変更が未完了のうちは他機能を使わせない（§10.1 SEC-10.1-11）
+  if (user.mustChangePassword) return new Response("Password change required", { status: 403 });
   const pageKey: PageKey = series === "HL" ? "hotline" : "consumer-center";
   // ④（ダミー表示）は実データのエクスポート不可（§3.5）
   if (

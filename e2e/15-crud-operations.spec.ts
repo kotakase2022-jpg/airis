@@ -285,7 +285,9 @@ test("販売員ID編集 異常系: 必須未入力・生年月日形式不正は
     .toBe("text:1985/12/24");
   await form.locator('input[name="firstName"]').fill("新名");
   await form.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByText("生年月日は YYYY-MM-DD 形式で入力してください")).toBeVisible({
+  await expect(
+    page.getByText("生年月日は実在する日付を YYYY-MM-DD 形式で入力してください")
+  ).toBeVisible({
     timeout: 15_000,
   });
 

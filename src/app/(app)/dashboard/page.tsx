@@ -2,7 +2,13 @@ import Link from "next/link";
 import type { Prisma } from "@prisma/client";
 import { requirePage, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { canAccess, SUBMISSION_KINDS } from "@/lib/roles";
+import {
+  announcementAudienceFilterFor,
+  canAccess,
+  caseSeriesForRole,
+  SUBMISSION_KINDS,
+} from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { Card, PageHeader, SectionTitle, StatCard, InfoBanner } from "@/components/ui";
 import { today } from "@/lib/util";
 
@@ -31,15 +37,24 @@ export default async function DashboardPage({
           where: { status: { in: ["pending_first", "pending_final"] } },
         }),
         prisma.accountRequest.count({ where: { status: "approved" } }),
-        prisma.account.count({
-          where: {
-            status: { in: ["suspended", "deleted"] },
-            // ④はダミー代理店スコープ、⑦⑧は自店スコープ（SNC系は全件）
-            ...(scope === null
-              ? { OR: [{ agencyId: null }, { agency: { isDummy: false } }] }
-              : { agencyId: { in: scope } }),
-          },
-        }),
+        // アカウントの停止中・削除済の件数。§5.1「Airisアカウント/閲」（①②③）を持つロールのみ
+        // 実数を出す（権限が無いロールに全社の件数を見せない。④はダミー代理店のみ）。
+        can(user.role, "airis-account", "view")
+          ? prisma.account.count({
+              where: {
+                status: { in: ["suspended", "deleted"] },
+                ...(user.dummy
+                  ? { agency: { isDummy: true } }
+                  : { OR: [{ agencyId: null }, { agency: { isDummy: false } }] }),
+              },
+            })
+          : user.dummy
+            ? prisma.account.count({
+                where: { status: { in: ["suspended", "deleted"] }, agency: { isDummy: true } },
+              })
+            : prisma.account.count({
+                where: { status: { in: ["suspended", "deleted"] }, agencyId: { in: scope ?? [] } },
+              }),
       ])
     : [0, 0, 0];
 
@@ -61,8 +76,9 @@ export default async function DashboardPage({
 
   // 日報・提出物
   const showReports = canAccess(user.role, "reports");
-  // ⑨販売員は稼働提出物=×（§5.2）。未提出者の集計も管理系ロール向けの指標のため出さない。
-  const showReportAdmin = showReports && user.role !== "R9";
+  // 稼働提出物の指標は §5.1「稼働提出物」の閲覧権限を持つロールにのみ出す
+  // （⑨販売員は×。ロール名を直書きせず宣言的マップから導出する §3.2）
+  const showReportAdmin = showReports && can(user.role, "submission", "view");
   const submissionScope = scope === null ? {} : { submitterAgencyId: { in: scope } };
   const reportCount = showReports
     ? await prisma.dailyReport.count({
@@ -127,8 +143,10 @@ export default async function DashboardPage({
     canAccess(user.role, "hotline") ||
     canAccess(user.role, "consumer-center") ||
     canAccess(user.role, "agency-cases");
+  // 系列の限定（⑤=HL / ⑥=CSC）は roles.ts の宣言的マップから導出する（§3.2）
+  const roleSeries = caseSeriesForRole(user.role);
   const caseWhere = {
-    ...(user.role === "R5" ? { series: "HL" } : user.role === "R6" ? { series: "CSC" } : {}),
+    ...(roleSeries ? { series: roleSeries } : {}),
     ...(scope === null ? {} : { primaryAgencyId: { in: scope } }),
   };
   const caseCounts = showCases
@@ -145,7 +163,9 @@ export default async function DashboardPage({
   // SNC系（①②③⑤⑥）は代理店側の最終発言、代理店系（⑦⑩）はSNC側の最終発言が返信待ちにあたる。
   let awaitingReply = 0;
   if (showCases) {
-    const isAgencySide = user.role === "R7" || user.role === "R10";
+    // 代理店側か（§5.2「窓口案件（代理店側）」= /agency-cases に入れるロール ⑦⑩）。
+    // ロール名を直書きせず、ページアクセスの宣言的マップから導出する（§3.2）
+    const isAgencySide = canAccess(user.role, "agency-cases");
     const opposite = isAgencySide ? "snc" : "agency";
     const openCases = await prisma.case.findMany({
       where: { ...caseWhere, status: { notIn: ["完了", "停止", "削除済"] } },
@@ -161,10 +181,13 @@ export default async function DashboardPage({
   // ④ダミー表示（§3.5）: 閲覧アカウントにはシードの架空データ（isDummy=true）のみを出し、
   // 実データには一切アクセスさせない。逆に非ダミーロールにはサンプルデータを出さない。
   const showAnnouncements = canAccess(user.role, "announcements");
+  // 配信範囲 primary（1次店管理者=⑦のみ宛）のお知らせは、⑦以外の代理店系（⑧⑨）には出さない。
+  // 対象ロールは roles.ts の宣言的マップから導出する（§7.7 / §3.2）
+  const audienceFilter = announcementAudienceFilterFor(user.role);
   const annWhere: Prisma.AnnouncementWhereInput = {
     status: "sent",
     isDummy: user.isDummy,
-    ...(user.role === "R8" || user.role === "R9" ? { audience: "all" } : {}),
+    ...(audienceFilter ? { audience: audienceFilter } : {}),
   };
   const announcements = showAnnouncements
     ? await prisma.announcement.findMany({
@@ -194,9 +217,10 @@ export default async function DashboardPage({
       ])
     : [0, 0];
 
+  // 遷移先も宣言的マップから導出する（⑥はCSC窓口 §4 / §3.2）
   const casesHref = canAccess(user.role, "agency-cases")
     ? "/agency-cases"
-    : user.role === "R6"
+    : caseSeriesForRole(user.role) === "CSC"
       ? "/consumer-center"
       : "/hotline";
 
@@ -336,7 +360,8 @@ export default async function DashboardPage({
                 >
                   窓口案件
                 </SectionTitle>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+                {/* 5枚のためラベルが潰れないよう段階的に折り返す（PC標準幅でも判読できる） */}
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
                   <StatCard value={caseOf("未対応")} label="未対応" tone="gray" />
                   <StatCard
                     value={caseOf("確認中") + caseOf("対応中")}

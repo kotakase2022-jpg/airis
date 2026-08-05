@@ -61,7 +61,14 @@ export const PRIVILEGED_ACTIONS: readonly string[] = [
   "sales_staff_restore",
   // 代理店（§7.5。配下アカウントのデータスコープに影響する）
   "agency_delete",
+  // セキュリティ設定の変更（§10.1。IP許可リスト等はこれ自体が防御機構の無効化になり得る）
+  "setting_change",
+  // ベンダー区分（サスラボ社保守）の付与・解除（§10.1。保守権限の実質的な付与になる）
+  "account_vendor_change",
 ];
+// ※ `account_update`（氏名・メールの変更 §5.1「変」）は特権操作に含めない。
+//   権限昇格に当たるロール変更は別 action（`account_role_change`）として記録され、
+//   そちらは上のリストに含まれている（tests/unit/audit-alert.test.ts が両者の区別を検証）。
 
 // ---- エクスポート操作の判定（§10.4「エクスポート操作」/ §3.6「出力は監査ログに記録」） ----
 // action 名は英語（`csv_export*`）と日本語（`〜CSV出力`）が混在しているため、

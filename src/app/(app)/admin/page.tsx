@@ -33,7 +33,7 @@ import {
   canDeleteAccount,
   canEraseTenantData,
   canManageVendorFlag,
-  canResetCredentials,
+  canResetCredentialsOn,
   canSuspendAccount,
   canUpdateAccount,
   canUpdateSettings,
@@ -442,7 +442,9 @@ export default async function AdminPage({
                             mfaEnabled={a.mfaEnabled}
                             canSuspend={canSuspendAccount(user.role)}
                             canDelete={canDeleteAccount(user.role)}
-                            canReset={canResetCredentials(user.role)}
+                            // 対象ロールによる職務分離（§6.1-3）を含めて判定する。
+                            // ③は①〜⑥のリセット代行を行えない（サーバ側でも再検証 §3.2）
+                            canReset={canResetCredentialsOn(user.role, a.role)}
                           />
                           {a.status !== "deleted" &&
                             a.role !== "R9" &&

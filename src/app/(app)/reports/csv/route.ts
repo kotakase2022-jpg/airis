@@ -11,6 +11,8 @@ import { VISIT_CSV_HEADERS, TELE_CSV_HEADERS, VISIT_CSV_EXAMPLE, TELE_CSV_EXAMPL
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
+  // 初回パスワード変更が未完了のうちは他機能を使わせない（§10.1 SEC-10.1-11）
+  if (user.mustChangePassword) return new Response("Password change required", { status: 403 });
   // §5.2 ページアクセス（日報提出: ①②③⑦⑧⑨、④はダミー）
   if (!canAccess(user.role, "reports")) return new Response("Forbidden", { status: 403 });
   // §5.1「日報提出」の権限（提/変/閲/削。⑨は提のみ、④はダミー §3.5）をAPI層でも判定（§3.2）。

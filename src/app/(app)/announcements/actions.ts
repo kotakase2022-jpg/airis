@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
+import { ANNOUNCEMENT_AUDIENCE_ROLES } from "@/lib/roles";
 import { requirePage } from "@/lib/auth";
 import { announcementFeature, can } from "@/lib/permissions";
 import { audit, notifyRole, storeFile } from "@/lib/util";
@@ -46,7 +47,8 @@ async function notifyAnnouncement(ann: {
   body: string;
   important: boolean;
 }) {
-  const targetRoles = ann.audience === "all" ? ["R7", "R8", "R9"] : ["R7"];
+  // 配信対象ロールは src/lib/roles.ts を唯一の情報源にする（§3.2。ロール配列を画面に直書きしない）
+  const targetRoles = ANNOUNCEMENT_AUDIENCE_ROLES[ann.audience === "all" ? "all" : "primary"];
   await notifyRole(
     targetRoles,
     ann.important ? `【重要】お知らせ: ${ann.title}` : `お知らせ: ${ann.title}`,

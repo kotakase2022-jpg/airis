@@ -7,10 +7,12 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
-import { STAFF_STATUS_LABELS } from "@/lib/roles";
+import { STAFF_STATUS_LABELS, needsFirstApproval } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
 import { parseCsv } from "@/lib/csv";
 import { audit, notify, notifyRole, pushHistory, storeFile, today } from "@/lib/util";
+import { recordStatusHistory, type StatusEvent } from "@/lib/status";
+import { isBlankOrCalendarDate } from "@/lib/date-input";
 import { FIELD_AGENT_CSV_HEADERS, pledgePdfName } from "./csv-columns";
 import { resolveAgencyScope } from "./agency-scope";
 import { unzipEntries } from "./zip";
@@ -19,7 +21,6 @@ const APPLICATION_TYPES = ["稼働", "抹消"];
 const PRODUCTS = ["マルチ", "auひかり", "コラボ"];
 const ATTRIBUTES = ["社員/契約社員", "パート・アルバイト", "業務委託社員", "個人事業主"];
 const IDENTITY_TYPES = ["免許証", "マイナンバーカード", "パスポート"];
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // 権限判定は §5.1 の宣言的マップ（src/lib/permissions.ts）だけを情報源とする（§3.2）。
 // この画面でロール配列を直書きしない（tests/unit/permissions-coverage.test.ts が検出する）。
@@ -36,6 +37,28 @@ export type CsvBulkState = { error?: string; errors?: string[]; success?: string
 // 根拠に宣言的マップから導出する（§3.2。csv/route.ts と同じ導出）。
 function isSncAdmin(user: CurrentUser) {
   return can(user.role, "field-agent", "approve_final");
+}
+
+// 状態遷移を StatusHistory（§4.1「遷移イベントを履歴テーブルに記録」）へ記録する。
+// JSON列 history は画面表示用の軽量な履歴で、エンティティ横断の検索・監査には使えないため
+// 両方に記録する（recordStatusHistory は失敗しても業務処理を止めない）。
+function track(
+  entityId: string,
+  event: StatusEvent,
+  fromStatus: string | null,
+  toStatus: string | null,
+  changedBy: string,
+  reason?: string | null
+) {
+  return recordStatusHistory({
+    entityType: "field_agent",
+    entityId,
+    event,
+    fromStatus,
+    toStatus,
+    reason,
+    changedBy,
+  });
 }
 
 async function staffInScope(user: CurrentUser, staffId: string) {
@@ -122,8 +145,13 @@ export async function createFieldAgentApplication(
   if (products === "マルチ" && !agencyCode2) {
     return { error: "取扱商材が「マルチ」の場合、使用代理店コードは2枠とも必須です。" };
   }
-  if (startDate && !DATE_RE.test(startDate)) return { error: "稼働開始日の形式が不正です。" };
-  if (endDate && !DATE_RE.test(endDate)) return { error: "稼働終了日の形式が不正です。" };
+  // 実在する日付であること（形式だけの検証では 9999-99-99 / 2026-02-31 が通ってしまう §7.4）
+  if (!isBlankOrCalendarDate(startDate)) {
+    return { error: "稼働開始日は実在する日付を YYYY-MM-DD 形式で入力してください。" };
+  }
+  if (!isBlankOrCalendarDate(endDate)) {
+    return { error: "稼働終了日は実在する日付を YYYY-MM-DD 形式で入力してください。" };
+  }
   // 属性=業務委託社員 のときのみ業務委託会社名・住所・連絡先が必須（他属性では入力不可）
   const isContractor = attribute === "業務委託社員";
   if (isContractor && (!contractorName || !contractorAddress || !contractorPhone)) {
@@ -199,6 +227,14 @@ export async function createFieldAgentApplication(
     },
   });
 
+  await track(
+    created.id,
+    "requested",
+    null,
+    "applying",
+    user.loginId,
+    `申請区分: ${applicationType}`
+  );
   await audit(user.loginId, "訪販員申請作成", `fieldAgentApplication:${created.id}`);
   // 通知: SNC承認者 + （2次店からの申請時）1次店管理者
   const staffLabel = `${staff.lastName} ${staff.firstName}（${staff.agency.name}）`;
@@ -208,7 +244,7 @@ export async function createFieldAgentApplication(
     `${staffLabel} / 申請区分: ${applicationType}`,
     "/field-agents"
   );
-  if (user.role === "R8" && staff.agency.parentId) {
+  if (needsFirstApproval(user.role) && staff.agency.parentId) {
     const admins = await prisma.account.findMany({
       where: { role: "R7", agencyId: staff.agency.parentId, status: "active" },
       select: { id: true },
@@ -480,8 +516,9 @@ export async function csvBulkApplyAction(
     if (products === "マルチ" && !agencyCode2) {
       e.push("取扱商材が「マルチ」の場合、使用代理店コードは2枠とも必須です");
     }
-    if (startDate && !DATE_RE.test(startDate)) {
-      e.push("稼働開始日は YYYY-MM-DD 形式で入力してください");
+    // CSV一括申請の列に稼働終了日は無い（`csv-columns.ts` の C_* 参照）ため開始日のみ検証する
+    if (!isBlankOrCalendarDate(startDate)) {
+      e.push("稼働開始日は実在する日付を YYYY-MM-DD 形式で入力してください");
     }
     // 属性=業務委託社員 のときのみ業務委託会社名・住所・連絡先が必須（§7.4）
     const isContractor = attribute === "業務委託社員";
@@ -635,7 +672,7 @@ export async function csvBulkApplyAction(
     "/field-agents"
   );
   // 2次店からの一括申請は親1次店の管理者にも1次承認待ちを通知
-  if (user.role === "R8") {
+  if (needsFirstApproval(user.role)) {
     const parentIds = Array.from(
       new Set(creates.map((c) => c.staff.agency.parentId).filter((v): v is string => !!v))
     );
@@ -773,6 +810,7 @@ export async function firstApproveAction(formData: FormData): Promise<void> {
       history: pushHistory(app.history, "approve_first", user.loginId) as never,
     },
   });
+  await track(app.id, "approve_first", app.status, "provisional", user.loginId);
   await audit(user.loginId, "訪販員申請1次承認", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
 }
@@ -808,6 +846,8 @@ export async function finalApproveAction(formData: FormData): Promise<void> {
     const others = await prisma.fieldAgentApplication.findMany({
       where: { salesStaffId: app.salesStaffId, id: { not: app.id }, status: { not: "deleted" } },
     });
+    await track(app.id, "final_approve", app.status, "deleted", user.loginId, "抹消申請の最終承認");
+    await track(app.id, "delete", app.status, "deleted", user.loginId, "抹消申請の最終承認");
     for (const o of others) {
       await prisma.fieldAgentApplication.update({
         where: { id: o.id },
@@ -817,6 +857,14 @@ export async function finalApproveAction(formData: FormData): Promise<void> {
           history: pushHistory(o.history, "delete", user.loginId) as never,
         },
       });
+      await track(
+        o.id,
+        "delete",
+        o.status,
+        "deleted",
+        user.loginId,
+        `他申請の抹消最終承認に伴う抹消（fieldAgentApplication:${app.id}）`
+      );
     }
     await audit(user.loginId, "訪販員抹消（最終承認）", `fieldAgentApplication:${app.id}`);
   } else {
@@ -829,6 +877,7 @@ export async function finalApproveAction(formData: FormData): Promise<void> {
         history: pushHistory(app.history, "final_approve", user.loginId) as never,
       },
     });
+    await track(app.id, "final_approve", app.status, "registered", user.loginId);
     await audit(user.loginId, "訪販員申請最終承認", `fieldAgentApplication:${app.id}`);
   }
   revalidatePath("/field-agents");
@@ -851,6 +900,7 @@ export async function suspendAction(formData: FormData): Promise<void> {
       history: pushHistory(app.history, "suspend", user.loginId) as never,
     },
   });
+  await track(app.id, "suspend", app.status, "suspended", user.loginId);
   await audit(user.loginId, "訪販員停止", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
 }
@@ -872,6 +922,7 @@ export async function resumeAction(formData: FormData): Promise<void> {
       history: pushHistory(app.history, "resume", user.loginId) as never,
     },
   });
+  await track(app.id, "resume", app.status, restoredStatus(app), user.loginId);
   await audit(user.loginId, "訪販員再開", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
 }
@@ -894,6 +945,7 @@ export async function removeAction(formData: FormData): Promise<void> {
       history: pushHistory(app.history, "delete", user.loginId) as never,
     },
   });
+  await track(app.id, "delete", app.status, "deleted", user.loginId);
   await audit(user.loginId, "訪販員申請削除", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
 }
@@ -916,6 +968,7 @@ export async function restoreAction(formData: FormData): Promise<void> {
       history: pushHistory(app.history, "restore", user.loginId) as never,
     },
   });
+  await track(app.id, "restore", app.status, restoredStatus(app), user.loginId);
   await audit(user.loginId, "訪販員申請復旧", `fieldAgentApplication:${app.id}`);
   revalidatePath("/field-agents");
 }
@@ -977,8 +1030,13 @@ export async function updateFieldApplicationAction(
   if (products === "マルチ" && !agencyCode2) {
     return { error: "取扱商材が「マルチ」の場合、使用代理店コードは2枠とも必須です。" };
   }
-  if (startDate && !DATE_RE.test(startDate)) return { error: "稼働開始日の形式が不正です。" };
-  if (endDate && !DATE_RE.test(endDate)) return { error: "稼働終了日の形式が不正です。" };
+  // 実在する日付であること（形式だけの検証では 9999-99-99 / 2026-02-31 が通ってしまう §7.4）
+  if (!isBlankOrCalendarDate(startDate)) {
+    return { error: "稼働開始日は実在する日付を YYYY-MM-DD 形式で入力してください。" };
+  }
+  if (!isBlankOrCalendarDate(endDate)) {
+    return { error: "稼働終了日は実在する日付を YYYY-MM-DD 形式で入力してください。" };
+  }
   // 属性=業務委託社員 のときのみ業務委託会社名・住所・連絡先が必須（他属性では保持しない）
   const isContractor = attribute === "業務委託社員";
   if (isContractor && (!contractorName || !contractorAddress || !contractorPhone)) {

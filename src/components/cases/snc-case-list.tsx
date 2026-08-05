@@ -139,6 +139,17 @@ export async function SncCaseListPage({
       })
     : [];
   const statAgencyMap = new Map(statAgencies.map((a) => [a.id, a]));
+  // 集計表に出す列（§7.8 のステータスマスタ + 実在するマスタ外の状態）。
+  // マスタは 未対応/確認中/対応中/問題発生/完了 の5種だが、§5.1「停」「削」による
+  // 「停止」「削除済」はマスタ外の状態として実データに存在する。
+  // マスタ列だけを合計すると「計」がその代理店の実件数より少なくなり、
+  // 案件一覧やCSVと突き合わせても差の原因が分からない（QA loop3 で検出）。
+  // 実在する状態をすべて列にして「計 = 列の合計 = その代理店の実件数」を保つ。
+  const statusesPresent = [...new Set(byAgencyStatus.map((r) => r.status))];
+  const statColumns = [
+    ...statusValues,
+    ...statusesPresent.filter((s) => !statusValues.includes(s)).sort(),
+  ];
   // 月別起票件数（直近6ヶ月）。基準月はJSTの今日（today()）から算出する
   const monthKeys: string[] = [];
   {
@@ -237,7 +248,7 @@ export async function SncCaseListPage({
                     <th className="px-2 py-1 text-left text-xs font-semibold text-slate-500">
                       一次代理店
                     </th>
-                    {statusValues.map((s) => (
+                    {statColumns.map((s) => (
                       <th
                         key={s}
                         className="px-2 py-1 text-right text-xs font-semibold text-slate-500"
@@ -253,7 +264,7 @@ export async function SncCaseListPage({
                 <tbody>
                   {statAgencyIds.map((id) => {
                     const a = statAgencyMap.get(id);
-                    const rowCounts = statusValues.map(
+                    const rowCounts = statColumns.map(
                       (s) =>
                         byAgencyStatus.find((r) => r.primaryAgencyId === id && r.status === s)
                           ?._count._all ?? 0
@@ -276,7 +287,7 @@ export async function SncCaseListPage({
                     <tr>
                       <td
                         className="px-2 py-2 text-xs text-slate-400"
-                        colSpan={statusValues.length + 2}
+                        colSpan={statColumns.length + 2}
                       >
                         案件がありません
                       </td>

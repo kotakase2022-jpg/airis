@@ -250,14 +250,18 @@ async function finalizeLogin(
     role: string;
     mustChangePassword: boolean;
     passwordUpdatedAt: Date;
-    agency: { status: string } | null;
+    agency: { status: string; parent?: { status: string } | null } | null;
   },
   ip: string,
   ua: string
 ): Promise<{ ok: boolean; mustChange: boolean }> {
   // パスワード有効期限（§4.2）: 期限超過なら強制変更フラグを立てて/passwordへ誘導。
-  // 実効ロールで判定する（稼働終了代理店の⑦⑧=⑩は一般ポリシー180日）。
-  const role = effectiveRole(account.role as Role, account.agency?.status);
+  // 実効ロールで判定する（稼働終了代理店の⑦と配下2次店の⑧=⑩は一般ポリシー180日 §14-2）。
+  const role = effectiveRole(
+    account.role as Role,
+    account.agency?.status,
+    account.agency?.parent?.status ?? null
+  );
   const expired = isPasswordExpired(account.passwordUpdatedAt, role, new Date());
   const logged = await recordAccess({
     loginId: account.loginId,

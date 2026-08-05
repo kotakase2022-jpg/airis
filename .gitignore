@@ -42,3 +42,10 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# QA作業用の一時ファイル（接続情報・検証スクリプトを含みうるため必ず除外する）
+*.tmp
+.qa-*
+.prod-*
+.shot.mjs
+.verify.mjs

@@ -24,10 +24,13 @@ const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SRC_DIR = path.join(REPO_ROOT, "src");
 
 const PATTERNS: { name: string; re: RegExp }[] = [
-  // role の等値比較形（=== "Rn" / !== "Rn"）も権限判定のハードコードとして検出する（§3.2）
+  // role の等値比較形（=== "Rn" / !== "Rn"）も権限判定のハードコードとして検出する（§3.2）。
+  // ※ 以前この正規表現は `\s*` が `s*`、`\d+` が `d+` とバックスラッシュ欠落で書かれており、
+  //   実在するコードに1件もマッチしない「死んだ検出器」だった（QA loop3 の独立監査で検出）。
+  //   バックスラッシュを補って実際に機能させている。
   {
     name: 'user.role === "Rn" 形の等値比較',
-    re: /user.(?:role|rawRole)s*[!=]==s*"Rd+"/g,
+    re: /user\.(?:role|rawRole)\s*[!=]==\s*"R\d+"/g,
   },
   { name: "includes(user.role)", re: /\.includes\(\s*user\.(?:role|rawRole)\b/g },
   { name: "ロール配列リテラル.includes()", re: /\[[^\]\n]*"R\d+"[^\]\n]*\]\s*\.includes\(/g },
@@ -41,6 +44,10 @@ const ALLOWED: Record<string, string> = {
   "lib/session.ts": "§3.1 RLSコンテキスト（app.bypass / app.scope）の算出。機能権限の判定ではない",
   "app/(auth)/actions.ts":
     "§4.2 パスワード最小桁数（管理者20桁/一般14桁）の判定。ADMIN_PW_ROLES は認証ポリシーの区分で機能権限ではない",
+  // ※ 承認経路の決定（§6.1「⑧からの申請は⑦の1次承認を経てSNCへ」）と通知宛先の決定（§6.3）は
+  //   roles.ts の needsFirstApproval() / caseSeriesForRole() / announcementAudienceFilterFor()
+  //   に切り出したため、例外登録は不要になった（QA loop3 でこの検出器の正規表現が
+  //   バックスラッシュ欠落により機能していなかったことを是正した際に判明した8件を整理）。
 
   // ---- (2) §5.2 の宣言的マップを引いている箇所 ----
   "app/(app)/layout.tsx":

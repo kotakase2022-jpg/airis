@@ -5,6 +5,7 @@
 
 import { REQUESTABLE_ROLES, type Role } from "@/lib/roles";
 import { can } from "@/lib/permissions";
+import { canResetCredentialsFor } from "../account-requests/approval-rules";
 
 /**
  * 「①（サスラボ社システム管理アカウント）だけができる操作」の判定。
@@ -54,9 +55,22 @@ export function canAnonymizePii(role: Role): boolean {
  * ②③が共通で持つ操作は「承」（approve_final = ①②③）なのでこれで判定する。
  * 「変」（update = ①②）で判定すると③が実行できず §4.2 を満たせない。
  * 発注者指示（2026-08-05「③の管理画面を〇」）と整合する。
+ *
+ * ただし **これは「操作そのものを持つか」の判定にとどまる**。
+ * 実際にどのアカウントへ実行できるかは対象ロールによる職務分離（§6.1-3 / 要件1-1）で更に絞る。
+ * ボタンの出し分けには対象ロールも渡す `canResetCredentialsOn()` を使うこと。
  */
 export function canResetCredentials(role: Role): boolean {
   return can(role, "airis-account", "approve_final");
+}
+
+/**
+ * 「このアカウントに対して」リセット代行できるか（操作権限 + 職務分離）。
+ * UI（ボタンの出し分け）とサーバ側（accountAction）の双方で同じ規則を使う（§3.2 多層防御）。
+ * 職務分離の規則は最終承認と共通（account-requests/approval-rules.ts）。
+ */
+export function canResetCredentialsOn(role: Role, targetRole: string): boolean {
+  return canResetCredentials(role) && canResetCredentialsFor(role, targetRole);
 }
 
 /** アカウントの停止・再開の可否（§5.1「停」= ①②） */

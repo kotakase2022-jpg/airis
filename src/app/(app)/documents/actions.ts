@@ -62,6 +62,12 @@ export async function deleteDocumentAction(formData: FormData): Promise<void> {
   if (!id) return;
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) return;
+  // ④表示用のダミーデータは実データと分離して保持する（§3.5）。
+  // 他機能（お知らせ・アカウント）の削除は既に isDummy を弾いており、ここだけ抜けていた。
+  if (doc.isDummy) {
+    await audit(user.loginId, "document.delete", `${id} dummy`, "denied");
+    return;
+  }
   await prisma.document.delete({ where: { id } });
   // 添付実体も削除（孤児ファイル防止）
   try {

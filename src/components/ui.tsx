@@ -1,8 +1,23 @@
 import { ReactNode } from "react";
 
-export function Card({ children, className = "" }: { children: ReactNode; className?: string }) {
+// data-testid を明示的に受け取る（E2Eから領域を特定するため）。
+// rest props の spread ではなく明示のプロパティにしているのは、`data-*` はハイフンを含むため
+// TypeScript の余剰プロパティ検査が効かず、**転送されない属性を書いても tsc が通ってしまう**ため
+// （QA loop3 で `<Card data-testid=…>` が DOM に出ていない事故を検出したので明示的に受ける）。
+export function Card({
+  children,
+  className = "",
+  "data-testid": testId,
+}: {
+  children: ReactNode;
+  className?: string;
+  "data-testid"?: string;
+}) {
   return (
-    <div className={`rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}>
+    <div
+      data-testid={testId}
+      className={`rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}
+    >
       {children}
     </div>
   );

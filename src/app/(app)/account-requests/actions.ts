@@ -1,10 +1,9 @@
 "use server";
 
-import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { requirePage, agencyScope, hashPassword } from "@/lib/auth";
-import { REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
+import { requirePage, agencyScope, hashPasswordWithPepperVersion } from "@/lib/auth";
+import { REQUESTABLE_ROLES, ROLE_LABELS, Role, needsFirstApproval } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
 import {
   audit,
@@ -15,7 +14,31 @@ import {
   storeFile,
   withScopedTransaction,
 } from "@/lib/util";
+import { recordStatusHistory, type StatusEvent } from "@/lib/status";
+import { generateTempPassword } from "@/lib/temp-password";
 import { canFinalApproveRequest, SNC_TARGET_DENIED_MESSAGE } from "./approval-rules";
+
+// 状態遷移を StatusHistory（§4.1「遷移イベントを履歴テーブルに記録」）へ記録する。
+// JSON列 history は画面表示用の軽量な履歴で、エンティティ横断の検索・監査には使えないため
+// 両方に記録する（recordStatusHistory は失敗しても業務処理を止めない）。
+function track(
+  entityId: string,
+  event: StatusEvent,
+  fromStatus: string | null,
+  toStatus: string | null,
+  changedBy: string,
+  reason?: string | null
+) {
+  return recordStatusHistory({
+    entityType: "account_request",
+    entityId,
+    event,
+    fromStatus,
+    toStatus,
+    reason,
+    changedBy,
+  });
+}
 
 export type ActionState =
   | {
@@ -109,11 +132,11 @@ export async function createRequestAction(
   const stored = await storeFile(evidence, user.loginId);
   if ("error" in stored) return { error: stored.error };
 
-  // ⑧からの申請は⑦の1次承認を経てSNCへ（§6.1）
-  const status = user.role === "R8" ? "pending_first" : "pending_final";
+  // ⑧からの申請は⑦の1次承認を経てSNCへ（§6.1）。対象ロールは roles.ts の宣言的マップから導出する
+  const status = needsFirstApproval(user.role) ? "pending_first" : "pending_final";
   const requestId = `REQ-${Date.now()}`;
 
-  await prisma.accountRequest.create({
+  const created = await prisma.accountRequest.create({
     data: {
       requestId,
       role,
@@ -127,6 +150,7 @@ export async function createRequestAction(
     },
   });
 
+  await track(created.id, "requested", null, status, user.loginId, `requestId=${requestId}`);
   await audit(user.loginId, "account_request_create", requestId);
   revalidatePath("/account-requests");
   return { ok: true, message: `アカウント申請を受け付けました（${requestId}）` };
@@ -165,6 +189,14 @@ export async function firstApproveAction(
     },
   });
 
+  await track(
+    req.id,
+    "approve_first",
+    req.status,
+    "pending_final",
+    user.loginId,
+    `requestId=${req.requestId}`
+  );
   await audit(user.loginId, "account_request_approve_first", req.requestId);
   if (req.createdBy) {
     await notify(
@@ -209,15 +241,6 @@ function loginPrefix(role: string, agency: { code: string; tier: number } | null
   }
 }
 
-function generateTempPassword(): string {
-  // 紛らわしい文字（I/l/O/0/1）を除いた英大小+数字で24文字
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-  const bytes = crypto.randomBytes(24);
-  let pw = "";
-  for (const b of bytes) pw += chars[b % chars.length];
-  return pw;
-}
-
 export async function finalApproveAction(
   _prev: ActionState,
   formData: FormData
@@ -259,8 +282,10 @@ export async function finalApproveAction(
   if (!prefix) return { error: "所属代理店情報が不足しているためIDを採番できません" };
 
   // 一時パスワード: DBにはハッシュのみ保存し、平文は戻り値で承認者に一度だけ表示
-  const tempPassword = generateTempPassword();
-  const passwordHash = hashPassword(tempPassword);
+  const tempPassword = generateTempPassword(req.role);
+  // ハッシュと同時に適用したペッパーのバージョンIDを保存する（SEC-021。
+  // ここで pepperVersion を落とすとローテーションの移行完了判定が成立しない）
+  const { hash: passwordHash, pepperVersion } = hashPasswordWithPepperVersion(tempPassword);
 
   // Account 発行 + AccountRequest 更新は**同一トランザクション**で行う（§3.6 / §3.1）。
   // ID採番（同prefixの件数+1。③のみ4桁、他は3桁）もトランザクション内で行い、
@@ -282,6 +307,7 @@ export async function finalApproveAction(
           agencyId: req.agencyId,
           status: "active",
           passwordHash,
+          pepperVersion, // 適用したペッパーのバージョンID（SEC-021。落とすと再ハッシュ判定が壊れる）
           mustChangePassword: true,
         },
       });
@@ -305,6 +331,14 @@ export async function finalApproveAction(
     };
   }
 
+  await track(
+    req.id,
+    "final_approve",
+    req.status,
+    "approved",
+    user.loginId,
+    `requestId=${req.requestId} -> ${issuedLoginId}`
+  );
   await audit(
     user.loginId,
     "account_request_final_approve",
@@ -369,6 +403,7 @@ export async function rejectAction(_prev: ActionState, formData: FormData): Prom
     },
   });
 
+  await track(req.id, "reject", req.status, "rejected", user.loginId, reason);
   await audit(user.loginId, "account_request_reject", req.requestId);
   if (req.createdBy) {
     await notify(

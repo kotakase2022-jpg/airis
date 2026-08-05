@@ -212,7 +212,9 @@ test("申請フォーム: 生年月日の形式不正はサーバ側でエラー
     .toBe("text:1991/13/99");
   await page.getByRole("button", { name: "申請する" }).click();
 
-  await expect(page.getByText("生年月日は YYYY-MM-DD 形式で入力してください")).toBeVisible({
+  await expect(
+    page.getByText("生年月日は実在する日付を YYYY-MM-DD 形式で入力してください")
+  ).toBeVisible({
     timeout: 10_000,
   });
   expect(await db().salesStaff.count({ where: { lastName } })).toBe(0);

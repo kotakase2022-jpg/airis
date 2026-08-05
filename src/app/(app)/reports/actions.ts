@@ -10,7 +10,8 @@ import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { audit, notify, notifyRole, pushHistory, storeFile, fiscalYearOf } from "@/lib/util";
 import { parseCsv } from "@/lib/csv";
 import { can } from "@/lib/permissions";
-import { SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
+import { SNC_ADMIN_ROLES, SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
+import { isCalendarDate } from "@/lib/date-input";
 import {
   VISIT_CSV_HEADERS,
   TELE_CSV_HEADERS,
@@ -29,7 +30,8 @@ import {
   type ForecastSource,
 } from "./kpi";
 
-const SNC_ADMIN = ["R1", "R2", "R3"];
+// SNC管理系ロールの集合は src/lib/roles.ts を唯一の情報源にする（§3.2。ロール配列を画面に直書きしない）
+const SNC_ADMIN: readonly string[] = SNC_ADMIN_ROLES;
 
 // ---------------------------------------------------------------------------
 // 共通ヘルパ
@@ -97,7 +99,8 @@ export async function saveDailyReport(
   if (user.dummy) return { error: "閲覧専用アカウントのため保存できません" };
 
   const date = String(formData.get("date") ?? "");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { error: "日付を入力してください" };
+  // 実在する日付であること（形式のみでは 2026-02-31 が通り、当月KPIの稼働日数と噛み合わなくなる）
+  if (!isCalendarDate(date)) return { error: "実在する日付を入力してください" };
   const type = String(formData.get("type") ?? "");
   if (type !== "訪販" && type !== "テレマ") return { error: "日報タイプが不正です" };
   const scope = await agencyScope(user);
@@ -189,11 +192,23 @@ export async function saveDailyReport(
     keepFirstForecast("forecastEntries");
   }
 
-  // 同一（日付,タイプ,販売員ID）は上書き（要件6-1）
+  // 同一（日付,タイプ,販売員ID）は上書き（要件6-1）。
+  //
+  // ただし**既存レコードがあるのにフォームへ既存値が読み込まれていない場合**（プリフィルの
+  // 取得範囲外の古い日付など）に空欄のまま保存すると、未編集の項目まで null で潰れて実績が消える。
+  // これを防ぐため、フォームが編集モード（既存値を読み込んだ状態）でない場合は、
+  // 送信されなかった（= null の）項目を更新対象から除外して既存値を維持する。
+  // 編集モードのときは空欄を「意図的なクリア」として扱い、従来どおりそのまま反映する。
+  const prefilled = String(formData.get("prefilled") ?? "") === "1";
+  const dropNulls = <T extends Record<string, unknown>>(o: T): Partial<T> =>
+    Object.fromEntries(Object.entries(o).filter(([, v]) => v !== null && v !== "")) as Partial<T>;
+  const updateData = prefilled
+    ? { agencyId: staff.agencyId, ...common, ...nums }
+    : { agencyId: staff.agencyId, ...dropNulls(common), ...dropNulls(nums) };
   await prisma.dailyReport.upsert({
     where: { date_type_salesStaffId: { date, type, salesStaffId: staff.id } },
     create: { date, type, salesStaffId: staff.id, agencyId: staff.agencyId, ...common, ...nums },
-    update: { agencyId: staff.agencyId, ...common, ...nums },
+    update: updateData,
   });
 
   await audit(user.loginId, "daily_report_upsert", `${date}/${type}/${staff.salesId ?? staff.id}`);
@@ -203,13 +218,18 @@ export async function saveDailyReport(
   const monthReports = await prisma.dailyReport.findMany({
     where: { salesStaffId: staff.id, type, date: { startsWith: month } },
   });
+  // タイトルに販売員を明示する。稼働日報タブの先頭にはスコープ全体を集計した
+  // 「当月KPI（月 / 参照可能な販売員N名の合計）」が別に表示されるため、
+  // 範囲の違う2枚が並んでも数値の食い違いを誤読しないようにする（§7.5）。
+  const staffLabel = staff.salesId ?? staff.id;
   return {
     success: `${date} の${type}日報を保存しました`,
-    kpiTitle: `当月KPI（${month} / ${type}）`,
+    kpiTitle: `当月KPI（${month} / ${type} / ${staffLabel}）`,
     kpi: isVisit ? calcVisitKpi(monthReports, date) : calcTeleKpi(monthReports),
+    // 残稼働のみ原本と構造差がある（原本は日次の未入力日から算出。要件6-3 は日次の見込列を持たない）
     kpiNote: isVisit
       ? undefined
-      : "「獲得生産性」「後確通過率」は入力項目（獲得数・後確通過数）が存在しないため対象外です（仮実装 TODO §14-5）",
+      : "「残稼働」は月初見込−実績計で算出しています（Excel原本は実績未入力日の見込合計 §14-5）",
   };
 }
 
@@ -274,8 +294,9 @@ export async function uploadDailyCsv(
     const cell = (idx: number) => cols[idx].trim();
 
     const date = cell(0);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      errors.push(`${line}行目: 日付はYYYY-MM-DD形式で入力してください`);
+    // 実在する日付であること（形式のみの検証では 2026-02-31 が通り、月次集計の分母が壊れる）
+    if (!isCalendarDate(date)) {
+      errors.push(`${line}行目: 日付は実在する日付をYYYY-MM-DD形式で入力してください`);
       continue;
     }
     const salesId = cell(1);

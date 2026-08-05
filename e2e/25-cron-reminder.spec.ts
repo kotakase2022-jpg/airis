@@ -129,12 +129,18 @@ test("期限超過かつ未完了の案件について、当該1次店のR7へ�
   expect(summary, "R3へのサマリ通知が存在する").toBeTruthy();
   expect(summary!.link).toBe("/hotline");
 
-  // 監査ログにバッチ実行が残る（§3.3）
+  // 監査ログにバッチ実行が残る（§3.3）。
+  // バッチは actor="system-cron" / action="daily_batch" で記録する
+  // （src/app/api/cron/daily/route.ts）。以前この検証は action に "cron" を含む行を
+  // 探しており、実装が actor 側に "cron" を持つため常に見つからなかった（テスト側の誤り）。
+  // 列を正しく指定し、併せて result と実行サマリの記録（可観測性）まで検証する。
   const auditRow = await db().auditLog.findFirst({
-    where: { action: { contains: "cron" } },
+    where: { actor: "system-cron", action: "daily_batch" },
     orderBy: { createdAt: "desc" },
   });
   expect(auditRow, "日次バッチの監査ログが記録される").toBeTruthy();
+  expect(auditRow!.result, "正常終了として記録される").toBe("success");
+  expect(auditRow!.target, "実行サマリ（JSON）が監査ログに残る").toBeTruthy();
 
   expect(overdueId).toBeTruthy();
 });

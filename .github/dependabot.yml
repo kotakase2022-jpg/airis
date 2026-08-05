@@ -1,0 +1,16 @@
+# 依存ライブラリの脆弱性・更新追跡（§10.5 SEC②#40「依存ライブラリスキャン（pnpm audit / Dependabot）」）
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # パッチ・マイナーはまとめて1PRにする（レビュー負荷を抑える）
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

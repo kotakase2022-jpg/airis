@@ -4,7 +4,12 @@ import Link from "next/link";
 import type { Prisma } from "@prisma/client";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
+import {
+  SNC_ADMIN_ROLES,
+  SUBMISSION_KINDS,
+  SUBMISSION_STATUS_LABELS,
+  SUBMISSION_TEMPLATE_FILES,
+} from "@/lib/roles";
 import { can } from "@/lib/permissions";
 import { formatHistory, today } from "@/lib/util";
 import {
@@ -25,7 +30,7 @@ import {
   thCls,
   tdCls,
 } from "@/components/ui";
-import { calcSummaryKpi, monthRange, normalizeDate } from "./kpi";
+import { calcSummaryKpi, calcVisitKpi, calcTeleKpi, monthRange, normalizeDate } from "./kpi";
 import { DailyReportForm, type StaffOption } from "./daily-form";
 import { CsvUpload } from "./csv-upload";
 import { SubmissionForm, SubmissionReplaceForm, type AgencyOption } from "./submission-form";
@@ -38,7 +43,8 @@ import {
 } from "./actions";
 
 const PAGE_SIZE = 50;
-const SNC_ADMIN = ["R1", "R2", "R3"];
+// SNC管理系ロールの集合は src/lib/roles.ts を唯一の情報源にする（§3.2）
+const SNC_ADMIN: readonly string[] = SNC_ADMIN_ROLES;
 
 type User = CurrentUser & { dummy: boolean };
 type Params = Record<string, string>;
@@ -145,7 +151,10 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
   // 提出済み日報の既存値プリフィル用（検収指摘 問題一覧No.1 / D-011）:
   // 「販売員ID|日付|タイプ」→ 既存レコードの値。フォームで同じ組み合わせを選ぶと
   // 既存値が読み込まれ、未変更の項目が0/空欄で上書きされる事故を防ぐ。
-  // 直近92日分に限定（それ以前の修正は稀。全件は転送量が過大になるため）。
+  // 取得範囲は **直近92日分**（最大500名×20列がRSCペイロードでクライアントへ転送されるため、
+  // 範囲を広げると稼働日報タブの初期表示が肥大化する）。
+  // 範囲外の過去日を編集する場合も、server action 側が「既存値を読み込んでいない送信では
+  // 空欄を更新対象から外す」（prefilled / dropNulls）ため実績が消えることはない。
   const existingReports: Record<string, Record<string, number | string | null>> = {};
   if (!user.dummy && staffIds.length > 0) {
     const sinceBase = new Date(`${today()}T00:00:00Z`);
@@ -212,12 +221,83 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
     }
   }
 
+  // 当月KPIタイル（§7.5「自動計算KPI（日報Excelの「自動→」行を再現。**一覧・集計画面に表示**）」）。
+  // 保存後のフォーム応答だけでなく、タブを開いた時点で当月の値を表示する。
+  // 集計対象は参照可能な日報（⑨は自分のみ / それ以外はスコープ内）。SNC閲覧アカウントはダミー代理店。
+  const kpiMonth = today().slice(0, 7);
+  // KPI計算に必要な数値項目だけを取得する（本文列 activityContent / notes 等は不要）
+  const kpiReports =
+    staffIds.length > 0
+      ? await prisma.dailyReport.findMany({
+          where: { salesStaffId: { in: staffIds }, date: { startsWith: kpiMonth } },
+          select: {
+            date: true,
+            type: true,
+            forecastAcq: true,
+            acquisitions: true,
+            workers: true,
+            visits: true,
+            meetings: true,
+            negotiations: true,
+            contracts: true,
+            forecastHours: true,
+            forecastEntries: true,
+            actualHours: true,
+            entries: true,
+            appointments: true,
+            closePassed: true,
+            preConfirmPassed: true,
+          },
+        })
+      : [];
+  const visitKpi = calcVisitKpi(
+    kpiReports.filter((r) => r.type === "訪販"),
+    today()
+  );
+  const teleKpi = calcTeleKpi(kpiReports.filter((r) => r.type === "テレマ"));
+  // 集計範囲をタイトルに出す。保存後に表示される「当月KPI（月 / タイプ）」は
+  // **提出した販売員1名分** なので、同じ画面に範囲の違う2枚が並んでも誤読されないようにする。
+  const kpiScopeLabel =
+    user.role === "R9"
+      ? "自分"
+      : fixedStaff
+        ? fixedStaff.label
+        : `参照可能な販売員${staffIds.length}名の合計`;
+
   return (
     <div className="mx-auto w-full max-w-3xl">
       <InfoBanner>
         稼働日報を提出します。同じ日付・タイプ・販売員IDの日報は再提出時に上書きされます。
         {user.dummy && "（SNC閲覧アカウントは閲覧専用のため提出できません）"}
       </InfoBanner>
+
+      {/* 当月KPI（§7.5）。日報が1件も無い月は全タイル0表示になる（分母0は「0」表示） */}
+      <Card className="mb-5" data-testid="kpi-current-month">
+        <SectionTitle>{`当月KPI（${kpiMonth} / ${kpiScopeLabel}）`}</SectionTitle>
+        <p className="mb-2 text-xs font-semibold text-slate-500">訪販</p>
+        <div className="mb-4 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          {visitKpi.map((k) => (
+            <div key={k.label} className="rounded-xl bg-slate-50 p-2 text-center">
+              <div className="text-base font-semibold text-slate-800">{k.value}</div>
+              <div className="text-[11px] text-slate-500">{k.label}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mb-2 text-xs font-semibold text-slate-500">テレマ</p>
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
+          {teleKpi.map((k) => (
+            <div key={k.label} className="rounded-xl bg-slate-50 p-2 text-center">
+              <div className="text-base font-semibold text-slate-800">{k.value}</div>
+              <div className="text-[11px] text-slate-500">{k.label}</div>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-slate-400">
+          {user.role === "R9"
+            ? "※自分の当月日報を集計しています。計算式は稼働日報Excel原本準拠です。"
+            : "※参照可能な販売員の当月日報を集計しています。計算式は稼働日報Excel原本準拠です。"}
+        </p>
+      </Card>
 
       {!user.dummy && (
         <Card className="mb-5">
@@ -408,10 +488,11 @@ async function SubmissionsTab({
       <Card className="mb-5">
         <SectionTitle>提出用テンプレート（様式ダウンロード）</SectionTitle>
         <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-          {SUBMISSION_KINDS.map((k, i) => (
+          {SUBMISSION_KINDS.map((k) => (
             <a
               key={k}
-              href={`/templates/template${i + 1}.xlsx`}
+              // ファイル名は様式名からの明示的な対応表で解決する（添字計算によるずれ防止 §7.6）
+              href={`/templates/${SUBMISSION_TEMPLATE_FILES[k]}`}
               download={`${k}.xlsx`}
               className={btnOutline + " justify-start"}
             >

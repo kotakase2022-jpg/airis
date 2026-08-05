@@ -24,3 +24,27 @@ export function canFinalApproveRequest(actorRole: Role, targetRole: string): boo
   }
   return true;
 }
+
+export const SNC_TARGET_RESET_DENIED_MESSAGE =
+  "SNC系ロール（①〜⑥）アカウントの資格情報リセットはSNC課長以上（②）が行ってください";
+
+/**
+ * 管理者代行による資格情報リセット（パスワードリセット / MFAリセット §4.2）の可否。
+ *
+ * §4.2 は「②③が実行」と定めるが、**リセットはアカウント乗っ取りに直結する操作**である:
+ * MFAリセット → パスワードリセットの順に実行すると、実行者に平文の一時パスワードが表示され、
+ * かつMFAが未登録に戻るため、実行者の端末で新しいTOTPを登録して対象アカウントに入れてしまう。
+ * したがって §6.1-3 / 要件1-1「SNC一般以上のアカウント発行・**権限変更**・停止・削除は必ず
+ * SNC課長以上（②）」と同じ職務分離を、リセット代行にも適用する
+ * （SNC系①〜⑥が対象なら①②のみ。③は代理店系⑦⑧⑨⑩のリセット代行に限定）。
+ *
+ * この制約が無いと、③（PS2課の代理店担当。人数が多い想定 §4）が①②の全権アカウントを
+ * 乗っ取れてしまう（QA loop3 の独立監査で実証済み）。
+ */
+export function canResetCredentialsFor(actorRole: Role, targetRole: string): boolean {
+  if (!SNC_ADMIN_ROLES.includes(actorRole)) return false;
+  if (SNC_TARGET_ROLES.includes(targetRole as Role)) {
+    return SNC_TARGET_APPROVER_ROLES.includes(actorRole);
+  }
+  return true;
+}

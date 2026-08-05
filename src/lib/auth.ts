@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import crypto from "crypto";
 import { prisma } from "./prisma";
 import { PageKey, Role, canAccess, isDummyView } from "./roles";
-import { resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
+import { effectiveRoleFor, resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
 import { UNKNOWN_IP, trustedIpFrom } from "./client-ip";
 import { passwordInputCandidates } from "./password-input";
 import {
@@ -42,6 +42,16 @@ export function hashPasswordWithPepperVersion(pw: string): HashedPassword {
   return hashPasswordWithVersion(pw);
 }
 
+// Account の passwordHash / pepperVersion をまとめて更新するための data 断片を返す（SEC-021）。
+// 管理者代行のパスワードリセット・ID発行など「新しいハッシュを保存する」全経路でこれを使う。
+export function hashedForAccount(pw: string): {
+  passwordHash: string;
+  pepperVersion: string | null;
+} {
+  const { hash, pepperVersion } = hashPasswordWithVersion(pw);
+  return { passwordHash: hash, pepperVersion };
+}
+
 // アカウントの pepperVersion を起点に照合する（照合順序と needsRehash の意味は pepper.ts 参照）。
 // pepperVersion 省略時は「記録なし」として既知の全バージョン→ペッパー無しの順で試す
 // （PasswordHistory のように バージョン列を持たないハッシュ用）。
@@ -69,11 +79,16 @@ export function verifyPasswordLenient(
 
 // 接続元IPの解決は src/lib/client-ip.ts（純粋関数・単体テスト対象）へ委譲する（§10.1）
 
-// 実効ロールの解決（§14-2）: 稼働終了代理店（agency.status=closed）に属する⑦⑧は⑩として扱う。
-// セッション経由（session.ts）と同じ規則を、セッション未確立のログイン処理でも使うためのヘルパ。
-export function effectiveRole(rawRole: string, agencyStatus?: string | null): Role {
-  if ((rawRole === "R7" || rawRole === "R8") && agencyStatus === "closed") return "R10";
-  return rawRole as Role;
+// 実効ロールの解決（§14-2）: 稼働終了代理店に属する⑦と、その配下2次店の⑧は⑩として扱う。
+// 規則の実装は session.ts の effectiveRoleFor()（純粋関数）に集約し、セッション未確立の
+// ログイン処理からも同じ関数を通す（二重実装で片方だけ直す事故を防ぐ §3.2）。
+// parentAgencyStatus を渡さない呼び出しは⑦（1次店所属）専用と見なす。
+export function effectiveRole(
+  rawRole: string,
+  agencyStatus?: string | null,
+  parentAgencyStatus?: string | null
+): Role {
+  return effectiveRoleFor(rawRole, agencyStatus ?? null, parentAgencyStatus ?? null);
 }
 
 export async function createSession(accountId: string, opts?: { mfaPending?: boolean }) {
@@ -165,24 +180,15 @@ export async function requireUser(): Promise<CurrentUser> {
 }
 
 // 管理系エンドポイントのIP許可リスト判定（§10.1 / SEC②#10）。
-// ADMIN_IP_ALLOWLIST 未設定時は無効。設定時は「信頼できる接続元IPが許可リストに含まれる」
-// 場合のみ true。信頼できるIPが決定できない（trustedIpFrom が unknown）場合は **拒否**（fail-closed）。
-// ページだけでなく管理系のRoute Handler（/admin/csv 等）からも必ず呼ぶこと。
+// 許可リストは **設定テーブル（AppSetting）→ 環境変数 ADMIN_IP_ALLOWLIST → 未設定** の順で解決する
+// （§10.1「環境変数/設定テーブルで設定可能に」）。管理画面から変更した値が即座に効く必要があるため、
+// ここで settings.ts の解決関数を使う（env のみを見ると、画面で設定しても管理画面自体に効かない）。
+// 未設定時は無効（全許可）。設定時は「信頼できる接続元IPが許可リストに含まれる」場合のみ true。
+// 信頼できるIPが決定できない（trustedIpFrom が unknown）場合は **拒否**（fail-closed）。
+// ページ（requirePage）と管理系のRoute Handler（/admin/csv 等）の双方から必ず呼ぶこと。
 export async function isAdminIpAllowed(): Promise<{ allowed: boolean; ip: string }> {
-  const list = process.env.ADMIN_IP_ALLOWLIST;
-  if (!list) return { allowed: true, ip: "-" };
-  let ip = UNKNOWN_IP;
-  try {
-    ip = trustedIpFrom(await headers());
-  } catch {
-    return { allowed: false, ip: UNKNOWN_IP };
-  }
-  if (ip === UNKNOWN_IP) return { allowed: false, ip };
-  const allowed = list
-    .split(",")
-    .map((s) => s.trim())
-    .includes(ip);
-  return { allowed, ip };
+  const { isAdminIpAllowedFromSettings } = await import("./settings");
+  return isAdminIpAllowedFromSettings();
 }
 
 export async function requirePage(page: PageKey): Promise<CurrentUser & { dummy: boolean }> {
@@ -234,11 +240,22 @@ export async function agencyScope(user: CurrentUser): Promise<string[] | null> {
   }
   if (!user.agencyId) return [];
   if (user.role === "R7" || user.role === "R10") {
+    // ⑩は §4「稼働終了代理店（⑩）: **当該1次代理店の**窓口案件のみ」。
+    // ⑧が親1次店の稼働終了で⑩になった場合（§14-2）、基準は自店（2次店）ではなく親1次店。
+    // 自店基準のままだと案件の primaryAgencyId（＝1次店）と一致せず1件も見えない。
+    let baseId = user.agencyId;
+    if (user.role === "R10" && user.agencyTier === 2) {
+      const own = await prisma.agency.findUnique({
+        where: { id: user.agencyId },
+        select: { parentId: true },
+      });
+      baseId = own?.parentId ?? user.agencyId;
+    }
     const children = await prisma.agency.findMany({
-      where: { parentId: user.agencyId },
+      where: { parentId: baseId },
       select: { id: true },
     });
-    return [user.agencyId, ...children.map((c) => c.id)];
+    return [baseId, ...children.map((c) => c.id)];
   }
   return [user.agencyId];
 }

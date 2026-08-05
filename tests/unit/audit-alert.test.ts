@@ -56,6 +56,10 @@ describe("§10.4 特権操作のアラート判定", () => {
     "sales_staff_suspend",
     "sales_staff_delete",
     "agency_delete",
+    // セキュリティ設定の変更（IP許可リスト等）はそれ自体が防御機構の無効化になり得る（§10.1）
+    "setting_change",
+    // ベンダー区分（サスラボ社保守）の付与・解除は保守権限の実質的な付与（§10.1 / SEC要件①）
+    "account_vendor_change",
   ])("%s は特権操作としてアラート対象", (action) => {
     expect(isPrivilegedAction(action)).toBe(true);
     expect(classifyAlert(action)).toBe("privileged_operation");

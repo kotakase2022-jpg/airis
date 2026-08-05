@@ -44,6 +44,39 @@ export const SNC_ADMIN_ROLES: Role[] = ["R1", "R2", "R3"];
 // 管理者区分（パスワード20桁）
 export const ADMIN_PW_ROLES: Role[] = ["R1", "R2", "R3", "R7"];
 
+// お知らせの配信対象（§7.7）。配信範囲 all=代理店全員（⑦⑧⑨）/ primary=1次店管理者（⑦）のみ。
+// ⑩（稼働終了）はDB上のロールが R7/R8 のまま（実効ロール §14-2）のため、この集合で拾われる。
+export const ANNOUNCEMENT_AUDIENCE_ROLES: Record<"all" | "primary", Role[]> = {
+  all: ["R7", "R8", "R9"],
+  primary: ["R7"],
+};
+// 配信対象になり得る全ロール（既読率の母数）
+export const ANNOUNCEMENT_TARGET_ROLES: Role[] = ANNOUNCEMENT_AUDIENCE_ROLES.all;
+
+/**
+ * そのロールに見せるお知らせを配信範囲で絞る必要があるか（§7.7）。
+ * - 配信対象外（SNC系①〜⑥）: 絞らない（作成・管理のため全件見える） → null
+ * - ⑦（1次店管理者）: primary 宛も all 宛も対象 → null
+ * - ⑧⑨: all 宛のみ → "all"
+ * 呼び出し側でロール名や配列を直書きしないための導出関数（§3.2）。
+ */
+export function announcementAudienceFilterFor(role: Role): "all" | null {
+  if (!ANNOUNCEMENT_TARGET_ROLES.includes(role)) return null;
+  if (ANNOUNCEMENT_AUDIENCE_ROLES.primary.includes(role)) return null;
+  return "all";
+}
+
+/**
+ * 申請が「1次承認を経る」申請元ロールか（§6.1「⑧からの申請は⑦の1次承認を経てSNCへ」/ §6.3）。
+ * 2次代理店（⑧）の申請は親1次店（⑦）の1次承認を要する。
+ * 承認経路の決定と通知宛先の決定に使う（誰が操作できるかの判定は permissions.ts が担う）。
+ */
+export const FIRST_APPROVAL_APPLICANT_ROLES: Role[] = ["R8"];
+
+export function needsFirstApproval(role: Role): boolean {
+  return FIRST_APPROVAL_APPLICANT_ROLES.includes(role);
+}
+
 export type PageKey =
   | "dashboard"
   | "account-requests"
@@ -198,6 +231,26 @@ export const SUBMISSION_KINDS = [
   "環境ヒアリングシート",
 ] as const;
 
+/**
+ * 稼働提出物の様式ファイル（§7.6「提出用テンプレート（様式ダウンロード）」）。
+ *
+ * 以前は `SUBMISSION_KINDS` の**配列添字**から `template${i + 1}.xlsx` を組み立てていたため、
+ * 様式の追加・並べ替えでファイルと様式名の対応が静かにずれ、**別の様式が配布される**恐れがあった。
+ * 様式名 → ファイル名の明示的な対応表にして、ずれを型で防ぐ（過不足は下の Record 型が検出する）。
+ *
+ * 実ファイルは発注者提供の原本（`public/templates/`）。原本は `docs/materials/フォーマット/` に
+ * ①〜⑥の採番付きで同梱されており、`templateN.xlsx` の N はその採番と一致する。
+ * 対応の正しさは `tests/unit/submission-templates.test.ts` がファイルの実体（シート名）まで見て検証する。
+ */
+export const SUBMISSION_TEMPLATE_FILES: Record<(typeof SUBMISSION_KINDS)[number], string> = {
+  "【アライアンス申請書】": "template1.xlsx",
+  "【訪販用】稼働エリア申請フォーマット": "template2.xlsx",
+  "【ポスティング用】配布エリア申請フォーマット": "template3.xlsx",
+  "【独自特典】申請シート": "template4.xlsx",
+  "【催事用】稼働エリア申請フォーマット": "template5.xlsx",
+  環境ヒアリングシート: "template6.xlsx",
+};
+
 export const SUBMISSION_STATUS_LABELS: Record<string, string> = {
   pending_first: "1次店確認中",
   pending_snc: "SNC確認中",
@@ -206,6 +259,23 @@ export const SUBMISSION_STATUS_LABELS: Record<string, string> = {
 };
 
 export const CASE_STATUSES = ["未対応", "確認中", "対応中", "問題発生", "完了"] as const;
+
+/**
+ * 窓口案件の系列（HL=ホットライン / CSC=消費者センター）にロールを限定する宣言的マップ（§4 / §5.2）。
+ *
+ * ⑤（サポート窓口1）はホットライン窓口のみ、⑥（サポート窓口2）は消費者センター窓口のみを扱う。
+ * それ以外のロールは系列で絞らない（①②③④は両系列、⑦⑧⑩は自代理店の案件）。
+ * ダッシュボード等でロール名を直書きしないための情報源（§3.2）。
+ */
+export const CASE_SERIES_BY_ROLE: Partial<Record<Role, "HL" | "CSC">> = {
+  R5: "HL",
+  R6: "CSC",
+};
+
+/** ロールが単一系列に限定される場合その系列、しない場合 null（§4） */
+export function caseSeriesForRole(role: Role): "HL" | "CSC" | null {
+  return CASE_SERIES_BY_ROLE[role] ?? null;
+}
 
 export const CASE_TEMPLATES = [
   "音声提出依頼",

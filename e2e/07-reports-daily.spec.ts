@@ -277,8 +277,11 @@ test("R9: 保存後にKPIタイル12個のラベルが表示される", async ({
     { area: "QA5-KPI検証" }
   );
 
-  await expect(page.getByText(`当月KPI（${MONTH} / 訪販）`)).toBeVisible();
-  const tiles = page.locator("div.rounded-xl.bg-slate-50.text-center");
+  // 保存後KPIのタイトルは「月 / タイプ / 販売員」（タブ先頭のスコープ集計と区別するため）
+  await expect(page.getByText(`当月KPI（${MONTH} / 訪販 / 110001C001）`)).toBeVisible();
+  const tiles = page
+    .getByTestId("kpi-after-save")
+    .locator("div.rounded-xl.bg-slate-50.text-center");
   await expect(tiles).toHaveCount(12);
   for (const label of KPI_LABELS_12) {
     await expect(tiles.getByText(label, { exact: true })).toHaveCount(1);
@@ -355,11 +358,12 @@ test("R9: テレマ日報の保存→DB検証（テレマ項目が保存され�
   expect(rec!.visits).toBeNull();
 });
 
-test("R9: テレマ日報保存後にテレマ専用KPI（アポ生産性・クローズ通過率・前確通過率）が表示される（§7.5）", async ({
+test("R9: テレマ日報保存後にテレマ専用KPI8枚（獲得生産性・後確通過率を含む）が表示される（§7.5）", async ({
   page,
 }) => {
-  // 仕様§7.5: テレマKPI = アポ生産性=アポ数/稼働時間、クローズ通過率、前確通過率、差分（見込vs実績）、残稼働。
-  // §14-5のTODO対象は「獲得生産性」「後確通過率」のみで、上記5指標は計算式が仕様に明記されている。
+  // 仕様§7.5 は「獲得生産性」「後確通過率」を分子の入力項目が無いとして§14-5送りにしていたが、
+  // Excel原本（テレマ日報.xlsx C12/C23）では分子がいずれも「エントリー数（実績）」で算出可能。
+  // §14-5 #5「Excel原本の数式を正として実装」に従い8指標すべて表示する。
   await login(page, "R9");
   await page.goto("/reports");
   await page.getByRole("button", { name: "テレマ" }).click();
@@ -374,10 +378,21 @@ test("R9: テレマ日報保存後にテレマ専用KPI（アポ生産性・ク�
     timeout: 15_000,
   });
 
-  const tiles = page.locator("div.rounded-xl.bg-slate-50.text-center");
-  await expect(tiles.getByText("アポ生産性", { exact: true })).toBeVisible();
-  await expect(tiles.getByText("クローズ通過率", { exact: true })).toBeVisible();
-  await expect(tiles.getByText("前確通過率", { exact: true })).toBeVisible();
+  const tiles = page
+    .getByTestId("kpi-after-save")
+    .locator("div.rounded-xl.bg-slate-50.text-center");
+  for (const label of [
+    "獲得生産性",
+    "アポ生産性",
+    "クローズ通過率",
+    "前確通過率",
+    "後確通過率",
+    "稼働時間差分",
+    "エントリー数差分",
+    "残稼働",
+  ]) {
+    await expect(tiles.getByText(label, { exact: true })).toBeVisible();
+  }
 });
 
 test("R9: 訪販の月初見込は月の初回提出時のみ入力（2回目提出の見込入力は反映されない）（要件6-3/§13）", async ({
@@ -412,7 +427,9 @@ test("R9: 訪販の月初見込は月の初回提出時のみ入力（2回目提
   );
 
   // 期待値（仕様どおり）: 月初見込=30が維持され、達成率 = (2+1)/30 = 10%
-  const tiles = page.locator("div.rounded-xl.bg-slate-50.text-center");
+  const tiles = page
+    .getByTestId("kpi-after-save")
+    .locator("div.rounded-xl.bg-slate-50.text-center");
   const rateTile = tiles.filter({ hasText: "達成率" });
   await expect(rateTile.locator("div").first()).toHaveText("10%");
 
@@ -675,7 +692,9 @@ test("R9: CSVアップロード不正行あり→全件拒否（正常行も取�
 
   // エラー行レポート（何行目・理由）+ 全件拒否の表示
   await expect(page.getByText("全件拒否しました")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("3行目: 日付はYYYY-MM-DD形式で入力してください")).toBeVisible();
+  await expect(
+    page.getByText("3行目: 日付は実在する日付をYYYY-MM-DD形式で入力してください")
+  ).toBeVisible();
 
   // 正常行（2行目）も取り込まれていないこと（§3.6 全件ロールバック）
   expect(

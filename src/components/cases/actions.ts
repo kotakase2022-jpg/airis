@@ -7,6 +7,7 @@ import { CurrentUser, agencyScope, requireUser } from "@/lib/auth";
 import { CASE_TEMPLATES, PageKey, Role, SNC_ROLES, canAccess } from "@/lib/roles";
 import { can, caseFeature, type Operation } from "@/lib/permissions";
 import { audit, notify, notifyRole, storeFile } from "@/lib/util";
+import { isBlankOrCalendarDate } from "@/lib/date-input";
 // ステータスはマスタ化（StatusMaster）してあり、値の増減はDBで行う（§7.8）。
 // server action 側のバリデーションもマスタ値で行う（UI層のセレクトだけに頼らない）。
 import {
@@ -18,8 +19,6 @@ import {
 } from "@/lib/status";
 
 type Series = "HL" | "CSC";
-
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // 窓口案件の「停」「削」用ステータス（§5.1 停=suspend / 削=delete）。
 // スキーマ（Case.status）は自由文字列で、ステータスマスタ（StatusMaster kind="case" /
@@ -106,6 +105,12 @@ export async function createCaseAction(
   }
   if (!primaryAgencyId) return { error: "一次代理店を選択してください。" };
   if (!body) return { error: "本文を入力してください。" };
+  // 対応期限は任意だが、入力があるなら **実在する日付** でなければならない。
+  // 従来この作成パスには検証が無く、9999-99-99 のような値がそのまま保存されて
+  // 督促バッチ（要件9-2）の期限判定を壊していた（QA loop3 で検出）。
+  if (!isBlankOrCalendarDate(deadline)) {
+    return { error: "対応期限は実在する日付を YYYY-MM-DD 形式で入力してください。" };
+  }
 
   const primary = await prisma.agency.findUnique({ where: { id: primaryAgencyId } });
   if (!primary || primary.tier !== 1 || primary.isDummy) {
@@ -221,10 +226,11 @@ export async function replyCaseAction(
     await audit(user.loginId, "case_reply", `${c.caseNo} status=${c.status}`, "denied");
     return { error: `この案件は「${c.status}」のため返信できません。` };
   }
-  const isAgencySide = user.role === "R7" || user.role === "R10";
+  // 代理店側か（§5.2「窓口案件（代理店側）」に入れるロール = ⑦⑩）。
+  // ロール名を直書きせず、ページアクセスの宣言的マップから導出する（§3.2）。
+  // 直下の canAccess("agency-cases") と同一条件になるため、判定はここに一本化する。
+  const isAgencySide = canAccess(user.role, "agency-cases");
   if (isAgencySide) {
-    if (!canAccess(user.role, "agency-cases"))
-      return { error: "この案件への返信権限がありません。" };
     // 自店案件のみ返信可（§3.1 スコープ検証）
     const scope = await agencyScope(user);
     if (!scope || !scope.includes(c.primaryAgencyId)) {
@@ -306,8 +312,9 @@ export async function updateCaseAction(caseId: string, formData: FormData): Prom
     await audit(user.loginId, "case_update", `${c.caseNo}: 件名が未入力`, "failure");
     return;
   }
-  if (deadlineRaw && !DATE_RE.test(deadlineRaw)) {
-    await audit(user.loginId, "case_update", `${c.caseNo}: 対応期限の形式が不正`, "failure");
+  // 形式だけの検証では 2026-02-31 のような存在しない日を通してしまうため実在日で検証する
+  if (!isBlankOrCalendarDate(deadlineRaw)) {
+    await audit(user.loginId, "case_update", `${c.caseNo}: 対応期限が実在しない日付`, "failure");
     return;
   }
   const deadline = deadlineRaw || null;

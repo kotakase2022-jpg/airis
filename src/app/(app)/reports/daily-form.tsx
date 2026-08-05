@@ -147,6 +147,8 @@ export function DailyReportForm({
             ))}
           </div>
         </div>
+        {/* 既存値を読み込んだか（サーバー側で空欄の扱いを変える。データ消失防止） */}
+        <input type="hidden" name="prefilled" value={rec ? "1" : "0"} />
         {rec && (
           <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 sm:col-span-3">
             この日付・タイプの提出済み日報を読み込みました（編集モード）。変更した項目だけ書き換えて保存できます。
@@ -242,7 +244,8 @@ export function DailyReportForm({
       </form>
 
       {state.kpi && (
-        <div className="mt-6">
+        // 保存直後のKPI。タブ初期表示の「当月KPI」カードと区別できるよう testid を付ける
+        <div className="mt-6" data-testid="kpi-after-save">
           <SectionTitle>{state.kpiTitle ?? "当月KPI"}</SectionTitle>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
             {state.kpi.map((k) => (

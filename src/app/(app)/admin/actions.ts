@@ -1,12 +1,13 @@
 "use server";
 
-import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { hashPassword, requirePage } from "@/lib/auth";
-import { ADMIN_PW_ROLES, REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
+import { requirePage, hashedForAccount } from "@/lib/auth";
+import { REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
 import { can, type Operation } from "@/lib/permissions";
 import { audit, requiresAgency } from "@/lib/util";
+import { recordStatusHistory, type StatusEvent } from "@/lib/status";
+import { generateTempPassword } from "@/lib/temp-password";
 import type { CurrentUser } from "@/lib/auth";
 import {
   ADMIN_IP_ALLOWLIST_KEY,
@@ -29,6 +30,11 @@ import {
   canManageVendorFlag,
   canUpdateSettings,
 } from "./authz";
+// 資格情報リセットの職務分離は最終承認と同じ規則を使う（規則の情報源を1つに保つ §3.2）
+import {
+  SNC_TARGET_RESET_DENIED_MESSAGE,
+  canResetCredentialsFor,
+} from "../account-requests/approval-rules";
 
 export type AdminActionState =
   { error?: string; message?: string; tempPassword?: string; targetLoginId?: string } | undefined;
@@ -55,6 +61,28 @@ function withVendorMark(target: string, isVendor: boolean): string {
   return isVendor ? `${target} vendor=true` : target;
 }
 
+// アカウントの状態遷移を StatusHistory（§4.1「遷移イベントを履歴テーブルに記録」）へ記録する。
+// Account は JSON列 history を持たないため、遷移履歴はこのテーブルのみが情報源になる。
+// recordStatusHistory は失敗しても業務処理（停止・削除そのもの）を止めない。
+function track(
+  entityId: string,
+  event: StatusEvent,
+  fromStatus: string | null,
+  toStatus: string | null,
+  changedBy: string,
+  reason?: string | null
+) {
+  return recordStatusHistory({
+    entityType: "account",
+    entityId,
+    event,
+    fromStatus,
+    toStatus,
+    reason,
+    changedBy,
+  });
+}
+
 // 管理画面の操作 → §5.1「Airisアカウント」列の操作の対応（§3.2 宣言的マップ経由で判定する）。
 // §5.1 では 変/停/閲/削 はいずれも①②のみ。§6.1-5「Airisアカウントの停止・削除は①②のみ」。
 const ADMIN_OP_PERMISSION: Record<string, Operation> = {
@@ -70,20 +98,6 @@ const ADMIN_OP_PERMISSION: Record<string, Operation> = {
 };
 
 // 一時パスワード生成（大文字・小文字・数字を必ず含む。紛らわしい文字は除外）
-function generateTempPassword(len: number): string {
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const lower = "abcdefghijkmnpqrstuvwxyz";
-  const digits = "23456789";
-  const all = upper + lower + digits;
-  const pick = (set: string) => set[crypto.randomInt(set.length)];
-  const chars = [pick(upper), pick(lower), pick(digits)];
-  while (chars.length < len) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
-}
 
 // 管理画面のアカウント操作（停止/再開/削除/復旧/パスワードリセット）
 export async function accountAction(
@@ -125,6 +139,23 @@ export async function accountAction(
     return { error: "自分自身のアカウントは操作できません" };
   }
 
+  // 職務分離（§6.1-3 / 要件1-1）: 資格情報リセットは対象ロールによって実行者を絞る。
+  // §4.2 は「②③が実行」だが、MFAリセット→パスワードリセットの連続実行は
+  // 対象アカウントの乗っ取りに等しい（一時パスワードが実行者に平文表示され、MFAも未登録に戻る）。
+  // そのためSNC系（①〜⑥）が対象の場合は①②のみとし、③は代理店系のリセット代行に限定する。
+  // 判定は account-requests の最終承認と同じ規則を使う（規則の情報源を1つに保つ §3.2）。
+  if (op === "reset_password" || op === "mfa_reset") {
+    if (!canResetCredentialsFor(user.role, account.role)) {
+      await audit(
+        user.loginId,
+        `account_${op}`,
+        `${account.loginId} target=${account.role} by=${user.role}`,
+        "denied"
+      );
+      return { error: SNC_TARGET_RESET_DENIED_MESSAGE };
+    }
+  }
+
   // ベンダー（サスラボ社保守）による操作は監査ログで区別できるようにする（§10.1 / SEC要件①）
   const actor = await actorContext(user);
   const tgt = (target: string) => withVendorMark(target, actor.isVendor);
@@ -134,6 +165,7 @@ export async function accountAction(
       if (account.status !== "active") return { error: "登録済みのアカウントのみ停止できます" };
       await prisma.account.update({ where: { id }, data: { status: "suspended" } });
       await prisma.session.deleteMany({ where: { accountId: id } }); // 即時セッション破棄
+      await track(id, "suspend", account.status, "suspended", user.loginId);
       await audit(user.loginId, "account_suspend", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を停止しました` };
@@ -141,6 +173,7 @@ export async function accountAction(
     case "resume": {
       if (account.status !== "suspended") return { error: "停止中のアカウントのみ再開できます" };
       await prisma.account.update({ where: { id }, data: { status: "active" } });
+      await track(id, "resume", account.status, "active", user.loginId);
       await audit(user.loginId, "account_resume", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を再開しました` };
@@ -154,6 +187,14 @@ export async function accountAction(
         data: { status: "deleted", deletedAt: new Date() },
       });
       await prisma.session.deleteMany({ where: { accountId: id } });
+      await track(
+        id,
+        "delete",
+        account.status,
+        "deleted",
+        user.loginId,
+        "論理削除・1年間保持（§3.4）"
+      );
       await audit(user.loginId, "account_delete", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を削除しました（論理削除・1年間保持）` };
@@ -165,19 +206,19 @@ export async function accountAction(
         where: { id },
         data: { status: "suspended", deletedAt: null },
       });
+      await track(id, "restore", account.status, "suspended", user.loginId, "停止中として復元");
       await audit(user.loginId, "account_restore", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を復旧しました（停止中として復元）` };
     }
     case "reset_password": {
       if (account.status === "deleted") return { error: "削除済のアカウントはリセットできません" };
-      // ロール別パスワード最小桁数（§4.2: 管理者20桁/一般14桁）を満たす長さで生成
-      const len = ADMIN_PW_ROLES.includes(account.role as Role) ? 24 : 16;
-      const temp = generateTempPassword(len);
+      // 桁数はロール別のポリシー最小桁数から導出する（§4.2 / SEC-004。src/lib/temp-password.ts）
+      const temp = generateTempPassword(account.role);
       await prisma.account.update({
         where: { id },
         data: {
-          passwordHash: hashPassword(temp),
+          ...hashedForAccount(temp), // passwordHash + pepperVersion（SEC-021）
           mustChangePassword: true,
           passwordUpdatedAt: new Date(),
           failedAttempts: 0,
@@ -291,6 +332,14 @@ export async function updateAccountAction(
   const detail = roleChanged
     ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
     : account.loginId;
+  await track(
+    id,
+    "update",
+    account.status,
+    account.status,
+    user.loginId,
+    `${detail} reason=${reason}`
+  );
   await audit(
     user.loginId,
     roleChanged ? "account_role_change" : "account_update",

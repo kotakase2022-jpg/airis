@@ -3,14 +3,16 @@
 // 販売員ID管理 server actions（SPEC §6.2 / §7.3）
 // すべての action で requirePage による認可 + agencyScope によるスコープ検証を行う。
 
-import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { agencyScope, hashPassword, requirePage, type CurrentUser } from "@/lib/auth";
+import { agencyScope, requirePage, type CurrentUser, hashedForAccount } from "@/lib/auth";
 import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
 import { UNDER_AGE_ERROR, isUnder15 } from "@/lib/age";
 import { audit, notify, notifyRole, pushHistory } from "@/lib/util";
+import { recordStatusHistory, type StatusEvent } from "@/lib/status";
+import { generateTempPassword } from "@/lib/temp-password";
+import { isCalendarDate } from "@/lib/date-input";
 import { parseCsv } from "@/lib/csv";
 
 export type ApplyState = { error?: string; success?: string } | undefined;
@@ -32,11 +34,32 @@ function rowOk(success: string): RowActionState {
   return { success, ts: Date.now() };
 }
 
+// 状態遷移を StatusHistory（§4.1「遷移イベントを履歴テーブルに記録」）へ記録する。
+// JSON列 history は画面表示用の軽量な履歴で、エンティティ横断の検索・監査には使えないため
+// 両方に記録する（recordStatusHistory は失敗しても業務処理を止めない）。
+function track(
+  entityId: string,
+  event: StatusEvent,
+  fromStatus: string | null,
+  toStatus: string | null,
+  changedBy: string,
+  reason?: string | null
+) {
+  return recordStatusHistory({
+    entityType: "sales_staff",
+    entityId,
+    event,
+    fromStatus,
+    toStatus,
+    reason,
+    changedBy,
+  });
+}
+
 function statusLabel(status: string): string {
   return STAFF_STATUS_LABELS[status] ?? status;
 }
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // 電話番号（検収指摘 問題一覧No.32）: ハイフン任意・0始まり10〜11桁（携帯/固定）。
 // 表記ゆれ防止のためハイフンを除いた数字で検証する。※形式は仮確定（発注者確認事項）
 const PHONE_ERROR = "電話番号は0始まりの10〜11桁（ハイフン任意）で入力してください";
@@ -49,22 +72,6 @@ function isValidPhone(phone: string): boolean {
 // 販売員ID: 申=①②③⑦⑧ / 一承=⑦（+最終承認権限者は内含 §6.2-2） / 承=①②③ / 変・停・削=①②③⑦。
 // ⑦の「自店配下のみ」は agencyScope（§3.1）で担保する。
 const FEATURE = "sales-staff" as const;
-
-// 一時パスワード生成（一般アカウント最小14桁 → 16桁。紛らわしい文字は除外）
-function genTempPassword(): string {
-  const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
-  const lower = "abcdefghijkmnopqrstuvwxyz";
-  const digits = "23456789";
-  const all = upper + lower + digits;
-  const pick = (s: string) => s[crypto.randomInt(s.length)];
-  const chars = [pick(upper), pick(lower), pick(digits)];
-  while (chars.length < 16) chars.push(pick(all));
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = crypto.randomInt(i + 1);
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join("");
-}
 
 // staffId をスコープ検証付きで取得（対象外・ダミー混入は null）
 async function loadStaffInScope(user: CurrentUser, staffId: string) {
@@ -97,7 +104,11 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
   if (!agencyId || !lastName || !firstName || !birthDate || !phone) {
     return { error: "必須項目（代理店・姓・名・生年月日・電話番号）を入力してください" };
   }
-  if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
+  // 実在する日付であること。形式のみの検証では 2011-02-31 のような値が通り、
+  // 15歳判定（isUnder15 §6.2 / 発注者指示）が文字列比較のため誤った結果になる。
+  if (!isCalendarDate(birthDate)) {
+    return { error: "生年月日は実在する日付を YYYY-MM-DD 形式で入力してください" };
+  }
   if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 15歳未満は申請不可（発注者指示）
   if (!isValidPhone(phone)) return { error: PHONE_ERROR };
   // R8 は自店固定（クライアント改ざん対策）
@@ -128,6 +139,7 @@ export async function applyStaffAction(_prev: ApplyState, formData: FormData): P
     return { error: "販売員IDの申請登録に失敗しました。時間をおいて再度お試しください" };
   }
 
+  await track(staff.id, "requested", null, "applying", user.loginId);
   await audit(user.loginId, "sales_staff_apply", staff.id);
   // 対象1次店の⑦（1次承認者）へ通知
   const primaryId = agency.tier === 2 ? agency.parentId : agency.id;
@@ -207,7 +219,8 @@ export async function csvBulkApplyAction(
     const rowErrors: string[] = [];
     if (!lastName) rowErrors.push("姓が未入力です");
     if (!firstName) rowErrors.push("名が未入力です");
-    if (!DATE_RE.test(birthDate)) rowErrors.push("生年月日は YYYY-MM-DD 形式で入力してください");
+    if (!isCalendarDate(birthDate))
+      rowErrors.push("生年月日は実在する日付を YYYY-MM-DD 形式で入力してください");
     else if (isUnder15(birthDate)) rowErrors.push(UNDER_AGE_ERROR); // 15歳未満は申請不可
     if (!phone) rowErrors.push("電話番号が未入力です");
     else if (!isValidPhone(phone)) rowErrors.push(PHONE_ERROR);
@@ -281,7 +294,11 @@ export async function updateStaffAction(
   if (!lastName || !firstName || !birthDate || !phone) {
     return { error: "必須項目（姓・名・生年月日・電話番号）を入力してください" };
   }
-  if (!DATE_RE.test(birthDate)) return { error: "生年月日は YYYY-MM-DD 形式で入力してください" };
+  // 実在する日付であること。形式のみの検証では 2011-02-31 のような値が通り、
+  // 15歳判定（isUnder15 §6.2 / 発注者指示）が文字列比較のため誤った結果になる。
+  if (!isCalendarDate(birthDate)) {
+    return { error: "生年月日は実在する日付を YYYY-MM-DD 形式で入力してください" };
+  }
   if (isUnder15(birthDate)) return { error: UNDER_AGE_ERROR }; // 登録情報変更でも15歳未満は不可
   if (!isValidPhone(phone)) return { error: PHONE_ERROR };
 
@@ -309,6 +326,7 @@ export async function updateStaffAction(
     return { error: "登録情報の更新に失敗しました。時間をおいて再度お試しください" };
   }
 
+  await track(staff.id, "update", staff.status, staff.status, user.loginId);
   await audit(user.loginId, "sales_staff_update", staff.id);
   revalidatePath("/sales-staff");
   return { success: `${lastName} ${firstName} さんの登録情報を更新しました` };
@@ -350,6 +368,7 @@ export async function firstApproveAction(
     await audit(user.loginId, "sales_staff_first_approve", staff.id, "failure");
     return rowFail("1次承認の保存に失敗しました。時間をおいて再度お試しください");
   }
+  await track(staff.id, "approve_first", staff.status, "provisional", user.loginId);
   await audit(user.loginId, "sales_staff_first_approve", staff.id);
   await notifyRole(
     SNC_ADMIN_ROLES,
@@ -375,7 +394,8 @@ export async function finalApproveAction(
     return { error: "仮登録（1次承認済み）の販売員のみ最終承認できます" };
 
   const code = staff.agency.code;
-  const tempPassword = genTempPassword();
+  // 発行対象は⑨（販売員）。桁数はポリシー最小桁数から導出する（§4.2 / SEC-004）
+  const tempPassword = generateTempPassword("R9");
   try {
     // 採番: {代理店code}C{連番3桁}
     // RLS拡張と干渉するためトランザクションを使わず逐次実行（速度優先）
@@ -399,7 +419,7 @@ export async function finalApproveAction(
         email: staff.email,
         agencyId: staff.agencyId,
         status: "active",
-        passwordHash: hashPassword(tempPassword),
+        ...hashedForAccount(tempPassword), // passwordHash + pepperVersion（SEC-021）
         mustChangePassword: true,
       },
     });
@@ -413,6 +433,14 @@ export async function finalApproveAction(
       },
     });
     const salesId = newId;
+    await track(
+      staff.id,
+      "final_approve",
+      staff.status,
+      "registered",
+      user.loginId,
+      `salesId=${salesId}`
+    );
     await audit(user.loginId, "sales_staff_final_approve", `${staff.id}:${salesId}`);
     revalidatePath("/sales-staff");
     return { salesId, tempPassword };
@@ -465,6 +493,7 @@ export async function suspendStaffAction(
     await audit(user.loginId, "sales_staff_suspend", staff.id, "failure");
     return rowFail("停止処理に失敗しました。時間をおいて再度お試しください");
   }
+  await track(staff.id, "suspend", staff.status, "suspended", user.loginId);
   await audit(user.loginId, "sales_staff_suspend", staff.id);
   revalidatePath("/sales-staff");
   return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを停止しました`);
@@ -508,6 +537,7 @@ export async function resumeStaffAction(
     await audit(user.loginId, "sales_staff_resume", staff.id, "failure");
     return rowFail("再開処理に失敗しました。時間をおいて再度お試しください");
   }
+  await track(staff.id, "resume", staff.status, next, user.loginId);
   await audit(user.loginId, "sales_staff_resume", staff.id);
   revalidatePath("/sales-staff");
   return rowOk(
@@ -555,6 +585,7 @@ export async function deleteStaffAction(
     await audit(user.loginId, "sales_staff_delete", staff.id, "failure");
     return rowFail("削除処理に失敗しました。時間をおいて再度お試しください");
   }
+  await track(staff.id, "delete", staff.status, "deleted", user.loginId);
   await audit(user.loginId, "sales_staff_delete", staff.id);
   revalidatePath("/sales-staff");
   return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを削除しました（1年間保持）`);
@@ -597,6 +628,7 @@ export async function restoreStaffAction(
     await audit(user.loginId, "sales_staff_restore", staff.id, "failure");
     return rowFail("復旧処理に失敗しました。時間をおいて再度お試しください");
   }
+  await track(staff.id, "restore", staff.status, "suspended", user.loginId);
   await audit(user.loginId, "sales_staff_restore", staff.id);
   revalidatePath("/sales-staff");
   return rowOk(`${staff.lastName} ${staff.firstName} さんの販売員IDを復旧しました（停止中）`);

@@ -5,6 +5,7 @@ import { agencyScope, requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SNC_ADMIN_ROLES } from "@/lib/roles";
 import { audit } from "@/lib/util";
+import { isBlankOrCalendarDate } from "@/lib/date-input";
 
 export type AgencyActionState = {
   ok?: boolean;
@@ -42,7 +43,9 @@ export async function createAgencyAction(
   if (tier !== 1 && tier !== 2) return fail("階層の指定が不正です。");
   if (!/^\d{6}$/.test(code)) return fail("代理店コードは6桁の数字で入力してください。");
   if (!name) return fail("代理店名を入力してください。");
-  if (joinedAt && !/^\d{4}-\d{2}-\d{2}$/.test(joinedAt)) return fail("参加日の形式が不正です。");
+  // 実在する日付であること（形式のみの検証では 9999-99-99 が通る）
+  if (!isBlankOrCalendarDate(joinedAt))
+    return fail("参加日は実在する日付を YYYY-MM-DD 形式で入力してください。");
 
   if (tier === 2) {
     if (!parentId) return fail("管轄する一次代理店を選択してください。");

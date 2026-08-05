@@ -84,7 +84,14 @@ export const SETTING_DEFINITIONS: Record<SettingKey, SettingDefinition> = {
   },
 };
 
-export type SettingValue = { value: string; source: SettingSource; updatedBy: string | null };
+export type SettingValue = {
+  value: string;
+  source: SettingSource;
+  updatedBy: string | null;
+  // 設定テーブルの読み出しに失敗したか（true のとき value は「未設定」と区別できない）。
+  // 防御機構（IP許可リスト）の判定側は、この場合に許可へ倒さない（fail-closed）ために使う。
+  dbUnavailable?: boolean;
+};
 
 /**
  * 設定値を DB → 環境変数 → 既定値 の順で解決する（§10.1）。
@@ -93,15 +100,20 @@ export type SettingValue = { value: string; source: SettingSource; updatedBy: st
  */
 export async function getSettingWithSource(key: SettingKey): Promise<SettingValue> {
   const def = SETTING_DEFINITIONS[key];
+  let dbUnavailable = false;
   try {
     const row = await prisma.appSetting.findUnique({ where: { key } });
     if (row) return { value: row.value, source: "db", updatedBy: row.updatedBy ?? null };
   } catch {
-    // 設定テーブル未マイグレーション等は環境変数へフォールバック
+    // 設定テーブル未マイグレーション・接続断等。環境変数へフォールバックするが、
+    // 「DBに設定が無い」のか「読めなかった」のか区別できないことを呼び出し側へ伝える。
+    dbUnavailable = true;
   }
   const env = def.envVar ? process.env[def.envVar] : undefined;
-  if (env !== undefined && env !== "") return { value: env, source: "env", updatedBy: null };
-  return { value: def.defaultValue, source: "default", updatedBy: null };
+  if (env !== undefined && env !== "") {
+    return { value: env, source: "env", updatedBy: null, dbUnavailable };
+  }
+  return { value: def.defaultValue, source: "default", updatedBy: null, dbUnavailable };
 }
 
 /** 設定値（DB → 環境変数 → 既定値）。 */
@@ -217,8 +229,17 @@ export async function getAdminIpAllowlist(): Promise<string | undefined> {
  * auth.ts を変更せずに管理系エンドポイントへ適用できるようにするための入口。
  */
 export async function isAdminIpAllowedFromSettings(): Promise<{ allowed: boolean; ip: string }> {
-  const list = await getAdminIpAllowlist();
-  if (!list) return { allowed: true, ip: "-" };
+  const setting = await getSettingWithSource(ADMIN_IP_ALLOWLIST_KEY);
+  const list = setting.value === "" ? undefined : setting.value;
+  if (!list) {
+    // 設定テーブルが読めなかった場合、「未設定（制御無効）」なのか「設定済みだが読めない」のかを
+    // 区別できない。防御機構を黙って無効化しないため **拒否** に倒す（fail-closed）。
+    // 環境変数に許可リストがある場合は上の list に入るのでここには来ない。
+    if (setting.dbUnavailable) {
+      return { allowed: false, ip: "-" };
+    }
+    return { allowed: true, ip: "-" };
+  }
   const ip = await currentTrustedIp();
   if (ip === UNKNOWN_IP) return { allowed: false, ip };
   return { allowed: list.split(",").includes(ip), ip };

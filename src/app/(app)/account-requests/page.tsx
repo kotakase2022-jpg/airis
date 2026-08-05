@@ -82,14 +82,21 @@ export default async function AccountRequestsPage({
       where: { ...baseWhere, status: { in: ["pending_first", "pending_final"] } },
     }),
     prisma.accountRequest.count({ where: { ...baseWhere, status: "approved" } }),
-    prisma.account.count({
-      where: {
-        status: { in: ["suspended", "deleted"] },
-        ...(scope === null
-          ? { OR: [{ agencyId: null }, { agency: { isDummy: false } }] }
-          : { agencyId: { in: scope } }),
-      },
-    }),
+    // §5.1「Airisアカウント/閲」（①②③）を持つロールのみ全実データの件数を出す。
+    // ④はダミー代理店のみ、⑦⑧は自店スコープ、⑤⑥（閲覧権なし）は自店スコープ=0件。
+    can(user.role, "airis-account", "view") && !user.dummy
+      ? prisma.account.count({
+          where: {
+            status: { in: ["suspended", "deleted"] },
+            OR: [{ agencyId: null }, { agency: { isDummy: false } }],
+          },
+        })
+      : prisma.account.count({
+          where: {
+            status: { in: ["suspended", "deleted"] },
+            ...(user.dummy ? { agency: { isDummy: true } } : { agencyId: { in: scope ?? [] } }),
+          },
+        }),
     prisma.accountRequest.findMany({
       where: baseWhere,
       orderBy: { createdAt: "desc" },
