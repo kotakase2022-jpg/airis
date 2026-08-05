@@ -26,11 +26,13 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
     select: { agencyId: true, createdBy: true },
   });
   if (req) {
-    if (user.isDummy) return false;
     // AccountRequest.createdBy は Account.id（cuid）で保存される（account-requests/actions.ts）
     const isOwnRequest = !!req.createdBy && req.createdBy === user.id;
-    // 申請者本人は自分が添付した証跡を参照できる（④⑤⑥⑧など閲覧権限が無いロールを含む）
+    // 申請者本人は自分が添付した証跡を参照できる（④⑤⑥⑧など閲覧権限が無いロールを含む）。
+    // ④はAirisアカウント申請のみ実データを扱える（§3.5 の例外）ため、自己申請の証跡は許可し、
+    // 他ロールの申請証跡は従来どおり見せない。
     if (isOwnRequest) return true;
+    if (user.isDummy) return false;
     // ①②（閲覧権限）と③（最終承認権限 §5.1「承」）は承認判断のため全件参照可
     if (can(user.role, "airis-account", "view") || can(user.role, "airis-account", "approve_final")) {
       return true;

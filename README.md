@@ -49,6 +49,22 @@ npm run dev
 | `MAIL_FROM` | 差出人（省略時はSMTP_USER） |
 | `APP_URL` | メール本文のリンク先（例 `https://airis-nine.vercel.app`） |
 
+
+## セキュリティ関連の環境変数（§10.1）
+
+| 変数 | 既定 | 説明 |
+|---|---|---|
+| `PASSWORD_PEPPER_V1` | 未設定 | パスワードのアプリケーションペッパー。設定するとログイン成功時に順次再ハッシュされる。ローテーションは V2 を追加して `CURRENT_PEPPER_KEY` を切替 |
+| `TRUST_PROXY` | `false` | `true` のときのみ `x-forwarded-for` を信頼する。**リバースプロキシ配下でのみ有効化すること**（未設定ではヘッダを無視し、接続元IPは `unknown`） |
+| `TRUST_VERCEL_HEADERS` | `VERCEL=1` で自動有効 | `x-vercel-forwarded-for` を信頼する。Vercel以外では偽装可能なため既定で無効 |
+| `TRUSTED_PROXY_HOPS` | `1` | 信頼できるプロキシの段数。末尾から数えてこの位置のIPのみ採用する |
+| `ADMIN_IP_ALLOWLIST` | 未設定（制限なし） | 管理画面(`/admin`)と管理CSV(`/admin/csv`)を許可するIPのカンマ区切りリスト。**信頼できるIPが決定できない場合は拒否（fail-closed）** のため、設定する場合は `TRUST_PROXY` または Vercel 環境が前提 |
+| `FILE_MAX_MB` | `20` | アップロード上限（§3.8） |
+| `CRON_SECRET` | 必須 | 日次バッチの Bearer トークン |
+| `REMINDER_MAIL_TO` | 未設定 | 期限超過リマインドの追加宛先（§7.8） |
+
+> ⚠️ **重要**: `TRUST_PROXY` / `TRUST_VERCEL_HEADERS` がいずれも無効な環境では、接続元IPが常に `unknown` になります。この場合、IP単位のレート制限（§10.1）と不正利用検知のIP変化シグナル（要件1-9）は機能しません。プロキシ配下・Vercel以外で運用する場合は必ず `TRUST_PROXY=true` と適切な `TRUSTED_PROXY_HOPS` を設定してください。
+
 ## Row-Level Security（RLS）
 
 `prisma/rls.sql` のポリシーで、代理店スコープをDB層でも強制する（アプリ層 `agencyScope()` との多層防御 §3.1）。
@@ -70,11 +86,22 @@ npm run dev
 バッチはセッションが無くRLSでfail-closedになるため、オーナー接続（`DATABASE_URL_UNPOOLED`）を使用する。
 手動実行: `curl -H "Authorization: Bearer $CRON_SECRET" https://airis-nine.vercel.app/api/cron/daily`
 
+## テスト
+
+```bash
+npm run test:unit    # Vitest（212件）
+npm run test:e2e     # Playwright（既定構成: TRUST_PROXY未設定）
+# プロキシ配下の挙動（XFF末尾hop採用）を検証する場合:
+#   TRUST_PROXY=true でサーバーを起動し QA_TRUST_PROXY=true npm run test:e2e:proxy
+```
+
 ## 未実装（本番リリース前に対応 — SPEC参照）
 
-- MFA（TOTP/Google Authenticator）§4.2
-- パスワード有効期限・履歴24世代 §4.2
-- Slack通知（不要と確認済み 2026-08-05）
-- テスト一式 §13
+- MFA（TOTP/Google Authenticator）§4.2 — **発注者指示によりスコープ外(2026-08-05)**
+- Slack通知 — **発注者指示によりスコープ外(2026-08-05)**
+- ファイルストレージのS3抽象化・署名URL §2/§3.8 — 実体はDB(bytea)格納のまま。**発注者判断待ちの残存リスク**
+- 宣言的権限マップ（permissions.ts）の未適用領域: field-agents / reports / sales-staff / announcements / agencies（値は§5.1と一致しており機能差は無いが二重管理）
+- Prettier（CIはESLint + tsc + Vitest + build）
+- Prisma Migrate（現在は `prisma db push` 運用）
 
 > デモアカウントのパスワードは `prisma/seed.ts` を参照。**本番運用前に必ず変更すること。**

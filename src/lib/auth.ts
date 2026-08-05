@@ -7,9 +7,11 @@ import crypto from "crypto";
 import { prisma } from "./prisma";
 import { PageKey, Role, canAccess, isDummyView } from "./roles";
 import { resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
+import { UNKNOWN_IP, trustedIpFrom } from "./client-ip";
 import { audit } from "./util";
 
 export type { CurrentUser } from "./session";
+export { UNKNOWN_IP, trustedIpFrom } from "./client-ip";
 
 const ABS_HOURS = Number(process.env.SESSION_ABSOLUTE_HOURS ?? 24);
 
@@ -97,50 +99,7 @@ export function verifyPassword(pw: string, hash: string): PasswordVerification {
   return { ok: false, needsRehash: false };
 }
 
-// ===== 接続元IPの解決（§10.1 / X-Forwarded-For 偽装対策） =====
-// クライアントは x-forwarded-for を自由に偽装できるため「先頭」を接続元とみなしてはならない
-// （レート制限・IP許可リストの回避に使われる）。
-//  1. Vercel環境では x-vercel-forwarded-for（プラットフォームが付与し、クライアント指定値は
-//     上書きされる）を優先する。
-//  2. それ以外は x-forwarded-for の「末尾から TRUSTED_PROXY_HOPS（既定1）番目」を採用する。
-//     信頼できるプロキシは自分が見た接続元を末尾に追記するため、末尾側はクライアントから
-//     偽装できない。プロキシを多段で挟む構成では TRUSTED_PROXY_HOPS を段数に合わせる。
-//  3. x-forwarded-for は **TRUST_PROXY=true を明示的にオプトインした場合のみ** 採用する。
-//     信頼できるプロキシ配下でない環境では、クライアントが要素1個のXFFを送るだけで
-//     任意のIPを名乗れてしまうため（レート制限・IP許可リストのバイパス）、既定では無視する。
-//     信頼できるIPが決定できない場合は "unknown" を返し、IP許可リストは fail-closed とする。
-const TRUSTED_PROXY_HOPS = Math.max(1, Math.trunc(Number(process.env.TRUSTED_PROXY_HOPS)) || 1);
-const TRUST_PROXY = process.env.TRUST_PROXY === "true";
-export const UNKNOWN_IP = "unknown";
-
-function pickFromEnd(headerValue: string, hops: number): string | null {
-  const list = headerValue
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  // 信頼できるプロキシは「自分が見た接続元」を末尾へ追記するため、末尾の hops 個だけが
-  // プロキシ由来（偽装不可）。実クライアントIPはそのうち最も左＝末尾から hops 番目。
-  // 要素数が hops に満たない＝想定した段数のプロキシを経ていない → 信頼できる値なし
-  if (list.length < hops) return null;
-  return list[list.length - hops] ?? null;
-}
-
-export function trustedIpFrom(h: Headers): string {
-  // Vercel が付与するヘッダ（クライアント指定値は上書きされる）を最優先
-  const vercel = h.get("x-vercel-forwarded-for");
-  if (vercel) {
-    const v = vercel.split(",")[0]?.trim();
-    if (v) return v;
-  }
-  if (TRUST_PROXY) {
-    const fwd = h.get("x-forwarded-for");
-    if (fwd) {
-      const ip = pickFromEnd(fwd, TRUSTED_PROXY_HOPS);
-      if (ip) return ip;
-    }
-  }
-  return UNKNOWN_IP;
-}
+// 接続元IPの解決は src/lib/client-ip.ts（純粋関数・単体テスト対象）へ委譲する（§10.1）
 
 // 実効ロールの解決（§14-2）: 稼働終了代理店（agency.status=closed）に属する⑦⑧は⑩として扱う。
 // セッション経由（session.ts）と同じ規則を、セッション未確立のログイン処理でも使うためのヘルパ。

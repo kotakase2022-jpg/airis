@@ -213,6 +213,11 @@ test.describe("AccessLogの記録", () => {
 //    クライアント申告値は無視する。
 // ================================================================
 test.describe("X-Forwarded-For 偽装対策", () => {
+  // これらは TRUST_PROXY=true で起動したサーバー（プロキシ配下想定）に対する検証。
+  // 既定構成（TRUST_PROXY未設定）ではXFFを一切信頼しないため、
+  // npm run test:e2e:trust-proxy で別途実行する。
+  test.skip(process.env.QA_TRUST_PROXY !== "true", "TRUST_PROXY=true のサーバーが必要");
+
   test("x-forwarded-for は末尾hopが採用される（先頭の偽装値は無視される）", async ({ page }) => {
     test.setTimeout(120_000);
     const ID = `qa18_xff_pick_${RUN}`;
@@ -285,6 +290,9 @@ test.describe("X-Forwarded-For 偽装対策", () => {
 // 3. アクセスログCSV（§3.3 / §3.6 / 要件1-6）と管理画面ビューア
 // ================================================================
 test.describe("アクセスログCSV・ビューア", () => {
+  // CSVのIP列の値は接続元IPの信頼設定に依存する（§10.1）。
+  // 既定構成では unknown、TRUST_PROXY=true のサーバーでは末尾hopが記録される。
+  const EXPECTED_IP = process.env.QA_TRUST_PROXY === "true" ? "198.51.100.21" : "unknown";
   test("CSVはAccessLogから生成され、列は 日時,ログインID,結果,IP,UserAgent,理由", async ({
     page,
     browser,
@@ -321,7 +329,7 @@ test.describe("アクセスログCSV・ビューア", () => {
       const row = lines.find((l) => l.includes(ID));
       expect(row, "AccessLogの行がCSVに出力されること").toBeTruthy();
       expect(row!).toContain("failure");
-      expect(row!).toContain(REAL);
+      expect(row!, "IP列（既定構成ではunknown / プロキシ配下では末尾hop）").toContain(EXPECTED_IP);
       expect(row!).toContain("bad_password");
       expect(row!, "User-AgentがCSVに出力されること").toContain(ua.slice(0, 20));
       // 日時はJST（YYYY-MM-DD HH:MM）
@@ -421,9 +429,10 @@ test.describe("AccessLog書き込み失敗時の fail-closed", () => {
 test.describe("TRUST_PROXY のオプトイン", () => {
   test("TRUST_PROXY未設定時はXFFを信頼せず、接続元IPは unknown として記録される", async ({ page }) => {
     // 検証サーバーがTRUST_PROXY=trueで起動している場合はこのケースを検証できない
+    // 既定構成（TRUST_PROXY未設定）で必ず検証する。TRUST_PROXY=true のサーバーでのみskip。
     test.skip(
-      process.env.QA_TRUST_PROXY !== "false",
-      "TRUST_PROXY=false で起動したサーバーが必要（QA_TRUST_PROXY=false を指定して実行）"
+      process.env.QA_TRUST_PROXY === "true",
+      "TRUST_PROXY=true のサーバーでは既定挙動を検証できない"
     );
     const d = db();
     const ID = `qa18_untrusted_${RUN}`;
