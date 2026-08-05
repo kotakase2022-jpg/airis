@@ -11,6 +11,7 @@ import {
   hashPassword,
   trustedIpFrom,
   verifyPassword,
+  verifyPasswordLenient,
 } from "@/lib/auth";
 import { ADMIN_PW_ROLES, Role } from "@/lib/roles";
 import { audit } from "@/lib/util";
@@ -155,7 +156,9 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
     return { error: LOCK_ERROR };
   }
 
-  const check = verifyPassword(password, account.passwordHash);
+  // 入力ゆらぎ（前後空白・全角英数・引用符の巻き込み）を吸収して照合する。
+  // 一致した候補（check.matched）は再ハッシュの入力に使う。
+  const check = verifyPasswordLenient(password, account.passwordHash);
   if (!check.ok) {
     const logged = await recordAccess({
       loginId,
@@ -208,7 +211,7 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
       // 旧アルゴリズム（bcrypt）・ペッパー未適用の旧ハッシュは成功時に
       // Argon2id + 現行ペッパーで再ハッシュ（§10.3 / SEC②#42）。
       // passwordUpdatedAt は据え置く（有効期限の起点を変えない）。
-      ...(check.needsRehash ? { passwordHash: hashPassword(password) } : {}),
+      ...(check.needsRehash ? { passwordHash: hashPassword(check.matched) } : {}),
       ...(expired ? { mustChangePassword: true } : {}),
     },
   });
@@ -226,7 +229,9 @@ export async function changePasswordAction(_prev: { error?: string } | undefined
   const confirm = String(formData.get("confirm") ?? "");
 
   const account = await prisma.account.findUnique({ where: { id: user.id } });
-  if (!account || !verifyPassword(current, account.passwordHash).ok) {
+  // 現在パスワードの照合はログインと同じゆらぎ吸収を適用する（ログインで通った入力が
+  // ここで弾かれる不整合を防ぐ）。新パスワードは入力そのままを尊重する。
+  if (!account || !verifyPasswordLenient(current, account.passwordHash).ok) {
     return { error: "現在のパスワードが正しくありません" };
   }
   if (next !== confirm) return { error: "新しいパスワードが一致しません" };

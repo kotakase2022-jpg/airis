@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 運用スクリプト（CommonJS）はアプリのTS規約の対象外
+    "scripts/**",
   ]),
 ]);
 

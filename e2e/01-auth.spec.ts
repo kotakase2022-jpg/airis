@@ -117,6 +117,42 @@ test.describe("ログイン成功（全10ロール）", () => {
 });
 
 // ================================================================
+// 1b. 入力ゆらぎの吸収（src/lib/password-input.ts / 運用配慮）
+//     貼り付け時の前後空白・引用符、IMEの全角英数でもログインできること
+// ================================================================
+test.describe("ログイン入力ゆらぎの吸収", () => {
+  const toFullWidth = (s: string) =>
+    s.replace(/[!-~]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0));
+
+  test("パスワード前後の空白（貼り付け起因）でもログインできる", async ({ page }) => {
+    await submitLogin(page, ACCOUNTS.R6.loginId, ` ${ACCOUNTS.R6.pw} `);
+    await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+  });
+
+  test("引用符ごと貼り付けてもログインできる", async ({ page }) => {
+    await submitLogin(page, ACCOUNTS.R6.loginId, `"${ACCOUNTS.R6.pw}"`);
+    await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+  });
+
+  test("IMEの全角英数記号でもログインできる", async ({ page }) => {
+    await submitLogin(page, ACCOUNTS.R6.loginId, toFullWidth(ACCOUNTS.R6.pw));
+    await page.waitForURL(/\/dashboard/, { timeout: 15_000 });
+  });
+
+  test("ゆらぎ吸収でも誤パスワードは通らない（受理範囲を広げただけで弱化していない）", async ({
+    page,
+  }) => {
+    try {
+      await submitLogin(page, ACCOUNTS.R6.loginId, ` ${ACCOUNTS.R6.pw}x `);
+      await expect(page.getByText(GENERIC_LOGIN_ERROR)).toBeVisible();
+      expect(page.url()).toContain("/login");
+    } finally {
+      await resetAccountAuthState(ACCOUNTS.R6.loginId);
+    }
+  });
+});
+
+// ================================================================
 // 2. ログイン失敗系（ユーザー列挙防止 §10.1）
 // ================================================================
 test.describe("ログイン失敗", () => {

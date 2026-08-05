@@ -8,6 +8,7 @@ import { prisma } from "./prisma";
 import { PageKey, Role, canAccess, isDummyView } from "./roles";
 import { resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
 import { UNKNOWN_IP, trustedIpFrom } from "./client-ip";
+import { passwordInputCandidates } from "./password-input";
 import { audit } from "./util";
 
 export type { CurrentUser } from "./session";
@@ -97,6 +98,19 @@ export function verifyPassword(pw: string, hash: string): PasswordVerification {
   if (pepper && bcryptMatches(hash, prehash(pw, pepper))) return { ok: true, needsRehash: true };
   if (bcryptMatches(hash, pw)) return { ok: true, needsRehash: true };
   return { ok: false, needsRehash: false };
+}
+
+// verifyPassword を入力ゆらぎ候補（password-input.ts）で順に照合する。一致した候補（matched）は
+// needsRehash 時の再ハッシュ入力として呼び出し側が使用する。
+export function verifyPasswordLenient(
+  raw: string,
+  hash: string
+): PasswordVerification & { matched: string } {
+  for (const candidate of passwordInputCandidates(raw)) {
+    const r = verifyPassword(candidate, hash);
+    if (r.ok) return { ...r, matched: candidate };
+  }
+  return { ok: false, needsRehash: false, matched: raw };
 }
 
 // 接続元IPの解決は src/lib/client-ip.ts（純粋関数・単体テスト対象）へ委譲する（§10.1）
