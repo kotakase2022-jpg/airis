@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Paperclip } from "lucide-react";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SNC_ADMIN_ROLES, ROLE_LABELS, type Role } from "@/lib/roles";
@@ -328,7 +329,7 @@ async function ViewerView({
                       {a.title}
                     </Link>
                     {attachments.length > 0 && (
-                      <span className="text-xs text-slate-400">📎{attachments.length}</span>
+                      <span className="inline-flex items-center gap-0.5 text-xs text-slate-400"><Paperclip className="h-3 w-3" />{attachments.length}</span>
                     )}
                     <span className="ml-auto whitespace-nowrap text-xs text-slate-400">
                       {fmtJst(a.sentAt)}

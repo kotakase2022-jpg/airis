@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui";
+import { Paperclip } from "lucide-react";
 import { fmtDateTime } from "./badges";
 
 export type ThreadMessage = {
@@ -54,7 +55,7 @@ export function CaseThread({ messages }: { messages: ThreadMessage[] }) {
                     href={`/files/${f.id}`}
                     className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-blue-600 hover:bg-slate-50"
                   >
-                    📎 {f.name}
+                    <Paperclip className="mr-1 inline h-3 w-3" />{f.name}
                   </a>
                 ))}
               </div>

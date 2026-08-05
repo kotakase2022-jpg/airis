@@ -39,7 +39,7 @@ export const TELE_CSV_HEADERS = [
 // 記入例が実データとして誤登録される事故を防げる（実データで上書きしてから取り込む運用）。
 export const VISIT_CSV_EXAMPLE = [
   "(例)2026-08-01",
-  "110001C001",
+  "(例)999999C001",
   "東京都新宿区",
   "5",
   "3",
@@ -55,7 +55,7 @@ export const VISIT_CSV_EXAMPLE = [
 
 export const TELE_CSV_EXAMPLE = [
   "(例)2026-08-01",
-  "110001C001",
+  "(例)999999C001",
   "東京都新宿区",
   "8.0",
   "120",

@@ -23,12 +23,19 @@ export default async function DashboardPage({
   const agencyFilter = scope === null ? {} : { agencyId: { in: scope } };
   const month = today().slice(0, 7);
 
-  // Airisアカウント申請
-  const [reqPending, reqApproved, reqRejected] = canAccess(user.role, "account-requests")
+  // Airisアカウント申請（§7.1: 承認待ち / 登録済み / 停止・削除 の件数）。
+  // 第3カードは「却下件数」ではなく **アカウントの停止中・削除済の件数**（§7.1 / §7.2 の統計カードと同義）。
+  const [reqPending, reqApproved, acctInactive] = canAccess(user.role, "account-requests")
     ? await Promise.all([
         prisma.accountRequest.count({ where: { status: { in: ["pending_first", "pending_final"] } } }),
         prisma.accountRequest.count({ where: { status: "approved" } }),
-        prisma.accountRequest.count({ where: { status: "rejected" } }),
+        prisma.account.count({
+          where: {
+            status: { in: ["suspended", "deleted"] },
+            // ④はダミー代理店スコープ、⑦⑧は自店スコープ（SNC系は全件）
+            ...(scope === null ? { OR: [{ agencyId: null }, { agency: { isDummy: false } }] } : { agencyId: { in: scope } }),
+          },
+        }),
       ])
     : [0, 0, 0];
 
@@ -124,6 +131,22 @@ export default async function DashboardPage({
         where: { ...caseWhere, status: { not: "完了" }, deadline: { lt: today() } },
       })
     : 0;
+  // 返信状況（§7.1「窓口案件の対応状況・返信状況・期限超過のカード」/ 要件9-2⑩）:
+  // 未完了案件のうち「相手方が最後に発言している=自分の返信待ち」の件数。
+  // SNC系（①②③⑤⑥）は代理店側の最終発言、代理店系（⑦⑩）はSNC側の最終発言が返信待ちにあたる。
+  let awaitingReply = 0;
+  if (showCases) {
+    const isAgencySide = user.role === "R7" || user.role === "R10";
+    const opposite = isAgencySide ? "snc" : "agency";
+    const openCases = await prisma.case.findMany({
+      where: { ...caseWhere, status: { notIn: ["完了", "停止", "削除済"] } },
+      select: {
+        id: true,
+        messages: { orderBy: { createdAt: "desc" }, take: 1, select: { senderSide: true } },
+      },
+    });
+    awaitingReply = openCases.filter((c) => c.messages[0]?.senderSide === opposite).length;
+  }
 
   // お知らせ
   // ④ダミー表示（§3.5）: 閲覧アカウントにはシードの架空データ（isDummy=true）のみを出し、
@@ -188,7 +211,7 @@ export default async function DashboardPage({
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <StatCard value={reqPending} label="承認待ち" tone="orange" />
               <StatCard value={reqApproved} label="登録済み" tone="green" />
-              <StatCard value={reqRejected} label="差戻し・却下" tone="red" />
+              <StatCard value={acctInactive} label="停止・削除" tone="gray" />
             </div>
           </section>
         )}
@@ -264,10 +287,12 @@ export default async function DashboardPage({
                 <SectionTitle right={<Link className="text-xs text-blue-600 hover:underline" href={casesHref}>窓口案件 →</Link>}>
                   窓口案件
                 </SectionTitle>
-                <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
                   <StatCard value={caseOf("未対応")} label="未対応" tone="gray" />
                   <StatCard value={caseOf("確認中") + caseOf("対応中")} label="対応中" tone="blue" />
                   <StatCard value={caseOf("問題発生")} label="問題発生" tone="red" />
+                  {/* 返信状況（§7.1 / 要件9-2⑩）: 相手方が最後に発言している未完了案件 */}
+                  <StatCard value={awaitingReply} label="返信状況（返信待ち）" tone="orange" />
                   <StatCard value={overdue} label="期限超過" tone="red" />
                 </div>
               </section>

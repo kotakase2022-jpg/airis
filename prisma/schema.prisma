@@ -38,7 +38,9 @@ model Account {
   id                 String    @id @default(cuid())
   loginId            String    @unique // airis_snc_adm_001 / 110001C001 など
   role               String // R1_SLB_SYS..R9_SALES,R10_CLOSED(実効)
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   name               String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   email              String?
   agencyId           String?
   agency             Agency?   @relation(fields: [agencyId], references: [id])
@@ -80,7 +82,9 @@ model AccountRequest {
   id            String    @id @default(cuid())
   requestId     String    @unique // 表示用申請ID
   role          String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   name          String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   email         String
   agencyId      String?
   evidenceFileId String? // 上長承認証跡
@@ -97,10 +101,15 @@ model AccountRequest {
 model SalesStaff {
   id           String    @id @default(cuid())
   salesId      String?   @unique // xxxxxxC001（承認後に採番）
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   lastName     String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   firstName    String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   birthDate    String // YYYY-MM-DD
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   phone        String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   email        String?
   agencyId     String
   agency       Agency    @relation(fields: [agencyId], references: [id])
@@ -128,17 +137,23 @@ model FieldAgentApplication {
   applicationType String // 稼働 | 抹消
   products        String // マルチ | auひかり | コラボ
   attribute       String? // 社員/契約社員 | パート・アルバイト | 業務委託社員 | 個人事業主
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   lastNameKana    String?
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   firstNameKana   String?
   identityType    String? // 免許証 | マイナンバーカード | パスポート
   pledgeNo        String
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   pledgeFileId    String?
   startDate       String?
   endDate         String?
   agencyCode1     String
   agencyCode2     String?
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   contractorName  String?
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   contractorAddress String?
+  /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   contractorPhone String?
   blacklistFlag   String? // ★ | 1 | null（SNCのみ閲覧・編集）
   sncMemo         String? // SNCのみ

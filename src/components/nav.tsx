@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { PageIcon } from "./page-icons";
 
 export function NavLinks({ items }: { items: { key: string; label: string; href: string }[] }) {
   const pathname = usePathname();
@@ -22,6 +23,7 @@ export function NavLinks({ items }: { items: { key: string; label: string; href:
               {active && (
                 <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-blue-600" />
               )}
+              <PageIcon page={item.key} className="mr-2 h-4 w-4 shrink-0" />
               {item.label}
             </Link>
           </li>

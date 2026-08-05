@@ -78,10 +78,11 @@ test("テンプレDLボタン6個が表示され /templates/template1..6.xlsx �
   await page.goto("/reports?tab=submissions");
   await expect(page.getByText("提出用テンプレート（様式ダウンロード）")).toBeVisible();
 
+  // 同名リンクは提出済み一覧にも現れるため、テンプレート（/templates/*.xlsx）リンクに限定する
   for (let i = 0; i < KINDS.length; i++) {
-    const link = page.getByRole("link", { name: KINDS[i] });
+    const link = page.locator(`a[href="/templates/template${i + 1}.xlsx"]`);
     await expect(link).toBeVisible();
-    await expect(link).toHaveAttribute("href", `/templates/template${i + 1}.xlsx`);
+    await expect(link).toContainText(KINDS[i]); // 様式名がリンクテキスト（§7.6）
   }
 
   for (let i = 1; i <= 6; i++) {

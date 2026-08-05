@@ -3,7 +3,7 @@
 //       No.15(変更理由) / No.19(申請一覧検索) / No.32(電話) / No.34(404/権限バナー) / No.39(メール重複)
 // データプレフィクス: QA23
 import { test, expect } from "@playwright/test";
-import { ACCOUNTS, PW_GENERAL, db, login } from "./helpers";
+import { ACCOUNTS, db, login } from "./helpers";
 
 const RUN = Date.now().toString(36);
 

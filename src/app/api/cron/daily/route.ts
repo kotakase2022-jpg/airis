@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { notify, notifyRole, audit, today } from "@/lib/util";
+import { anonymizeData } from "@/lib/pii";
 import { sendMail, mailConfigured } from "@/lib/mail";
 import { UNKNOWN_IP } from "@/lib/client-ip";
 
@@ -283,14 +284,15 @@ export async function GET(req: NextRequest) {
     // Airisアカウント（loginIdは監査追跡のため残す。ログインはstatus=deletedで不可）
     const accounts = await db.account.updateMany({
       where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
-      data: { name: "（匿名化済み）", email: null, anonymizedAt: now },
+      // 匿名化対象は src/lib/pii.ts の単一定義（schema.prisma の /// @pii 注釈と一致）
+      data: { ...anonymizeData("Account"), anonymizedAt: now },
     });
     summary.anonymized.accounts = accounts.count;
 
     // 販売員（数値実績は分析用に残す）
     const staff = await db.salesStaff.updateMany({
       where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
-      data: { lastName: "（匿名化済み）", firstName: "", birthDate: "1900-01-01", phone: "", email: null, anonymizedAt: now },
+      data: { ...anonymizeData("SalesStaff"), anonymizedAt: now },
     });
     summary.anonymized.salesStaff = staff.count;
 
@@ -306,13 +308,8 @@ export async function GET(req: NextRequest) {
       await db.fieldAgentApplication.update({
         where: { id: a.id },
         data: {
-          lastNameKana: "（匿名化済み）",
-          firstNameKana: null,
-          contractorName: null,
-          contractorAddress: null,
-          contractorPhone: null,
-          sncMemo: null,
-          pledgeFileId: null,
+          ...anonymizeData("FieldAgentApplication"),
+          sncMemo: null, // SNCメモは業務メモ（PII定義外だが個人情報を含みうるため消去）
           anonymizedAt: now,
         },
       });

@@ -471,7 +471,8 @@ test.describe("却下・統計・アクセス制御", () => {
     const reqLabels = await page
       .locator("div.grid > div.rounded-2xl div.truncate")
       .allInnerTexts();
-    expect(reqLabels).toEqual(["表示対象", "承認待ち", "登録済み", "差戻し・却下"]);
+    // §7.2「統計カード（表示対象 / 承認待ち / 登録済み / 停止・削除）」
+    expect(reqLabels).toEqual(["表示対象", "承認待ち", "登録済み", "停止・削除"]);
 
     await page.goto("/admin");
     const adminLabels = await page

@@ -80,13 +80,22 @@ export default async function AccountRequestsPage({
   }
   const baseWhere: Prisma.AccountRequestWhereInput = { AND: filters };
 
-  const [total, pendingCount, approvedCount, rejectedCount, requests] = await Promise.all([
+  // 統計カード4枚は §7.2「表示対象 / 承認待ち / 登録済み / 停止・削除」。
+  // 第4カードは却下件数ではなく **アカウントの停止中・削除済の件数**（ロールスコープを適用）。
+  const [total, pendingCount, approvedCount, inactiveAccounts, requests] = await Promise.all([
     prisma.accountRequest.count({ where: baseWhere }),
     prisma.accountRequest.count({
       where: { ...baseWhere, status: { in: ["pending_first", "pending_final"] } },
     }),
     prisma.accountRequest.count({ where: { ...baseWhere, status: "approved" } }),
-    prisma.accountRequest.count({ where: { ...baseWhere, status: "rejected" } }),
+    prisma.account.count({
+      where: {
+        status: { in: ["suspended", "deleted"] },
+        ...(scope === null
+          ? { OR: [{ agencyId: null }, { agency: { isDummy: false } }] }
+          : { agencyId: { in: scope } }),
+      },
+    }),
     prisma.accountRequest.findMany({
       where: baseWhere,
       orderBy: { createdAt: "desc" },
@@ -95,12 +104,17 @@ export default async function AccountRequestsPage({
     }),
   ]);
 
-  // 所属表示用の代理店マップ（AccountRequest.agencyId はリレーション無しのため個別取得）
+  // 所属表示用の代理店マップ（AccountRequest.agencyId はリレーション無しのため個別取得）。
+  // §7.2「所属（一次: コード・二次: コード）」を満たすため、二次店は親の一次店も併せて取得する。
   const agencyIds = [...new Set(requests.map((r) => r.agencyId).filter((v): v is string => !!v))];
   const agencies = agencyIds.length
     ? await prisma.agency.findMany({ where: { id: { in: agencyIds } } })
     : [];
-  const agencyMap = new Map(agencies.map((a) => [a.id, a]));
+  const parentIds = [...new Set(agencies.map((a) => a.parentId).filter((v): v is string => !!v))];
+  const parents = parentIds.length
+    ? await prisma.agency.findMany({ where: { id: { in: parentIds } } })
+    : [];
+  const agencyMap = new Map([...agencies, ...parents].map((a) => [a.id, a]));
 
   // 申請フォーム用選択肢
   const requestableRoles: Option[] = REQUESTABLE_ROLES[user.role].map((r) => ({
@@ -136,7 +150,7 @@ export default async function AccountRequestsPage({
         <StatCard value={total} label="表示対象" tone="blue" />
         <StatCard value={pendingCount} label="承認待ち" tone="orange" />
         <StatCard value={approvedCount} label="登録済み" tone="green" />
-        <StatCard value={rejectedCount} label="差戻し・却下" tone="red" />
+        <StatCard value={inactiveAccounts} label="停止・削除" tone="gray" />
       </div>
 
       {!user.dummy && (
@@ -242,9 +256,20 @@ export default async function AccountRequestsPage({
                         {agency ? (
                           <>
                             <div className="text-sm">{agency.name}</div>
-                            <div className="text-xs text-slate-500">
-                              {agency.tier === 1 ? "一次" : "二次"}: {agency.code}
-                            </div>
+                            {/* §7.2「所属（一次: コード・二次: コード）」: 二次店は親の一次店も併記する */}
+                            {agency.tier === 2 && agency.parentId && agencyMap.get(agency.parentId) ? (
+                              <>
+                                <div className="text-xs text-slate-500">
+                                  一次: {agencyMap.get(agency.parentId)!.name}（
+                                  {agencyMap.get(agency.parentId)!.code}）
+                                </div>
+                                <div className="text-xs text-slate-500">二次: {agency.code}</div>
+                              </>
+                            ) : (
+                              <div className="text-xs text-slate-500">
+                                {agency.tier === 1 ? "一次" : "二次"}: {agency.code}
+                              </div>
+                            )}
                           </>
                         ) : (
                           <span className="text-xs text-slate-400">SNC・サスラボ</span>

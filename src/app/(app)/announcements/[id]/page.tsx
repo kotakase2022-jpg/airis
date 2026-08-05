@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Paperclip } from "lucide-react";
 import { notFound, redirect } from "next/navigation";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -87,7 +88,7 @@ export default async function AnnouncementDetailPage({
                     href={`/files/${f.id}`}
                     className="text-sm text-blue-600 hover:underline"
                   >
-                    📎 {f.name}
+                    <Paperclip className="mr-1 inline h-3 w-3" />{f.name}
                   </a>
                 </li>
               ))}

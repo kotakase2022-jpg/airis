@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Paperclip } from "lucide-react";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { type Role } from "@/lib/roles";
@@ -220,7 +221,7 @@ export default async function DocumentsPage({
                     <td className={tdCls}>
                       {/* TODO: ダウンロードの監査ログ記録は /files/[id] ルート側で対応（§7.12） */}
                       <a href={`/files/${d.fileId}`} className="text-blue-600 hover:underline">
-                        📎 {d.fileName}
+                        <Paperclip className="mr-1 inline h-3 w-3" />{d.fileName}
                       </a>
                     </td>
                     <td className={`${tdCls} whitespace-nowrap`}>{fmtJst(d.createdAt)}</td>

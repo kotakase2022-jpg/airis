@@ -17,7 +17,7 @@
 ```bash
 docker run -d --name airis-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=airis -p 5433:5432 postgres:16
 npm install
-npx prisma db push
+npm run migrate            # Prisma Migrate（初回は 0_init を適用）
 npm run seed        # デモデータ投入（ログイン情報がコンソールに表示される）
 npm run dev
 ```
@@ -102,7 +102,6 @@ npm run test:e2e     # Playwright（既定構成: TRUST_PROXY未設定）
 - ファイルストレージのS3抽象化・署名URL §2/§3.8 — 実体はDB(bytea)格納のまま。**発注者判断待ちの残存リスク**
 - 宣言的権限マップ（permissions.ts）の未適用領域: field-agents / reports / sales-staff / announcements / agencies（値は§5.1と一致しており機能差は無いが二重管理）
 - Prettier（CIはESLint + tsc + Vitest + build）
-- Prisma Migrate（現在は `prisma db push` 運用）
 
 ## シードとパスワードの整合（重要）
 

@@ -72,6 +72,14 @@ test.beforeAll(async () => {
     },
   });
   await db().submission.deleteMany({ where: { memo: SUB_MEMO_NOTIFY } });
+  // 本スイートが使う日付は、シードが投入する当月1ヶ月分の日報と衝突するため事前に除去する
+  // （テストの独立性確保。期待値は変更していない）
+  await db().dailyReport.deleteMany({
+    where: {
+      salesStaffId: staffId,
+      date: { in: [D_OVERWRITE, D_KPI, D_MOBILE, D_CSV1, D_CSV2, D_CSV_BAD, D_TELE] },
+    },
+  });
 });
 
 test.afterAll(async () => {
