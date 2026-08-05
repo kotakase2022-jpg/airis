@@ -24,6 +24,11 @@ const REPO_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SRC_DIR = path.join(REPO_ROOT, "src");
 
 const PATTERNS: { name: string; re: RegExp }[] = [
+  // role の等値比較形（=== "Rn" / !== "Rn"）も権限判定のハードコードとして検出する（§3.2）
+  {
+    name: 'user.role === "Rn" 形の等値比較',
+    re: /user.(?:role|rawRole)s*[!=]==s*"Rd+"/g,
+  },
   { name: "includes(user.role)", re: /\.includes\(\s*user\.(?:role|rawRole)\b/g },
   { name: "ロール配列リテラル.includes()", re: /\[[^\]\n]*"R\d+"[^\]\n]*\]\s*\.includes\(/g },
 ];
@@ -69,6 +74,7 @@ const PERMISSION_DRIVEN_FILES = [
   "app/(app)/reports/csv/route.ts",
   "app/(app)/field-agents/csv/route.ts",
   "app/(app)/admin/actions.ts",
+  "app/(app)/admin/csv/route.ts",
   "lib/util.ts",
 ];
 

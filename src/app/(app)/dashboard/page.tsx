@@ -150,7 +150,7 @@ export default async function DashboardPage() {
   const [auditRecent, alertRecent] = showAdminStats
     ? await Promise.all([
         prisma.auditLog.count({ where: { createdAt: { gte: since } } }),
-        // TODO: 並行ログイン・普段と異なるIPの検知（§3.3 不正利用防止）は未実装のため、
+        // 不正利用検知（§3.3 / 要件1-9）は日次バッチ（api/cron/daily）で並行ログイン・IP変化・
         // 暫定で監査ログの失敗・拒否イベント（ログイン失敗／権限外アクセス）件数をアラート数とする。
         prisma.auditLog.count({ where: { createdAt: { gte: since }, result: { not: "success" } } }),
       ])
@@ -273,7 +273,7 @@ export default async function DashboardPage() {
               <StatCard value={alertRecent} label="不正利用アラート件数" tone="red" />
             </div>
             <p className="mt-2 text-xs text-slate-400">
-              ※本日（JST）分の集計です。不正利用アラートは監査ログの失敗・拒否イベント（ログイン失敗・権限外アクセス）の件数です。並行ログイン・IP変化の検知は未実装（§3.3 TODO）。
+              ※本日（JST）分の集計です。不正利用アラートは監査ログの失敗・拒否イベント（ログイン失敗・権限外アクセス）の件数です。並行ログイン・IP変化は日次バッチで検知し②へ通知（§3.3 / 要件1-9）。
             </p>
           </section>
         )}

@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { notify, notifyRole, audit, today } from "@/lib/util";
 import { sendMail, mailConfigured } from "@/lib/mail";
+import { UNKNOWN_IP } from "@/lib/client-ip";
 
 // 日次バッチ（Vercel Cron から毎日実行。vercel.json 参照）
 //  1) 期限切れ窓口案件の自動リマインド（SPEC §7.8 / 要件9-2 督促機能）
@@ -146,8 +147,8 @@ async function recentLoginSuccesses(db: PrismaClient, since: Date): Promise<Map<
   ]);
 
   const events: LoginSuccess[] = [
-    ...accessRows.filter((r) => r.ip).map((r) => ({ actor: r.loginId, ip: r.ip!, at: r.createdAt })),
-    ...auditRows.filter((r) => r.ip).map((r) => ({ actor: r.actor, ip: r.ip!, at: r.createdAt })),
+    ...accessRows.filter((r) => r.ip && r.ip !== UNKNOWN_IP).map((r) => ({ actor: r.loginId, ip: r.ip!, at: r.createdAt })),
+    ...auditRows.filter((r) => r.ip && r.ip !== UNKNOWN_IP).map((r) => ({ actor: r.actor, ip: r.ip!, at: r.createdAt })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 
   const byActor = new Map<string, LoginSuccess[]>();

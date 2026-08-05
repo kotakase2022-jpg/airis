@@ -13,7 +13,7 @@
     "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:prod": "playwright test --config playwright.prod.config.ts",
-    "test:e2e:proxy": "playwright test e2e/18-access-log.spec.ts"
+    "test:e2e:proxy": "node scripts/test-e2e-proxy.js"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

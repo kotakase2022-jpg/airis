@@ -124,3 +124,39 @@ describe("ipTrustConfigFromEnv", () => {
     expect(ipTrustConfigFromEnv({ TRUSTED_PROXY_HOPS: "abc" }).hops).toBe(1);
   });
 });
+
+// 要件1-9: 不正利用検知のIPシグナルは、信頼できないIP（UNKNOWN_IP）を除外して判定する。
+// 除外しないと (a) IP信頼が無効な環境では全件同値で検知が沈黙し、
+// (b) 一部リクエストのみヘッダ欠落だと「別IP」と誤判定して誤発報する。
+describe("要件1-9 IPシグナルからのセンチネル除外", () => {
+  type Row = { ip: string | null };
+  // src/app/api/cron/daily/route.ts と同じフィルタ条件
+  const usableIps = (rows: Row[]) =>
+    rows.filter((r) => r.ip && r.ip !== UNKNOWN_IP).map((r) => r.ip!);
+
+  it("unknown のみのログからは有効IPが得られない（検知が誤発報しない）", () => {
+    const rows: Row[] = [{ ip: UNKNOWN_IP }, { ip: UNKNOWN_IP }, { ip: UNKNOWN_IP }];
+    expect(usableIps(rows)).toEqual([]);
+    expect(new Set(usableIps(rows)).size, "複数IP検知は発火しない").toBe(0);
+  });
+
+  it("実IPとunknownが混在しても、unknownを別IPとして数えない", () => {
+    const rows: Row[] = [
+      { ip: "203.0.113.10" },
+      { ip: UNKNOWN_IP },
+      { ip: "203.0.113.10" },
+      { ip: null },
+    ];
+    expect(new Set(usableIps(rows)).size, "実IPは1種類として扱う").toBe(1);
+  });
+
+  it("異なる実IPが3種類あれば複数IP検知の閾値に達する", () => {
+    const rows: Row[] = [
+      { ip: "203.0.113.1" },
+      { ip: "203.0.113.2" },
+      { ip: UNKNOWN_IP },
+      { ip: "203.0.113.3" },
+    ];
+    expect(new Set(usableIps(rows)).size).toBe(3);
+  });
+});

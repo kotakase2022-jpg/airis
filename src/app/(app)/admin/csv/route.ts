@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser, isAdminIpAllowed } from "@/lib/auth";
-import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, Role } from "@/lib/roles";
+import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, Role, canAccess } from "@/lib/roles";
+import { can } from "@/lib/permissions";
 import { csvResponse, toCsv } from "@/lib/csv";
 import { audit, today } from "@/lib/util";
 
@@ -18,8 +19,10 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
   if (user.mustChangePassword) return new Response("Forbidden", { status: 403 });
-  // R1/R2のみ（R4ダミー閲覧は実データのエクスポート不可）
-  if (user.role !== "R1" && user.role !== "R2") {
+  // §5.2 管理画面ページへのアクセス権（①②のみ・④はダミー）と
+  // §5.1 Airisアカウントの「閲」（①②）を宣言的マップで判定する（§3.2）。
+  // ④はダミー表示のため実データのエクスポートを許可しない。
+  if (!canAccess(user.role, "admin") || !can(user.role, "airis-account", "view")) {
     await audit(user.loginId, "csv_export", "admin", "denied");
     return new Response("Forbidden", { status: 403 });
   }
