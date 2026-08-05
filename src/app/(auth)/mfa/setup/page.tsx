@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser, getMfaPendingSession } from "@/lib/auth";
 import { basePrisma } from "@/lib/prisma-base";
 import { generateMfaSecret, mfaQrDataUrl } from "@/lib/mfa";
+import { AuthBrand } from "../../brand";
 import { CancelLogin, EnrollForm } from "../forms";
 
 export const dynamic = "force-dynamic";
@@ -41,15 +42,11 @@ export default async function MfaSetupPage() {
   const qr = await mfaQrDataUrl(loginId, secret);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#F5F7FB] p-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <div className="mb-5 text-center">
-          <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-blue-600 text-2xl font-bold text-white">
-            A
-          </div>
-          <h1 className="text-lg font-bold text-slate-800">多要素認証（MFA）の登録</h1>
-          <p className="mt-1 text-xs text-slate-500">{loginId}</p>
-        </div>
+    <div className="flex min-h-screen items-center justify-center bg-[#FAFBFC] px-4 py-10">
+      <div className="w-full max-w-md">
+        <AuthBrand subtitle="多要素認証（MFA）の登録" />
+        <div className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm">
+        <p className="mb-4 text-center text-xs text-slate-500">{loginId}</p>
         <ol className="mb-4 list-decimal space-y-1 pl-5 text-xs leading-relaxed text-slate-600">
           <li>
             スマートフォンの認証アプリ（<span className="font-bold">推奨：Google Authenticator</span>
@@ -75,6 +72,7 @@ export default async function MfaSetupPage() {
         ) : (
           <CancelLogin />
         )}
+        </div>
       </div>
     </div>
   );
