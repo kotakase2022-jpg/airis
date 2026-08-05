@@ -1,12 +1,20 @@
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
+// パスワードのハッシュ化はアプリ実装と同一方式（Argon2id + 環境変数ペッパー §2/§10.3）を使う。
+// 独自にbcryptでハッシュすると、アプリの verifyPassword と方式が食い違いログインできなくなる。
+import { hashSync as argon2HashSync } from "@node-rs/argon2";
+import crypto from "crypto";
 
 // RLS(FORCE)適用後もシードできるよう、接続オプションで app.bypass=on を設定
 // （Neonはプール接続でoptionsが通らないため、DATABASE_URL_UNPOOLED等の直接接続URLを使うこと）
 const baseUrl = process.env.DATABASE_URL!;
 const seedUrl = baseUrl + (baseUrl.includes("?") ? "&" : "?") + "options=-c%20app.bypass%3Don";
 const prisma = new PrismaClient({ datasourceUrl: seedUrl });
-const hash = (pw: string) => bcrypt.hashSync(pw, 10);
+// src/lib/auth.ts と同一のパラメータ・ペッパー適用（変更時は両方を揃えること）
+const ARGON2_OPTIONS = { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 } as const;
+const pepper = process.env.PASSWORD_PEPPER_V1 ?? "";
+const prehash = (pw: string) =>
+  pepper ? crypto.createHmac("sha256", pepper).update(pw, "utf8").digest("hex") : pw;
+const hash = (pw: string) => argon2HashSync(prehash(pw), ARGON2_OPTIONS);
 
 // デモ用初期パスワード（本番運用前に必ず変更すること）
 export const PASSWORDS = {

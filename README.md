@@ -54,7 +54,7 @@ npm run dev
 
 | 変数 | 既定 | 説明 |
 |---|---|---|
-| `PASSWORD_PEPPER_V1` | 未設定 | パスワードのアプリケーションペッパー。設定するとログイン成功時に順次再ハッシュされる。ローテーションは V2 を追加して `CURRENT_PEPPER_KEY` を切替 |
+| `PASSWORD_PEPPER_V1` | 未設定 | パスワードのアプリケーションペッパー。**シード実行時とアプリ実行時で同じ値である必要がある**（不一致だとログインできない）。後から設定した場合はログイン成功時に自動で再ハッシュされ無停止で移行する。ローテーションは V2 を追加して `CURRENT_PEPPER_KEY` を切替 |
 | `TRUST_PROXY` | `false` | `true` のときのみ `x-forwarded-for` を信頼する。**リバースプロキシ配下でのみ有効化すること**（未設定ではヘッダを無視し、接続元IPは `unknown`） |
 | `TRUST_VERCEL_HEADERS` | `VERCEL=1` で自動有効 | `x-vercel-forwarded-for` を信頼する。Vercel以外では偽装可能なため既定で無効 |
 | `TRUSTED_PROXY_HOPS` | `1` | 信頼できるプロキシの段数。末尾から数えてこの位置のIPのみ採用する |
@@ -103,5 +103,14 @@ npm run test:e2e     # Playwright（既定構成: TRUST_PROXY未設定）
 - 宣言的権限マップ（permissions.ts）の未適用領域: field-agents / reports / sales-staff / announcements / agencies（値は§5.1と一致しており機能差は無いが二重管理）
 - Prettier（CIはESLint + tsc + Vitest + build）
 - Prisma Migrate（現在は `prisma db push` 運用）
+
+## シードとパスワードの整合（重要）
+
+`prisma/seed.ts` は **アプリ実装（`src/lib/auth.ts` の `hashPassword`）と同一方式**（Argon2id + `PASSWORD_PEPPER_V1`）でハッシュを生成する。
+ハッシュ方式やペッパーがシード時とアプリ実行時で食い違うと「IDまたはパスワードが正しくありません」となりログインできない。
+
+- シードは  を**アプリと同じ値**（または両方とも未設定）で実行すること
+- 既存アカウントのハッシュは `upsert` の `update: {}` で更新されない。パスワードを作り直す場合は対象アカウントを削除してから再シードする
+- ペッパーを後から有効化する場合は、環境変数を設定するだけでよい（既存ハッシュはログイン成功時に自動で再ハッシュされる）
 
 > デモアカウントのパスワードは `prisma/seed.ts` を参照。**本番運用前に必ず変更すること。**
