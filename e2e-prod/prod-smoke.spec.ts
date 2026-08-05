@@ -1,10 +1,42 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, Page } from "@playwright/test";
+import { generateSync } from "otplib";
+import { PrismaClient } from "@prisma/client";
+import fs from "fs";
 
 // 本番スモーク: 全10ロールのログイン + サイドメニュー構成（§11.1 / §5.2）+ ダッシュボード表示
-// 読み取り専用（データ変更なし）。スクリーンショットを証拠として保存。
+// 業務データは変更しない（MFAの登録状態のみ、実際の登録フローを通じて更新される）。
+// スクリーンショットを証拠として保存。
 
 const PW_ADMIN = "Airis-Demo-Admin-2026!x";
 const PW_GENERAL = "Airis-Demo-2026!";
+
+// MFA（§4.2）: 秘密鍵は本番が発行したものをDBから読み、コードを生成して実フローを通す
+// （既知の鍵を本番へ書き込まない）。
+let _db: PrismaClient | null = null;
+function db(): PrismaClient {
+  if (!_db) {
+    const url = fs
+      .readFileSync(".env.local", "utf8")
+      .match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m)![1];
+    _db = new PrismaClient({ datasourceUrl: url });
+  }
+  return _db;
+}
+
+test.afterAll(async () => {
+  await _db?.$disconnect();
+});
+
+// ログイン後にMFA画面（登録 or 検証）が出たら通過する。⑨未登録などMFA無しならそのまま返る。
+async function completeMfaIfNeeded(page: Page, loginId: string) {
+  await page.waitForURL(/\/(dashboard|password|mfa)/, { timeout: 30_000 });
+  if (!page.url().includes("/mfa")) return;
+  const acc = await db().account.findUnique({ where: { loginId } });
+  expect(acc?.mfaSecret, `${loginId}: 秘密鍵が発行済みであること`).toBeTruthy();
+  await page.locator('input[name="code"]').fill(generateSync({ secret: acc!.mfaSecret! }));
+  await page.getByRole("button", { name: /登録して続行|認証する/ }).click();
+  await page.waitForURL(/\/(dashboard|password)/, { timeout: 30_000 });
+}
 
 const MENU_ALL = [
   "ダッシュボード",
@@ -48,6 +80,7 @@ for (const c of CASES) {
     await page.locator('input[name="loginId"]').fill(c.loginId);
     await page.locator('input[name="password"]').fill(c.pw);
     await page.getByRole("button", { name: "ログイン" }).click();
+    await completeMfaIfNeeded(page, c.loginId); // §4.2 MFA（①〜⑧⑩は必須 / ⑨は任意）
     await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "ダッシュボード" })).toBeVisible();
 
