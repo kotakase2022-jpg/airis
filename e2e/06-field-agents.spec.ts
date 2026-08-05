@@ -1,12 +1,18 @@
 // QA担当: 訪販員申請・管理（SPEC §6.3 / §7.4）
 // データプレフィクス: QA4（一意RUN suffix付きで再実行しても衝突しない）
 import { test, expect, type Page, type Browser } from "@playwright/test";
-import { login, db, collectConsoleErrors, criticalErrors, type RoleKey } from "./helpers";
+import {
+  fieldAgentScope,
+  login,
+  db,
+  collectConsoleErrors,
+  criticalErrors,
+  type RoleKey,
+} from "./helpers";
 
 const RUN = Date.now().toString(36);
 const P = `QA4${RUN}`;
-const jstMonth = () =>
-  new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 7);
+const jstMonth = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 7);
 
 // ---------- テストデータ準備（db()=オーナー接続） ----------
 async function agencyByCode(code: string) {
@@ -46,9 +52,11 @@ async function createApp(
   status: string,
   extra: Record<string, unknown> = {}
 ) {
+  const scope = await fieldAgentScope(salesStaffId);
   return db().fieldAgentApplication.create({
     data: {
       salesStaffId,
+      ...scope, // 代理店スコープ列（§3.1。RLSがこの2列で判定する）
       applicationType: "稼働",
       products: "auひかり",
       attribute: "社員/契約社員",
@@ -124,7 +132,9 @@ async function withRole(browser: Browser, role: RoleKey, fn: (p: Page) => Promis
 // ============================================================
 // t01: R7 申請フォーム: 販売員ID選択→氏名・代理店の自動表示 + 選択肢仕様（§7.4）
 // ============================================================
-test("t01 R7申請フォーム: 選択肢が仕様どおり・販売員ID選択で氏名/代理店/1次店名を自動表示", async ({ page }) => {
+test("t01 R7申請フォーム: 選択肢が仕様どおり・販売員ID選択で氏名/代理店/1次店名を自動表示", async ({
+  page,
+}) => {
   const staff = await createStaff({ code: "210001", last: "QA4自動", first: `表示${RUN}` });
   const errors = collectConsoleErrors(page);
   await login(page, "R7");
@@ -181,7 +191,9 @@ test("t01 R7申請フォーム: 選択肢が仕様どおり・販売員ID選択�
 // ============================================================
 // t02: マルチ選択時は使用代理店コード2枠必須（1枠のみでエラー）、auひかり/コラボは1枠目のみ必須
 // ============================================================
-test("t02 取扱商材=マルチは使用代理店コード2枠必須・auひかり/コラボは1枠目のみ必須", async ({ page }) => {
+test("t02 取扱商材=マルチは使用代理店コード2枠必須・auひかり/コラボは1枠目のみ必須", async ({
+  page,
+}) => {
   const staff = await createStaff({ code: "210001" });
   const pledgeNo = `${P}-MULTI1`;
   await login(page, "R7");
@@ -213,7 +225,9 @@ test("t02 取扱商材=マルチは使用代理店コード2枠必須・auひか
   // （注: server action完了後はReactがフォームのuncontrolled入力をリセットするため全項目を再入力）
   await fillForm(page, staff.id, { pledgeNo, products: "マルチ", code2: "666J08" });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()).toBeVisible({
+  await expect(
+    page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()
+  ).toBeVisible({
     timeout: 10_000,
   });
   const app = await db().fieldAgentApplication.findFirst({ where: { pledgeNo } });
@@ -273,7 +287,9 @@ test("t03 属性=業務委託社員のみ業務委託3項目が必須・他属�
     },
   });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()).toBeVisible({
+  await expect(
+    page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()
+  ).toBeVisible({
     timeout: 10_000,
   });
   const app = await db().fieldAgentApplication.findFirst({ where: { pledgeNo } });
@@ -306,7 +322,10 @@ test("t04 誓約書Noは入力必須（未入力でエラー・DBに作成され
 // ============================================================
 // t05: 申請→DB applying→1次承認→provisional→最終承認→registered+workMonth（§6.3/§4.1）
 // ============================================================
-test("t05 承認フロー: R7申請(applying)→R7 1次承認(provisional)→R2最終承認(registered+workMonth)", async ({ page, browser }) => {
+test("t05 承認フロー: R7申請(applying)→R7 1次承認(provisional)→R2最終承認(registered+workMonth)", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(90_000);
   const staff = await createStaff({ code: "210001" });
   const pledgeNo = `${P}-FLOW1`;
@@ -323,7 +342,9 @@ test("t05 承認フロー: R7申請(applying)→R7 1次承認(provisional)→R2�
     buffer: Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"),
   });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()).toBeVisible({
+  await expect(
+    page.getByText("訪販員申請（稼働）を受け付けました。（申請中）").first()
+  ).toBeVisible({
     timeout: 10_000,
   });
 
@@ -378,7 +399,10 @@ test("t05 承認フロー: R7申請(applying)→R7 1次承認(provisional)→R2�
 // ============================================================
 // t06: 抹消申請の最終承認 → status=deleted（当該訪販員登録も抹消 §4.1）
 // ============================================================
-test("t06 抹消申請: 最終承認で抹消申請と既存の訪販員登録がdeletedになる", async ({ page, browser }) => {
+test("t06 抹消申請: 最終承認で抹消申請と既存の訪販員登録がdeletedになる", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(90_000);
   const staff = await createStaff({ code: "210001" });
   const regPledge = `${P}-REGBASE`;
@@ -390,7 +414,9 @@ test("t06 抹消申請: 最終承認で抹消申請と既存の訪販員登録�
   await openApplyForm(page);
   await fillForm(page, staff.id, { pledgeNo: delPledge, type: "抹消" });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("訪販員申請（抹消）を受け付けました。（申請中）").first()).toBeVisible({
+  await expect(
+    page.getByText("訪販員申請（抹消）を受け付けました。（申請中）").first()
+  ).toBeVisible({
     timeout: 10_000,
   });
   const created = await db().fieldAgentApplication.findFirst({ where: { pledgeNo: delPledge } });
@@ -427,7 +453,9 @@ test("t06 抹消申請: 最終承認で抹消申請と既存の訪販員登録�
 // ============================================================
 // t07: 異常系: 重複稼働申請・抹消対象なし
 // ============================================================
-test("t07 異常系: 有効な稼働申請がある販売員への再申請と、登録のない販売員への抹消申請はエラー", async ({ page }) => {
+test("t07 異常系: 有効な稼働申請がある販売員への再申請と、登録のない販売員への抹消申請はエラー", async ({
+  page,
+}) => {
   const staffDup = await createStaff({ code: "210001" });
   await createApp(staffDup.id, `${P}-DUPBASE`, "registered");
   const staffNone = await createStaff({ code: "210001" });
@@ -458,7 +486,9 @@ test("t07 異常系: 有効な稼働申請がある販売員への再申請と�
 // ============================================================
 // t08: 同姓同名・ブラックリスト簡易チェック（§7.4 補助機能）
 // ============================================================
-test("t08 同姓同名チェック: 同姓同名がいれば警告・いなければ「簡易チェックで警告はありません。」", async ({ page }) => {
+test("t08 同姓同名チェック: 同姓同名がいれば警告・いなければ「簡易チェックで警告はありません。」", async ({
+  page,
+}) => {
   const unique = await createStaff({ code: "210001", last: "QA4唯一", first: `花子${RUN}` });
   const sameA = await createStaff({ code: "210001", last: "QA4同名", first: `太郎${RUN}` });
   const sameB = await createStaff({ code: "210002", last: "QA4同名", first: `太郎${RUN}` });
@@ -555,7 +585,9 @@ test("t10 R7一覧: ブラックリスト列・★・SNCメモの値が表示さ
 // ============================================================
 // t11: R7/R8では画面（申請フォーム展開含む）に「★」「ブラックリスト」「SNCメモ」等が一切表示されない（§7.4）
 // ============================================================
-test("t11 R7/R8: 申請フォーム展開時も含め画面にブラックリスト関連の文言が一切存在しない", async ({ browser }) => {
+test("t11 R7/R8: 申請フォーム展開時も含め画面にブラックリスト関連の文言が一切存在しない", async ({
+  browser,
+}) => {
   test.setTimeout(90_000);
   const staff = await createStaff({ code: "210001" });
   const pledgeNo = `${P}-BL-STRICT`;
@@ -567,13 +599,13 @@ test("t11 R7/R8: 申請フォーム展開時も含め画面にブラックリス
       await p.goto(`/field-agents?q=${pledgeNo}`);
       await openApplyForm(p); // フォームを展開した状態で全文言を確認
       const text = await p.locator("body").innerText();
-      expect.soft(text, `${role}: 「ブラックリスト」の文言が画面に存在しない`).not.toContain(
-        "ブラックリスト"
-      );
+      expect
+        .soft(text, `${role}: 「ブラックリスト」の文言が画面に存在しない`)
+        .not.toContain("ブラックリスト");
       expect.soft(text, `${role}: 「SNCメモ」の文言が画面に存在しない`).not.toContain("SNCメモ");
-      expect.soft(text, `${role}: 「SNC用メモ」の文言が画面に存在しない`).not.toContain(
-        "SNC用メモ"
-      );
+      expect
+        .soft(text, `${role}: 「SNC用メモ」の文言が画面に存在しない`)
+        .not.toContain("SNC用メモ");
       expect.soft(text, `${role}: 「★」が画面に存在しない`).not.toContain("★");
       expect.soft(text, `${role}: SNCメモの値が画面に存在しない`).not.toContain(memo);
     });
@@ -583,7 +615,9 @@ test("t11 R7/R8: 申請フォーム展開時も含め画面にブラックリス
 // ============================================================
 // t12: 一覧CSV出力（棚卸）: R2はSNC限定列（ブラックリスト・SNC用メモ）込みでDL可能（§7.4 / 要件3-10）
 // ============================================================
-test("t12 CSV出力(R2): ヘッダが仕様どおりでSNC限定列とデータ（★・メモ）を含む", async ({ page }) => {
+test("t12 CSV出力(R2): ヘッダが仕様どおりでSNC限定列とデータ（★・メモ）を含む", async ({
+  page,
+}) => {
   const staff = await createStaff({ code: "210001" });
   const pledgeNo = `${P}-CSV-R2`;
   const memo = `${P}-CSV機密メモ`;
@@ -713,7 +747,9 @@ test("t14 検索・フィルタ: 誓約書No検索と状態フィルタで絞り
 // ============================================================
 // t15: スコープ: R8は自店のみ（IDOR防止含む §3.1）+ R8は承認・管理操作不可
 // ============================================================
-test("t15 R8スコープ: 自店の申請のみ閲覧可・他店は検索/URL注入でも見えない・承認/停止ボタンなし", async ({ page }) => {
+test("t15 R8スコープ: 自店の申請のみ閲覧可・他店は検索/URL注入でも見えない・承認/停止ボタンなし", async ({
+  page,
+}) => {
   const inStaff = await createStaff({ code: "210001" }); // R8自店
   const inPledge = `${P}-SCOPE-IN`;
   await createApp(inStaff.id, inPledge, "applying");
@@ -770,7 +806,10 @@ test("t15 R8スコープ: 自店の申請のみ閲覧可・他店は検索/URL�
 // ============================================================
 // t16: 権限外アクセス（§5.2: 訪販員申請/管理は①②③⑦⑧のみ）
 // ============================================================
-test("t16 権限外アクセス: R9/R5は/field-agentsにアクセス不可・CSVも403/401", async ({ page, browser }) => {
+test("t16 権限外アクセス: R9/R5は/field-agentsにアクセス不可・CSVも403/401", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(90_000);
   // R9（販売員）: ページはダッシュボードへリダイレクト、CSVは403
   await login(page, "R9");
@@ -800,7 +839,9 @@ test("t16 権限外アクセス: R9/R5は/field-agentsにアクセス不可・CS
 // ============================================================
 // t17: 異常系: 不正なURLパラメータ・存在しないID/検索語でも壊れない
 // ============================================================
-test("t17 異常系: 不正status/存在しないagency/過大page/該当なし検索でもエラーなく表示", async ({ page }) => {
+test("t17 異常系: 不正status/存在しないagency/過大page/該当なし検索でもエラーなく表示", async ({
+  page,
+}) => {
   const errors = collectConsoleErrors(page);
   await login(page, "R7");
 

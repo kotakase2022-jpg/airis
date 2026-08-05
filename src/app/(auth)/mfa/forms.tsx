@@ -50,9 +50,7 @@ export function VerifyForm() {
 export function CancelLogin() {
   return (
     <form action={logoutAction} className="mt-4 text-center">
-      <button className="text-xs text-slate-400 hover:underline">
-        ログインからやり直す
-      </button>
+      <button className="text-xs text-slate-400 hover:underline">ログインからやり直す</button>
     </form>
   );
 }

@@ -6,6 +6,7 @@ import { resolveSession, type RlsContext } from "./session";
 import { mailConfigured, sendMail } from "./mail";
 import { canAccess, type Role } from "./roles";
 import { can, isDummyFeature, type FeatureKey } from "./permissions";
+import { alertForAuditEvent } from "./alert";
 
 export function today(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); // JST
@@ -21,6 +22,50 @@ export function fiscalYearOf(targetMonth: string): number {
   return m >= 4 ? y : y - 1;
 }
 
+// 監査ログの構造化ログ（JSON）出力（§10.4 SEC-030）。
+// 収集基盤（SIEM）へはインフラ側で標準出力を転送する前提なので、1イベント=1行のJSONで出す。
+// 項目は audit_logs に保存する内容と同一（追加の個人情報は載せない §10.3）。
+// target は標準出力の肥大化を防ぐため切り詰める（全文はDBに残る）。
+const MAX_LOG_TARGET_LEN = 1000;
+
+type AuditLogRecord = {
+  type: "audit";
+  ts: string;
+  actor: string;
+  action: string;
+  target?: string;
+  result: string;
+  ip?: string;
+  env?: string;
+  app: "airis";
+};
+
+export function auditLogRecord(
+  actor: string,
+  action: string,
+  target: string | undefined,
+  result: string,
+  ip: string | undefined,
+  ts: string
+): AuditLogRecord {
+  return {
+    type: "audit",
+    ts,
+    actor,
+    action,
+    target:
+      target && target.length > MAX_LOG_TARGET_LEN
+        ? `${target.slice(0, MAX_LOG_TARGET_LEN)}…`
+        : target,
+    result,
+    ip,
+    env: process.env.NODE_ENV,
+    app: "airis",
+  };
+}
+
+// 監査ログ記録（§3.3）。DB記録＋構造化ログ出力（§10.4 SEC-030）＋アラート判定（§10.4 SEC-032）。
+// シグネチャは変更しない（呼び出し箇所が多数あるため後方互換必須）。
 export async function audit(
   actor: string,
   action: string,
@@ -28,16 +73,30 @@ export async function audit(
   result = "success",
   ip?: string
 ) {
+  const ts = new Date().toISOString();
+  // DB書き込みが失敗しても痕跡が残るよう、構造化ログを先に出す（§10.4）
+  try {
+    console.log(JSON.stringify(auditLogRecord(actor, action, target, result, ip, ts)));
+  } catch {
+    // ログ整形の失敗は業務を止めない
+  }
   try {
     await prisma.auditLog.create({ data: { actor, action, target, result, ip } });
   } catch {
     // 監査ログ失敗は業務を止めない
   }
+  // 認証失敗急増・特権操作・エクスポート操作のアラート（§10.4）。
+  // 判定を audit() 側に寄せることで呼び出し側の改修を不要にしている（src/lib/alert.ts）。
+  await alertForAuditEvent({ actor, action, target, result, ip });
 }
 
 function mailBody(body?: string, link?: string): string {
   const appUrl = process.env.APP_URL ?? "";
-  const lines = [body ?? "", link ? `\n詳細: ${appUrl}${link}` : "", "\n--\nAiris 販売代理店支援ポータル（自動送信）"];
+  const lines = [
+    body ?? "",
+    link ? `\n詳細: ${appUrl}${link}` : "",
+    "\n--\nAiris 販売代理店支援ポータル（自動送信）",
+  ];
   return lines.filter(Boolean).join("\n");
 }
 
@@ -184,9 +243,7 @@ export function pushHistory(history: unknown, event: string, by: string): object
 
 export function formatHistory(history: unknown): string {
   if (!Array.isArray(history)) return "";
-  return (history as { event: string; at: string }[])
-    .map((h) => `${h.event} ${h.at}`)
-    .join(" / ");
+  return (history as { event: string; at: string }[]).map((h) => `${h.event} ${h.at}`).join(" / ");
 }
 
 // アップロード許可拡張子・MIMEホワイトリスト（§3.8）
@@ -211,7 +268,10 @@ const ALLOWED_EXT: Record<string, string> = {
 
 function safeName(name: string): string {
   // パス要素・制御文字を除去（ディレクトリトラバーサル防止）
-  return name.replace(/[\\/\x00-\x1f]/g, "_").replace(/\.\.+/g, ".").slice(0, 255);
+  return name
+    .replace(/[\\/\x00-\x1f]/g, "_")
+    .replace(/\.\.+/g, ".")
+    .slice(0, 255);
 }
 
 // 配信時に信頼できる MIME を拡張子から決定（クライアント申告値を信用しない）
@@ -222,14 +282,19 @@ export function safeMimeFor(name: string): string {
 
 // ファイル保存（DB格納・上限は既定20MB。環境変数 FILE_MAX_MB で変更可 §3.8）
 // 拡張子＋ファイル名をホワイトリスト方式で検証・サニタイズする。
-export async function storeFile(file: File, uploadedBy: string): Promise<{ id: string; name: string } | { error: string }> {
+export async function storeFile(
+  file: File,
+  uploadedBy: string
+): Promise<{ id: string; name: string } | { error: string }> {
   const maxMb = Number(process.env.FILE_MAX_MB) > 0 ? Number(process.env.FILE_MAX_MB) : 20;
   if (file.size === 0) return { error: "ファイルが空です" };
   if (file.size > maxMb * 1024 * 1024) return { error: `ファイルは${maxMb}MB以下にしてください` };
   const name = safeName(file.name);
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
   if (!ALLOWED_EXT[ext]) {
-    return { error: `この形式のファイルは受け付けられません（許可: ${Object.keys(ALLOWED_EXT).join(", ")}）` };
+    return {
+      error: `この形式のファイルは受け付けられません（許可: ${Object.keys(ALLOWED_EXT).join(", ")}）`,
+    };
   }
   const buf = Buffer.from(await file.arrayBuffer());
   // 保存MIMEは拡張子から決定（クライアント申告のtext/html等を保存しない）

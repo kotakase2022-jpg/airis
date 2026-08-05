@@ -29,13 +29,10 @@ describe("fiscalYearOf（§7.6 年度 = 4月〜翌3月）", () => {
 
 describe("pushHistory（履歴イベント追記）", () => {
   // 履歴日付は Asia/Tokyo 基準（§2 タイムゾーン Asia/Tokyo固定）
-  const todayJst = () =>
-    new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+  const todayJst = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 
   it("履歴が null でも新規配列としてイベントを追加する", () => {
-    expect(pushHistory(null, "申請", "R7")).toEqual([
-      { event: "申請", at: todayJst(), by: "R7" },
-    ]);
+    expect(pushHistory(null, "申請", "R7")).toEqual([{ event: "申請", at: todayJst(), by: "R7" }]);
   });
 
   it("既存の履歴配列の末尾に追記し、元の配列は破壊しない", () => {

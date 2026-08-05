@@ -14,9 +14,7 @@ export type AnnouncementFormState = {
 // 配信一覧の行内操作（送信・停止・削除）の結果状態（§3.2）。
 // 権限不足・状態不整合・DB例外をユーザーへ必ず可視化するため、void ではなく状態を返す。
 // ts は「同じ文面が連続したときにも state 変化を検知させる」ためのタイムスタンプ。
-export type AnnouncementRowState =
-  | { error?: string; success?: string; ts?: number }
-  | undefined;
+export type AnnouncementRowState = { error?: string; success?: string; ts?: number } | undefined;
 
 function rowFail(error: string): AnnouncementRowState {
   return { error, ts: Date.now() };
@@ -84,9 +82,7 @@ export async function createAnnouncementAction(
 
   // 添付ファイル（複数可）
   const attachments: { id: string; name: string }[] = [];
-  const files = formData
-    .getAll("files")
-    .filter((f): f is File => f instanceof File && f.size > 0);
+  const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
   for (const f of files) {
     const stored = await storeFile(f, user.id);
     if ("error" in stored) return { error: `添付ファイル「${f.name}」: ${stored.error}` };
@@ -198,6 +194,101 @@ export async function sendAnnouncementAction(
   revalidatePath("/announcements");
   // 文面は作成フォームの「お知らせを送信しました」と区別する（同一文面の重複表示を避ける）
   return rowOk("下書きのお知らせを送信しました");
+}
+
+// 一覧からの複製作成（§7.7「週3〜4回の運用に耐える『工数をかけない』UX（一覧からの複製作成など）」）
+// 元のお知らせの宛先・本文・重要フラグ・添付を引き継いだ **下書き** を新規作成する。
+// 引き継がないもの: 送信日時（sentAt=null）・状態（常に draft）・既読記録（AnnouncementRead）。
+// 元が送信済み／停止でも複製できる（過去の文面を土台に次回分を作るのが本来の用途）。
+const DUPLICATE_SUFFIX = "（複製）";
+
+// タイトルは元と区別できるよう「（複製）」を付ける。
+// 複製の複製で「（複製）（複製）…」と伸び続けないよう、既に付いている場合は付け足さない。
+function duplicateTitle(title: string): string {
+  return title.endsWith(DUPLICATE_SUFFIX) ? title : `${title}${DUPLICATE_SUFFIX}`;
+}
+
+export async function duplicateAnnouncementAction(
+  _prev: AnnouncementRowState,
+  formData: FormData
+): Promise<AnnouncementRowState> {
+  const user = await requirePage("announcements");
+  const id = String(formData.get("id") ?? "");
+  if (!id) return rowFail("対象のお知らせが指定されていません");
+  const src = await prisma.announcement.findUnique({ where: { id } });
+  // ④ダミー表示用データ（§3.5）は実データと分離するため複製元にできない
+  if (!src || src.isDummy) return rowFail("対象のお知らせが見つかりません");
+  // 複製は「新規作成」なので登録権限（§5.1「登」= ①②③）で判定する。
+  // 宛先を引き継ぐため、権限は複製元の宛先（全体向け / 1次店向け）のチャネルで見る。
+  if (user.dummy || !can(user.role, announcementFeature(src.audience), "create")) {
+    await audit(user.loginId, "announcement.duplicate", id, "denied");
+    return rowFail("お知らせの登録権限がありません");
+  }
+  if (src.status === "deleted") return rowFail("削除済のお知らせは複製できません");
+
+  // 添付は StoredFile ごと複製する（同じ StoredFile を参照共有すると、元のお知らせ側で
+  // 添付を差し替え・削除したときに複製側の添付が壊れるため。§3.8）
+  const srcFiles = (Array.isArray(src.fileIds) ? src.fileIds : []) as {
+    id: string;
+    name: string;
+  }[];
+  const copied: { id: string; name: string }[] = [];
+  try {
+    for (const f of srcFiles) {
+      const origin = await prisma.storedFile.findUnique({ where: { id: f.id } });
+      // 元ファイルが既に存在しない場合はその添付だけ落として複製を続ける（下書きなので後から添付可）
+      if (!origin) continue;
+      const dup = await prisma.storedFile.create({
+        data: {
+          name: origin.name,
+          mime: origin.mime,
+          size: origin.size,
+          data: origin.data,
+          uploadedBy: user.id,
+        },
+      });
+      copied.push({ id: dup.id, name: dup.name });
+    }
+  } catch {
+    await cleanupCopiedFiles(copied);
+    await audit(user.loginId, "announcement.duplicate", id, "failure");
+    return rowFail("添付ファイルの複製に失敗しました。時間をおいて再度お試しください");
+  }
+
+  let created;
+  try {
+    created = await prisma.announcement.create({
+      data: {
+        audience: src.audience,
+        title: duplicateTitle(src.title),
+        body: src.body,
+        important: src.important,
+        status: "draft",
+        sentAt: null,
+        fileIds: copied as never,
+        createdBy: user.loginId,
+      },
+    });
+  } catch {
+    // prisma.$transaction は使えない（RLS拡張・AGENTS.md）ため、
+    // お知らせ本体の作成に失敗したら複製済みの添付を後始末して孤児レコードを残さない
+    await cleanupCopiedFiles(copied);
+    await audit(user.loginId, "announcement.duplicate", id, "failure");
+    return rowFail("お知らせの複製に失敗しました。時間をおいて再度お試しください");
+  }
+
+  await audit(user.loginId, "announcement.duplicate", `${id} -> ${created.id}`);
+  revalidatePath("/announcements");
+  return rowOk("お知らせを複製して下書きを作成しました");
+}
+
+async function cleanupCopiedFiles(copied: { id: string }[]) {
+  if (copied.length === 0) return;
+  try {
+    await prisma.storedFile.deleteMany({ where: { id: { in: copied.map((c) => c.id) } } });
+  } catch {
+    // 後始末の失敗は業務を止めない（孤児ファイルは保持期間ジョブ側の対象）
+  }
 }
 
 // 停止（閲覧側から非表示にする）

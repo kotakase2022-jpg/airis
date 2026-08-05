@@ -32,18 +32,32 @@ export function AnnouncementForm() {
         </div>
         <div className="col-span-3">
           <label className={labelCls}>タイトル</label>
-          <input type="text" name="title" className={inputCls} placeholder="お知らせのタイトル" required />
+          <input
+            type="text"
+            name="title"
+            className={inputCls}
+            placeholder="お知らせのタイトル"
+            required
+          />
         </div>
         <div className="col-span-3">
           <label className={labelCls}>本文（自由記述）</label>
-          <textarea name="body" rows={6} className={inputCls} placeholder="周知内容を入力してください" required />
+          <textarea
+            name="body"
+            rows={6}
+            className={inputCls}
+            placeholder="周知内容を入力してください"
+            required
+          />
         </div>
       </div>
       {state.error && (
         <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{state.error}</p>
       )}
       {state.success && (
-        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{state.success}</p>
+        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {state.success}
+        </p>
       )}
       <div className="mt-4 flex items-center gap-3">
         <button type="submit" name="intent" value="send" className={btnPrimary} disabled={pending}>

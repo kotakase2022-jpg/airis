@@ -98,7 +98,9 @@ test("必須ロール(②)未登録: ログイン → /mfa/setup（QR + 推奨:G
   // 誤コードは拒否される
   await fillCode(page, wrongCodeFor(generateSync({ secret: shownSecret! })));
   await expect(page.getByText("認証コードが正しくありません", { exact: false })).toBeVisible();
-  expect((await db().account.findUnique({ where: { loginId: ENROLL_ID } }))?.mfaEnabled).toBe(false);
+  expect((await db().account.findUnique({ where: { loginId: ENROLL_ID } }))?.mfaEnabled).toBe(
+    false
+  );
 
   // 正しいコードで登録完了 → ダッシュボード
   await fillCode(page, generateSync({ secret: shownSecret! }));
@@ -236,9 +238,9 @@ test("②の管理画面からMFAリセット → 対象者は次回ログイン
   await expect(row).toHaveCount(1);
   page.once("dialog", (d) => d.accept());
   await row.getByRole("button", { name: "MFAリセット" }).click();
-  await expect(
-    page.getByText(`${RESET_ID} のMFAをリセットしました`, { exact: false })
-  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(`${RESET_ID} のMFAをリセットしました`, { exact: false })).toBeVisible(
+    { timeout: 15_000 }
+  );
 
   const acc = await db().account.findUnique({ where: { loginId: RESET_ID } });
   expect(acc?.mfaEnabled).toBe(false);

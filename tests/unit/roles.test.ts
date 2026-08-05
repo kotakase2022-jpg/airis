@@ -18,7 +18,8 @@ const PAGE_ACCESS: { page: PageKey; allowed: Role[] }[] = [
   { page: "field-agents", allowed: ["R1", "R2", "R3", "R4", "R7", "R8"] },
   { page: "reports", allowed: ["R1", "R2", "R3", "R4", "R7", "R8", "R9"] },
   { page: "agencies", allowed: ["R1", "R2", "R3", "R4", "R7"] },
-  { page: "admin", allowed: ["R1", "R2", "R4"] },
+  // ③は発注者指示（2026-08-05）で管理画面〇
+  { page: "admin", allowed: ["R1", "R2", "R3", "R4"] },
   { page: "hotline", allowed: ["R1", "R2", "R3", "R5"] },
   { page: "consumer-center", allowed: ["R1", "R2", "R3", "R6"] },
   { page: "agency-cases", allowed: ["R7", "R10"] },
@@ -59,7 +60,13 @@ describe("isDummyView（§11.1 ④はダミー表示）", () => {
   });
 
   it("ダッシュボード・アカウント申請・窓口はダミー扱いにならない", () => {
-    const nonDummy: PageKey[] = ["dashboard", "account-requests", "hotline", "consumer-center", "agency-cases"];
+    const nonDummy: PageKey[] = [
+      "dashboard",
+      "account-requests",
+      "hotline",
+      "consumer-center",
+      "agency-cases",
+    ];
     for (const page of nonDummy) {
       for (const role of ALL_ROLES) {
         expect(isDummyView(role, page), `${role} × ${page}`).toBe(false);
@@ -140,7 +147,12 @@ describe("MENU（§11.1 の11項目 + 代理店向け統合ビュー）", () => 
 
   it("⑤（R5）はホットライン窓口を、⑥（R6）は消費者センター窓口を表示する", () => {
     expect(visibleMenu("R5")).toEqual(["dashboard", "account-requests", "hotline", "documents"]);
-    expect(visibleMenu("R6")).toEqual(["dashboard", "account-requests", "consumer-center", "documents"]);
+    expect(visibleMenu("R6")).toEqual([
+      "dashboard",
+      "account-requests",
+      "consumer-center",
+      "documents",
+    ]);
   });
 });
 

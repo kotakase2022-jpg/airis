@@ -72,7 +72,9 @@ export async function createAgencyAction(
     });
   } catch {
     await audit(user.loginId, "agency_create", `${code} ${name}`, "failure");
-    return fail("代理店の登録に失敗しました。代理店コードの重複がないか確認し、再度お試しください。");
+    return fail(
+      "代理店の登録に失敗しました。代理店コードの重複がないか確認し、再度お試しください。"
+    );
   }
   await audit(user.loginId, "agency_create", `${created.code} ${created.name}`);
   revalidatePath("/agencies");

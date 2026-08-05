@@ -4,7 +4,8 @@ import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
 import { hashSync as argon2HashSync, verifySync as argon2VerifySync } from "@node-rs/argon2";
 import crypto from "crypto";
-import { completeMfaIfNeeded,
+import {
+  completeMfaIfNeeded,
   ACCOUNTS,
   PW_ADMIN,
   PW_GENERAL,
@@ -363,9 +364,7 @@ test("ログアウト → /login → 保護ページ再アクセスも /login（
   await login(page, "R9");
   await expect(page).toHaveURL(/\/dashboard/);
   // ログアウト前のセッショントークンを控える
-  const cookieBefore = (await page.context().cookies()).find(
-    (c) => c.name === "airis_session"
-  );
+  const cookieBefore = (await page.context().cookies()).find((c) => c.name === "airis_session");
   expect(cookieBefore).toBeTruthy();
   await page.getByRole("button", { name: "ログアウト" }).click();
   await page.waitForURL(/\/login/, { timeout: 15_000 });
@@ -409,12 +408,7 @@ test.describe("パスワード変更", () => {
     await clearLoginAudit(loginId); // 監査ログは Cascade 対象外なので明示的に削除
   }
 
-  async function submitPasswordChange(
-    page: Page,
-    current: string,
-    next: string,
-    confirm: string
-  ) {
+  async function submitPasswordChange(page: Page, current: string, next: string, confirm: string) {
     await page.goto("/password");
     await page.locator('input[name="current"]').fill(current);
     await page.locator('input[name="next"]').fill(next);
@@ -436,7 +430,12 @@ test.describe("パスワード変更", () => {
       const afterLogin = await db().account.findUnique({ where: { loginId: GEN_ID } });
 
       // 現在パスワード誤り
-      await submitPasswordChange(page, "Wrong-Current-123!", "QA1-NewPassword-14aA", "QA1-NewPassword-14aA");
+      await submitPasswordChange(
+        page,
+        "Wrong-Current-123!",
+        "QA1-NewPassword-14aA",
+        "QA1-NewPassword-14aA"
+      );
       await expect(page.getByText("現在のパスワードが正しくありません")).toBeVisible();
 
       // 新パスワード不一致

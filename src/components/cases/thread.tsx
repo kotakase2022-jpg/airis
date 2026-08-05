@@ -46,7 +46,7 @@ export function CaseThread({ messages }: { messages: ThreadMessage[] }) {
               </div>
               <span className="text-xs text-slate-400">{fmtDateTime(m.createdAt)}</span>
             </div>
-            <p className="whitespace-pre-wrap text-sm text-slate-700">{m.body}</p>
+            <p className="text-sm whitespace-pre-wrap text-slate-700">{m.body}</p>
             {m.files.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
                 {m.files.map((f) => (
@@ -55,7 +55,8 @@ export function CaseThread({ messages }: { messages: ThreadMessage[] }) {
                     href={`/files/${f.id}`}
                     className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-blue-600 hover:bg-slate-50"
                   >
-                    <Paperclip className="mr-1 inline h-3 w-3" />{f.name}
+                    <Paperclip className="mr-1 inline h-3 w-3" />
+                    {f.name}
                   </a>
                 ))}
               </div>

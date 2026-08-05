@@ -15,7 +15,13 @@ export function ReplyForm({ caseId, allowFiles }: { caseId: string; allowFiles: 
     <form action={formAction} className="mt-4 space-y-3 border-t border-slate-100 pt-4">
       <div>
         <label className={labelCls}>返信</label>
-        <textarea name="body" rows={4} className={inputCls} placeholder="返信内容を入力してください" required />
+        <textarea
+          name="body"
+          rows={4}
+          className={inputCls}
+          placeholder="返信内容を入力してください"
+          required
+        />
       </div>
       {allowFiles && (
         <div>
@@ -27,7 +33,9 @@ export function ReplyForm({ caseId, allowFiles }: { caseId: string; allowFiles: 
         <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{state.error}</p>
       )}
       {state?.ok && !pending && (
-        <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">返信を送信しました。</p>
+        <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+          返信を送信しました。
+        </p>
       )}
       <button className={btnPrimary} disabled={pending}>
         {pending ? "送信中..." : "返信を送信"}

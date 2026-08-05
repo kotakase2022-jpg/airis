@@ -32,7 +32,9 @@ let _db: PrismaClient | null = null;
 export function db(): PrismaClient {
   if (!_db) {
     _db = new PrismaClient({
-      datasourceUrl: "postgresql://postgres:postgres@localhost:5433/airis",
+      // 既定はローカルDocker。QA_DATABASE_URL で検証用DB（Neonのairis_qa等）へ切り替えられる
+      datasourceUrl:
+        process.env.QA_DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/airis",
     });
   }
   return _db;
@@ -78,9 +80,7 @@ export function collectConsoleErrors(page: Page): string[] {
 
 // 無害なエラー（favicon 404等）を除外して重大エラーのみ返す
 export function criticalErrors(errors: string[]): string[] {
-  return errors.filter(
-    (e) => !/favicon|404.*\.ico|net::ERR_ABORTED.*\.ico/i.test(e)
-  );
+  return errors.filter((e) => !/favicon|404.*\.ico|net::ERR_ABORTED.*\.ico/i.test(e));
 }
 
 // ===== 認証系テスト用: アカウント状態のリセット =====
@@ -89,4 +89,19 @@ export async function resetAccountAuthState(loginId: string): Promise<void> {
     where: { loginId },
     data: { failedAttempts: 0, lockedUntil: null },
   });
+}
+
+// 訪販員申請のフィクスチャ用: 親SalesStaffの所属からスコープ列（§3.1）を解決する。
+// RLS（prisma/rls.sql）は FieldAgentApplication の primaryAgencyId / secondaryAgencyId で
+// 直接判定するため、テストデータでもこの2列を埋めないと⑦⑧から不可視になる。
+export async function fieldAgentScope(
+  salesStaffId: string
+): Promise<{ primaryAgencyId: string | null; secondaryAgencyId: string | null }> {
+  const st = await db().salesStaff.findUniqueOrThrow({
+    where: { id: salesStaffId },
+    include: { agency: true },
+  });
+  return st.agency.tier === 1
+    ? { primaryAgencyId: st.agency.id, secondaryAgencyId: null }
+    : { primaryAgencyId: st.agency.parentId, secondaryAgencyId: st.agency.id };
 }

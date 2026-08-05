@@ -21,17 +21,23 @@ describe("passwordInputCandidates", () => {
   });
 
   it("IMEの全角英数記号をNFKCで半角へ吸収する", () => {
-    expect(passwordInputCandidates("Ａｉｒｉｓ－Ｄｅｍｏ－２０２６！")).toContain("Airis-Demo-2026!");
+    expect(passwordInputCandidates("Ａｉｒｉｓ－Ｄｅｍｏ－２０２６！")).toContain(
+      "Airis-Demo-2026!"
+    );
     // 全角スペース（U+3000）はNFKC後もtrim済みであること
     expect(passwordInputCandidates("　Airis-Demo-2026!　")).toContain("Airis-Demo-2026!");
   });
 
   it("引用符ごとの貼り付けを吸収する（seed.tsからのコピー想定）", () => {
-    expect(passwordInputCandidates('"Airis-Demo-Admin-2026!x"')).toContain("Airis-Demo-Admin-2026!x");
+    expect(passwordInputCandidates('"Airis-Demo-Admin-2026!x"')).toContain(
+      "Airis-Demo-Admin-2026!x"
+    );
     expect(passwordInputCandidates("'Airis-Demo-2026!'")).toContain("Airis-Demo-2026!");
     expect(passwordInputCandidates("「Airis-Demo-2026!」")).toContain("Airis-Demo-2026!");
     // 全角引用符 + 全角英数の複合
-    expect(passwordInputCandidates("”Ａｉｒｉｓ－Ｄｅｍｏ－２０２６！”")).toContain("Airis-Demo-2026!");
+    expect(passwordInputCandidates("”Ａｉｒｉｓ－Ｄｅｍｏ－２０２６！”")).toContain(
+      "Airis-Demo-2026!"
+    );
   });
 
   it("重複なし・空文字を含まない", () => {

@@ -2,12 +2,23 @@ import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope } from "@/lib/auth";
-import { CASE_STATUSES } from "@/lib/roles";
-import { Badge, Card, InfoBanner, PageHeader, SectionTitle, btnOutline, btnPrimary, inputCls } from "@/components/ui";
+// ステータスはマスタ化（StatusMaster kind="case"）してあり、値の増減はDBで行う（§7.8）
+import { caseStatusValues } from "@/lib/status";
+import {
+  Badge,
+  Card,
+  InfoBanner,
+  PageHeader,
+  SectionTitle,
+  btnOutline,
+  btnPrimary,
+  inputCls,
+} from "@/components/ui";
 import { today } from "@/lib/util";
 import { seriesBasePath, seriesLabel } from "./badges";
 import { CaseCardData, CaseCardList, Pagination } from "./case-card";
 import { AgencyOption, NewCaseForm, type StaffPick } from "./new-case-form";
+import { CaseStatusFilterSelect } from "./status-filter";
 
 const PER_PAGE = 50;
 
@@ -39,6 +50,10 @@ export async function SncCaseListPage({
 
   // 代理店スコープ検証（SNC系は null=全代理店 §3.1）
   const scope = await agencyScope(user);
+
+  // ステータスの選択肢・集計軸はマスタ（StatusMaster）から取得する。
+  // DBに行を足す/消すだけでコード変更・再デプロイなしに増減する（§7.8）。
+  const statusValues = await caseStatusValues();
 
   const where: Prisma.CaseWhereInput = {
     series,
@@ -147,7 +162,8 @@ export async function SncCaseListPage({
   const cards: CaseCardData[] = cases.map((c) => {
     const read = c.reads.find((r) => r.agencyId === c.primaryAgencyId);
     // 代理店の既読/未読（最終更新より後に閲覧していれば既読）
-    const readBadge = read && read.readAt >= c.updatedAt ? ("代理店既読" as const) : ("代理店未読" as const);
+    const readBadge =
+      read && read.readAt >= c.updatedAt ? ("代理店既読" as const) : ("代理店未読" as const);
     return {
       id: c.id,
       caseNo: c.caseNo,
@@ -218,28 +234,33 @@ export async function SncCaseListPage({
               <table className="w-full min-w-[420px] border-collapse text-sm">
                 <thead>
                   <tr>
-                    <th className="px-2 py-1 text-left text-xs font-semibold text-slate-500">一次代理店</th>
-                    {CASE_STATUSES.map((s) => (
-                      <th key={s} className="px-2 py-1 text-right text-xs font-semibold text-slate-500">
+                    <th className="px-2 py-1 text-left text-xs font-semibold text-slate-500">
+                      一次代理店
+                    </th>
+                    {statusValues.map((s) => (
+                      <th
+                        key={s}
+                        className="px-2 py-1 text-right text-xs font-semibold text-slate-500"
+                      >
                         {s}
                       </th>
                     ))}
-                    <th className="px-2 py-1 text-right text-xs font-semibold text-slate-500">計</th>
+                    <th className="px-2 py-1 text-right text-xs font-semibold text-slate-500">
+                      計
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {statAgencyIds.map((id) => {
                     const a = statAgencyMap.get(id);
-                    const rowCounts = CASE_STATUSES.map(
+                    const rowCounts = statusValues.map(
                       (s) =>
                         byAgencyStatus.find((r) => r.primaryAgencyId === id && r.status === s)
                           ?._count._all ?? 0
                     );
                     return (
                       <tr key={id} className="border-t border-slate-100">
-                        <td className="px-2 py-1 text-xs">
-                          {a ? `${a.name}（${a.code}）` : id}
-                        </td>
+                        <td className="px-2 py-1 text-xs">{a ? `${a.name}（${a.code}）` : id}</td>
                         {rowCounts.map((n, i) => (
                           <td key={i} className="px-2 py-1 text-right text-xs">
                             {n}
@@ -253,7 +274,10 @@ export async function SncCaseListPage({
                   })}
                   {statAgencyIds.length === 0 && (
                     <tr>
-                      <td className="px-2 py-2 text-xs text-slate-400" colSpan={CASE_STATUSES.length + 2}>
+                      <td
+                        className="px-2 py-2 text-xs text-slate-400"
+                        colSpan={statusValues.length + 2}
+                      >
                         案件がありません
                       </td>
                     </tr>
@@ -262,7 +286,9 @@ export async function SncCaseListPage({
               </table>
             </div>
             <div>
-              <div className="mb-1 text-xs font-semibold text-slate-500">月別起票件数（直近6ヶ月）</div>
+              <div className="mb-1 text-xs font-semibold text-slate-500">
+                月別起票件数（直近6ヶ月）
+              </div>
               <div className="flex items-end gap-2">
                 {monthKeys.map((m) => {
                   const n = monthly.get(m) ?? 0;
@@ -291,20 +317,9 @@ export async function SncCaseListPage({
           placeholder="案件ID・件名・代理店で検索"
           className={`${inputCls} max-w-xs`}
         />
-        <select name="status" defaultValue={status} className={`${inputCls} w-48`}>
-          <option value="">すべてのステータス</option>
-          {CASE_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-          {/* 停止・削除済（§5.1 停/削）もSNC側からは絞り込んで参照・復旧できる */}
-          {CASE_LIFECYCLE_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        {/* ステータスの選択肢はマスタから描画する。
+            停止・削除済（§5.1 停/削）もSNC側からは絞り込んで参照・復旧できる */}
+        <CaseStatusFilterSelect value={status} lifecycleStatuses={CASE_LIFECYCLE_STATUSES} />
         <button className={btnOutline}>検索</button>
       </form>
 

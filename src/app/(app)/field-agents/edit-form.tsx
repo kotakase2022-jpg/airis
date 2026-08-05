@@ -232,14 +232,21 @@ export function FieldApplicationEditForm({
               required={isContractor}
               defaultValue={target.contractorPhone}
               className={`${inputCls} disabled:bg-slate-100 disabled:text-slate-400`}
-              placeholder={isContractor ? "03-0000-0000（半角ハイフンあり）" : "属性が業務委託社員の場合のみ"}
+              placeholder={
+                isContractor ? "03-0000-0000（半角ハイフンあり）" : "属性が業務委託社員の場合のみ"
+              }
             />
           </div>
 
           {/* 稼働開始日 / 稼働終了日（カレンダー選択 §7.4） */}
           <div>
             <label className={labelCls}>稼働開始日</label>
-            <input type="date" name="startDate" defaultValue={target.startDate} className={inputCls} />
+            <input
+              type="date"
+              name="startDate"
+              defaultValue={target.startDate}
+              className={inputCls}
+            />
           </div>
           <div>
             <label className={labelCls}>稼働終了日</label>

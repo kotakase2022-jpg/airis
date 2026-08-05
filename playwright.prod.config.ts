@@ -7,10 +7,7 @@ export default defineConfig({
   workers: 1,
   timeout: 45_000,
   retries: 1,
-  reporter: [
-    ["list"],
-    ["json", { outputFile: "../qa/evidence/prod-smoke-results.json" }],
-  ],
+  reporter: [["list"], ["json", { outputFile: "../qa/evidence/prod-smoke-results.json" }]],
   use: {
     baseURL: "https://airis-nine.vercel.app",
     screenshot: "on",

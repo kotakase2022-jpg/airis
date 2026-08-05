@@ -1,14 +1,7 @@
 // QA担当: ナビゲーション・権限マトリクス（§5.2, §11.1, §13）
 // データプレフィクス: QA1
 import { test, expect } from "@playwright/test";
-import {
-  ACCOUNTS,
-  RoleKey,
-  db,
-  login,
-  collectConsoleErrors,
-  criticalErrors,
-} from "./helpers";
+import { ACCOUNTS, RoleKey, db, login, collectConsoleErrors, criticalErrors } from "./helpers";
 
 // ---------------------------------------------------------------
 // サイドメニュー表示マトリクス（§11.1 の11項目 + 窓口案件）
@@ -30,21 +23,86 @@ const M = {
 
 const EXPECTED_MENU: Record<RoleKey, string[]> = {
   // ①: 11項目すべて（窓口案件は⑦⑩専用のため出ない）
-  R1: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.agencies, M.admin, M.hotline, M.consumerCenter, M.announcements, M.documents],
+  R1: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.agencies,
+    M.admin,
+    M.hotline,
+    M.consumerCenter,
+    M.announcements,
+    M.documents,
+  ],
   // ②: ①と同じ
-  R2: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.agencies, M.admin, M.hotline, M.consumerCenter, M.announcements, M.documents],
+  R2: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.agencies,
+    M.admin,
+    M.hotline,
+    M.consumerCenter,
+    M.announcements,
+    M.documents,
+  ],
   // ③: 管理画面なし（§5.2 Airisアカウント管理=×）
-  R3: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.agencies, M.hotline, M.consumerCenter, M.announcements, M.documents],
+  // ③: 発注者指示（2026-08-05）により管理画面〇（閲覧+リセット代行。§4.2）
+  R3: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.agencies,
+    M.admin,
+    M.hotline,
+    M.consumerCenter,
+    M.announcements,
+    M.documents,
+  ],
   // ④: ダミー表示ページ群 + 申請。窓口2種は×（§5.2）
-  R4: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.agencies, M.admin, M.announcements, M.documents],
+  R4: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.agencies,
+    M.admin,
+    M.announcements,
+    M.documents,
+  ],
   // ⑤: ダッシュボード/申請/ホットライン/ドキュメント
   R5: [M.dashboard, M.accountRequests, M.hotline, M.documents],
   // ⑥: ダッシュボード/申請/消費者センター/ドキュメント
   R6: [M.dashboard, M.accountRequests, M.consumerCenter, M.documents],
   // ⑦: 窓口2つの代わりに統合「窓口案件」（§11.1）
-  R7: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.agencies, M.agencyCases, M.announcements, M.documents],
+  R7: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.agencies,
+    M.agencyCases,
+    M.announcements,
+    M.documents,
+  ],
   // ⑧: 下位代理店なし・窓口なし
-  R8: [M.dashboard, M.accountRequests, M.salesStaff, M.fieldAgents, M.reports, M.announcements, M.documents],
+  R8: [
+    M.dashboard,
+    M.accountRequests,
+    M.salesStaff,
+    M.fieldAgents,
+    M.reports,
+    M.announcements,
+    M.documents,
+  ],
   // ⑨: ダッシュボード/各種資料の提出/お知らせ/ドキュメントのみ
   R9: [M.dashboard, M.reports, M.announcements, M.documents],
   // ⑩: ダッシュボード + 窓口案件のみ
@@ -87,14 +145,78 @@ const ROUTES = [
 // §5.2 + §11.1 準拠の許可マトリクス（④はダミー表示だがアクセス自体は可。
 // /notifications は通知ベル（§3.7）のため全ロール可）
 const ALLOWED: Record<RoleKey, string[]> = {
-  R1: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/agencies", "/admin", "/hotline", "/consumer-center", "/announcements", "/documents", "/notifications"],
-  R2: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/agencies", "/admin", "/hotline", "/consumer-center", "/announcements", "/documents", "/notifications"],
-  R3: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/agencies", "/hotline", "/consumer-center", "/announcements", "/documents", "/notifications"],
-  R4: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/agencies", "/admin", "/announcements", "/documents", "/notifications"],
+  R1: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/agencies",
+    "/admin",
+    "/hotline",
+    "/consumer-center",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
+  R2: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/agencies",
+    "/admin",
+    "/hotline",
+    "/consumer-center",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
+  R3: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/agencies",
+    "/admin", // 発注者指示（2026-08-05）
+    "/hotline",
+    "/consumer-center",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
+  R4: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/agencies",
+    "/admin",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
   R5: ["/account-requests", "/hotline", "/documents", "/notifications"],
   R6: ["/account-requests", "/consumer-center", "/documents", "/notifications"],
-  R7: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/agencies", "/agency-cases", "/announcements", "/documents", "/notifications"],
-  R8: ["/account-requests", "/sales-staff", "/field-agents", "/reports", "/announcements", "/documents", "/notifications"],
+  R7: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/agencies",
+    "/agency-cases",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
+  R8: [
+    "/account-requests",
+    "/sales-staff",
+    "/field-agents",
+    "/reports",
+    "/announcements",
+    "/documents",
+    "/notifications",
+  ],
   R9: ["/reports", "/announcements", "/documents", "/notifications"],
   R10: ["/agency-cases", "/notifications"],
 };
@@ -109,10 +231,10 @@ test.describe("URL直接アクセス権限マトリクス（§5.2）", () => {
       for (const route of ROUTES) {
         await page.goto(route);
         if (allowed.has(route)) {
-          await expect(
-            page,
-            `${role} は ${route} にアクセスできるはず`
-          ).toHaveURL(new RegExp(route.replace(/\//g, "\\/")), { timeout: 15_000 });
+          await expect(page, `${role} は ${route} にアクセスできるはず`).toHaveURL(
+            new RegExp(route.replace(/\//g, "\\/")),
+            { timeout: 15_000 }
+          );
         } else {
           await expect(
             page,
@@ -159,13 +281,15 @@ test.describe("CSVルートのアクセス制御", () => {
     expect(body).toContain("airis_slb_sys_001");
   });
 
-  test("R3: /admin/csv?type=inventory → 403（管理画面は①②のみ §5.2）", async ({ page }) => {
+  // ③は発注者指示（2026-08-05）で管理画面〇のため棚卸CSVも取得できる（§5.1「閲」にR3を追加）
+  test("R3: /admin/csv?type=inventory → 200（管理画面〇。実データのCSV）", async ({ page }) => {
     await login(page, "R3");
     const r = await page.request.get("/admin/csv?type=inventory", { maxRedirects: 0 });
-    expect(r.status()).toBeGreaterThanOrEqual(300);
-    expect(r.status()).toBeLessThan(500);
-    expect(r.status()).not.toBe(200);
-    expect(r.headers()["content-type"] ?? "").not.toContain("csv");
+    expect(r.status()).toBe(200);
+    expect(r.headers()["content-type"] ?? "").toContain("csv");
+    const body = await r.text();
+    expect(body).toContain("ログインID");
+    expect(body).toContain("airis_slb_sys_001"); // 実データ（ダミーではない）
   });
 
   test("R9: /admin/csv?type=audit → 4xx/リダイレクト（CSV本文なし）", async ({ page }) => {

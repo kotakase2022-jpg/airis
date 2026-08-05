@@ -13,7 +13,7 @@
  * 実行効率のため 1ロール = 1テストとし、ログイン1回で全ファイルの可否行列を検証する。
  */
 import { test, expect, Page } from "@playwright/test";
-import { completeMfaIfNeeded, ACCOUNTS, PW_ADMIN, RoleKey, db } from "./helpers";
+import { fieldAgentScope, completeMfaIfNeeded, ACCOUNTS, PW_ADMIN, RoleKey, db } from "./helpers";
 
 const P = "QA14";
 // 403時に本体が1バイトも返っていないことを確認するための共通マーカー
@@ -304,7 +304,12 @@ test.beforeAll(async () => {
       agencyId: null, // SNC内部申請（代理店に紐づかない）
       evidenceFileId: reqSncFile.id,
       status: "pending_final",
-      createdBy: (await d.account.findUniqueOrThrow({ where: { loginId: ACCOUNTS.R3.loginId }, select: { id: true } })).id, // ③が代行作成（本番同様 Account.id を保存）
+      createdBy: (
+        await d.account.findUniqueOrThrow({
+          where: { loginId: ACCOUNTS.R3.loginId },
+          select: { id: true },
+        })
+      ).id, // ③が代行作成（本番同様 Account.id を保存）
       history: [{ event: "requested", at: "2026-08-01", by: ACCOUNTS.R3.loginId }],
     },
   });
@@ -320,7 +325,12 @@ test.beforeAll(async () => {
       agencyId: s1.id, // 210001
       evidenceFileId: reqAgencyFile.id,
       status: "pending_first",
-      createdBy: (await d.account.findUniqueOrThrow({ where: { loginId: ACCOUNTS.R8.loginId }, select: { id: true } })).id, // ⑧が作成（本番同様 Account.id を保存）
+      createdBy: (
+        await d.account.findUniqueOrThrow({
+          where: { loginId: ACCOUNTS.R8.loginId },
+          select: { id: true },
+        })
+      ).id, // ⑧が作成（本番同様 Account.id を保存）
       history: [{ event: "requested", at: "2026-08-01", by: ACCOUNTS.R8.loginId }],
     },
   });
@@ -345,9 +355,11 @@ test.beforeAll(async () => {
     return st;
   };
   const mkApplication = async (salesStaffId: string, pledgeFileId: string, agencyCode1: string) => {
+    const scope = await fieldAgentScope(salesStaffId);
     const app = await d.fieldAgentApplication.create({
       data: {
         salesStaffId,
+        ...scope, // 代理店スコープ列（§3.1）
         applicationType: "稼働",
         products: "マルチ",
         attribute: "社員/契約社員",
@@ -826,7 +838,9 @@ test("未認証のファイル取得は401", async ({ request }) => {
   expect(await res.text()).not.toContain(MARKER);
 });
 
-test("ログイン済みでも存在しないファイルIDは403（存在オラクル対策で403に統一 §10.5）", async ({ page }) => {
+test("ログイン済みでも存在しないファイルIDは403（存在オラクル対策で403に統一 §10.5）", async ({
+  page,
+}) => {
   await loginRole(page, "R2");
   const res = await page.request.get(`/files/${P}-no-such-file-id`);
   expect(res.status()).toBe(403);

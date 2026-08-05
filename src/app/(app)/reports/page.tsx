@@ -18,12 +18,14 @@ import {
   SectionTitle,
   inputCls,
   labelCls,
+  btnPrimary,
   btnOutline,
   btnDanger,
   btnSuccess,
   thCls,
   tdCls,
 } from "@/components/ui";
+import { calcSummaryKpi, monthRange, normalizeDate } from "./kpi";
 import { DailyReportForm, type StaffOption } from "./daily-form";
 import { CsvUpload } from "./csv-upload";
 import { SubmissionForm, SubmissionReplaceForm, type AgencyOption } from "./submission-form";
@@ -152,12 +154,27 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
     const recent = await prisma.dailyReport.findMany({
       where: { salesStaffId: { in: staffIds }, date: { gte: since } },
       select: {
-        salesStaffId: true, date: true, type: true, area: true,
-        forecastAcq: true, acquisitions: true, workers: true, visits: true,
-        meetings: true, negotiations: true, contracts: true,
-        forecastHours: true, forecastEntries: true, actualHours: true,
-        entries: true, appointments: true, closePassed: true, preConfirmPassed: true,
-        activityContent: true, activityResult: true, notes: true,
+        salesStaffId: true,
+        date: true,
+        type: true,
+        area: true,
+        forecastAcq: true,
+        acquisitions: true,
+        workers: true,
+        visits: true,
+        meetings: true,
+        negotiations: true,
+        contracts: true,
+        forecastHours: true,
+        forecastEntries: true,
+        actualHours: true,
+        entries: true,
+        appointments: true,
+        closePassed: true,
+        preConfirmPassed: true,
+        activityContent: true,
+        activityResult: true,
+        notes: true,
       },
     });
     for (const r of recent) {
@@ -232,7 +249,9 @@ async function DailyTab({ user, scope }: { user: User; scope: string[] | null })
           </a>
         </div>
         {user.dummy ? (
-          <p className="text-sm text-slate-400">閲覧専用アカウントのためCSVアップロードは利用できません。</p>
+          <p className="text-sm text-slate-400">
+            閲覧専用アカウントのためCSVアップロードは利用できません。
+          </p>
         ) : (
           <CsvUpload />
         )}
@@ -419,7 +438,12 @@ async function SubmissionsTab({
           right={
             <form className="flex items-center gap-2">
               <input type="hidden" name="tab" value="submissions" />
-              <input type="month" name="month" defaultValue={statusMonth} className={inputCls + " w-40"} />
+              <input
+                type="month"
+                name="month"
+                defaultValue={statusMonth}
+                className={inputCls + " w-40"}
+              />
               <button className={btnOutline}>表示</button>
             </form>
           }
@@ -449,7 +473,9 @@ async function SubmissionsTab({
                         <div className="text-xs text-slate-400">{a.code}</div>
                       </td>
                       <td className={tdCls}>
-                        <Badge tone={done.size === 6 ? "green" : done.size === 0 ? "gray" : "yellow"}>
+                        <Badge
+                          tone={done.size === 6 ? "green" : done.size === 0 ? "gray" : "yellow"}
+                        >
                           {done.size} / 6
                         </Badge>
                       </td>
@@ -526,7 +552,12 @@ async function SubmissionsTab({
           </div>
           <div>
             <label className={labelCls}>対象月</label>
-            <input type="month" name="fmonth" defaultValue={fmonthFilter} className={inputCls + " w-40"} />
+            <input
+              type="month"
+              name="fmonth"
+              defaultValue={fmonthFilter}
+              className={inputCls + " w-40"}
+            />
           </div>
           <button className={btnOutline}>絞り込み</button>
         </form>
@@ -633,64 +664,96 @@ async function SubmissionsTab({
 // タブ3: 集計・実績確認
 // ---------------------------------------------------------------------------
 
-async function SummaryTab({
-  user,
-  scope,
-  p,
-}: {
-  user: User;
-  scope: string[] | null;
-  p: Params;
-}) {
-  const month = today().slice(0, 7);
+async function SummaryTab({ user, scope, p }: { user: User; scope: string[] | null; p: Params }) {
+  // 期間フィルタの既定値は当月（§7.5 集計・実績確認）
+  const defaultRange = monthRange(today().slice(0, 7));
 
-  // R9は自分の日報のみ（§3.1）
-  let ownStaffId: string | null = null;
-  if (user.role === "R9") {
+  // ⑨（販売員）は §5.1 で日報の「閲」を持たない（「提（自己修正可）」のみ）ため、集計対象は自分の日報だけ
+  // に固定する（販売員フィルタは自分固定。§7.5 / S5-040）。ロール直書きせず can() で判定する（§3.2）。
+  // ④（SNC閲覧）はダミー代理店のデータ閲覧で販売員に紐づかないため、この固定の対象外（§3.5）。
+  const ownReportsOnly = !user.dummy && !can(user.role, "daily-report", "view");
+  let ownStaff: { id: string; label: string } | null = null;
+  if (ownReportsOnly) {
     const staff = await prisma.salesStaff.findUnique({ where: { accountId: user.id } });
-    ownStaffId = staff?.id ?? null;
+    if (staff)
+      ownStaff = {
+        id: staff.id,
+        label: `${staff.salesId ?? "-"} ${staff.lastName}${staff.firstName}`,
+      };
   }
+
+  // ---- フィルタ（期間・代理店・販売員。S5-038 / S5-039 / S5-040）----
+  // UI（選択肢）で絞るだけでなく、ここ（サーバ側の描画）でも値を再検証する（§3.2 認可は両層で）。
+  // 不正な日付・スコープ外のIDは無視し、既定（当月・スコープ全体）へフォールバックする。
+  const from = normalizeDate(p.from) ?? defaultRange.from;
+  const to = normalizeDate(p.to) ?? defaultRange.to;
+
+  // 代理店フィルタの選択肢はデータスコープ内のみ（§3.1 agencyScope）
+  const agencies = await prisma.agency.findMany({
+    where: scope ? { id: { in: scope } } : { isDummy: false },
+    orderBy: [{ tier: "asc" }, { code: "asc" }],
+    take: 300,
+  });
+  let agencyFilter = p.agency ?? "";
+  if (agencyFilter && !agencies.some((a) => a.id === agencyFilter)) agencyFilter = "";
+
+  // 販売員フィルタの選択肢もスコープ内（代理店フィルタ選択時はさらにその代理店内）に限定する。
+  // 過去に稼働していた販売員の日報も集計対象になるためステータスでは絞らない（販売員IDありのみ）。
+  const staffList = ownReportsOnly
+    ? []
+    : await prisma.salesStaff.findMany({
+        where: {
+          ...(scope ? { agencyId: { in: scope } } : {}),
+          ...(agencyFilter ? { agencyId: agencyFilter } : {}),
+          salesId: { not: null },
+        },
+        include: { agency: true },
+        orderBy: { salesId: "asc" },
+        take: 500, // TODO: 販売員が500名を超える場合は検索付きセレクトに改善する（速度優先の割り切り）
+      });
+  let staffFilter = ownReportsOnly ? "" : (p.staff ?? "");
+  if (staffFilter && !staffList.some((s) => s.id === staffFilter)) staffFilter = "";
+
   const reportWhere: Prisma.DailyReportWhereInput = {
     ...(scope ? { agencyId: { in: scope } } : {}),
-    ...(user.role === "R9" ? { salesStaffId: ownStaffId ?? "__none__" } : {}),
-  };
-  const monthReportWhere: Prisma.DailyReportWhereInput = {
-    ...reportWhere,
-    date: { startsWith: month },
+    // agencyFilter はスコープ内の選択肢であることを検証済みのため、scope の in 条件より狭い絞り込みとして上書きしてよい
+    ...(agencyFilter ? { agencyId: agencyFilter } : {}),
+    ...(ownReportsOnly
+      ? { salesStaffId: ownStaff?.id ?? "__none__" }
+      : staffFilter
+        ? { salesStaffId: staffFilter }
+        : {}),
+    // date は YYYY-MM-DD の文字列カラムのため辞書順比較で期間指定できる
+    date: { gte: from, lte: to },
   };
 
+  // 稼働提出物の対象月（YYYY-MM）は期間の開始月〜終了月で絞る（§7.6）
   const subWhere: Prisma.SubmissionWhereInput = {
-    targetMonth: month,
+    targetMonth: { gte: from.slice(0, 7), lte: to.slice(0, 7) },
     ...(scope ? { submitterAgencyId: { in: scope } } : {}),
+    ...(agencyFilter ? { submitterAgencyId: agencyFilter } : {}),
   };
+  // ⑨は稼働提出物の権限が無いため0扱い（§5.2）。④はダミーデータの閲覧を続ける（§3.5）。
+  const canViewSubmissions = user.dummy || can(user.role, "submission", "view");
 
-  const [reportCount, agg, subCount, approvedCount] = await Promise.all([
-    prisma.dailyReport.count({ where: monthReportWhere }),
-    prisma.dailyReport.aggregate({
-      where: monthReportWhere,
-      _sum: { acquisitions: true, workers: true, negotiations: true, contracts: true, closePassed: true },
-    }),
-    // R9には稼働提出物の権限がないため0扱い（§5.2）
-    user.role === "R9" ? Promise.resolve(0) : prisma.submission.count({ where: subWhere }),
-    user.role === "R9"
-      ? Promise.resolve(0)
-      : prisma.submission.count({ where: { ...subWhere, status: "approved" } }),
-  ]);
-
-  const acq = agg._sum.acquisitions ?? 0;
-  const closePassed = agg._sum.closePassed ?? 0;
-  const workers = agg._sum.workers ?? 0;
-  const negotiations = agg._sum.negotiations ?? 0;
-  const contracts = agg._sum.contracts ?? 0;
-  // TODO: 「獲得/成果数」は暫定で 訪販の獲得計+テレマのクローズ通過計 を採用（定義確認要）
-  const results = acq + closePassed;
-  const productivity = workers ? Math.round((acq / workers) * 10) / 10 : 0;
-  const closeRate = negotiations ? `${Math.round((contracts / negotiations) * 1000) / 10}%` : "0%";
-
-  // 日報レコードリスト（50件/頁）
+  // 日報レコードリストは50件/頁。KPIカードと同一のフィルタ条件で集計するため件数は共用する。
   const page = Math.max(1, Number(p.page ?? "1") || 1);
-  const [recordTotal, records] = await Promise.all([
+  const [reportCount, agg, subCount, approvedCount, records] = await Promise.all([
     prisma.dailyReport.count({ where: reportWhere }),
+    prisma.dailyReport.aggregate({
+      where: reportWhere,
+      _sum: {
+        acquisitions: true,
+        workers: true,
+        negotiations: true,
+        contracts: true,
+        closePassed: true,
+      },
+    }),
+    canViewSubmissions ? prisma.submission.count({ where: subWhere }) : Promise.resolve(0),
+    canViewSubmissions
+      ? prisma.submission.count({ where: { ...subWhere, status: "approved" } })
+      : Promise.resolve(0),
     prisma.dailyReport.findMany({
       where: reportWhere,
       include: { salesStaff: true, agency: true },
@@ -700,22 +763,94 @@ async function SummaryTab({
     }),
   ]);
 
-  const canDeleteDaily =
-    !user.dummy && (SNC_ADMIN.includes(user.role) || user.role === "R7" || user.role === "R8");
+  // KPIカード6枚の計算は純粋関数へ集約（分母0は「0」表示 §7.5。tests/unit/kpi.test.ts で検証）
+  const kpi = calcSummaryKpi({
+    reportCount,
+    acquisitions: agg._sum.acquisitions ?? 0,
+    closePassed: agg._sum.closePassed ?? 0,
+    workers: agg._sum.workers ?? 0,
+    negotiations: agg._sum.negotiations ?? 0,
+    contracts: agg._sum.contracts ?? 0,
+    submissionCount: subCount,
+    approvedCount,
+  });
+
+  // 削除は権限保有者のみ（§7.5。§5.1 日報提出「削」= ①②③⑦⑧。スコープは reportWhere で担保）
+  const canDeleteDaily = !user.dummy && can(user.role, "daily-report", "delete");
+
+  // ページ送りでフィルタ条件を維持する（S5-038〜040）
+  const baseParams: Params = { tab: "summary", from, to };
+  if (agencyFilter) baseParams.agency = agencyFilter;
+  if (staffFilter) baseParams.staff = staffFilter;
 
   return (
     <div>
       <InfoBanner>日報と提出物の集計です。CSV由来／入力由来の指標を確認できます。</InfoBanner>
 
+      <Card className="mb-5">
+        <SectionTitle>絞り込み</SectionTitle>
+        <form method="get" action="/reports" className="flex flex-wrap items-end gap-3">
+          <input type="hidden" name="tab" value="summary" />
+          <div>
+            <label className={labelCls}>開始日</label>
+            <input type="date" name="from" defaultValue={from} className={inputCls + " w-40"} />
+          </div>
+          <div>
+            <label className={labelCls}>終了日</label>
+            <input type="date" name="to" defaultValue={to} className={inputCls + " w-40"} />
+          </div>
+          <div>
+            <label className={labelCls}>代理店</label>
+            <select name="agency" defaultValue={agencyFilter} className={inputCls + " w-56"}>
+              <option value="">すべて</option>
+              {agencies.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}（{a.code}）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={labelCls}>販売員</label>
+            {ownReportsOnly ? (
+              // ⑨は自分固定（§7.5）。値を送信させないため name を付けず、表示のみ行う
+              <input
+                defaultValue={ownStaff ? ownStaff.label : "-"}
+                disabled
+                className={inputCls + " w-56"}
+              />
+            ) : (
+              <select name="staff" defaultValue={staffFilter} className={inputCls + " w-56"}>
+                <option value="">すべて</option>
+                {staffList.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.salesId} {s.lastName}
+                    {s.firstName}（{s.agency.name}）
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+          <button className={btnPrimary}>絞り込み</button>
+        </form>
+        {ownReportsOnly && (
+          <p className="mt-2 text-xs text-slate-400">
+            ※販売員は自分固定です（自分の日報のみ集計されます）。
+          </p>
+        )}
+      </Card>
+
       <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
-        <StatCard value={reportCount} label="日報件数" tone="blue" />
-        <StatCard value={results} label="獲得/成果数" tone="green" />
-        <StatCard value={productivity} label="生産性" tone="purple" />
-        <StatCard value={closeRate} label="成約率" tone="orange" />
-        <StatCard value={subCount} label="提出物" tone="blue" />
-        <StatCard value={approvedCount} label="最終承認済み" tone="green" />
+        <StatCard value={kpi.reportCount} label="日報件数" tone="blue" />
+        <StatCard value={kpi.results} label="獲得/成果数" tone="green" />
+        <StatCard value={kpi.productivity} label="生産性" tone="purple" />
+        <StatCard value={kpi.closeRate} label="成約率" tone="orange" />
+        <StatCard value={kpi.submissionCount} label="提出物" tone="blue" />
+        <StatCard value={kpi.approvedCount} label="最終承認済み" tone="green" />
       </div>
-      <p className="-mt-3 mb-4 text-xs text-slate-400">※スコープ内・当月（{month}）の集計です。</p>
+      <p className="-mt-3 mb-4 text-xs text-slate-400">
+        ※スコープ内・{from} 〜 {to} の集計です。
+      </p>
 
       <Card>
         <SectionTitle>日報レコード</SectionTitle>
@@ -755,7 +890,7 @@ async function SummaryTab({
                       </Badge>
                     </td>
                     <td className={tdCls}>
-                      {r.type === "訪販" ? r.acquisitions ?? 0 : r.closePassed ?? 0}
+                      {r.type === "訪販" ? (r.acquisitions ?? 0) : (r.closePassed ?? 0)}
                     </td>
                     <td className={tdCls}>
                       <span className="text-xs text-slate-400">
@@ -776,7 +911,7 @@ async function SummaryTab({
             </table>
           </div>
         )}
-        <Pager page={page} total={recordTotal} params={{ tab: "summary" }} />
+        <Pager page={page} total={reportCount} params={baseParams} />
       </Card>
     </div>
   );
@@ -788,7 +923,8 @@ async function SummaryTab({
 
 function Pager({ page, total, params }: { page: number; total: number; params: Params }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const qs = (n: number) => "/reports?" + new URLSearchParams({ ...params, page: String(n) }).toString();
+  const qs = (n: number) =>
+    "/reports?" + new URLSearchParams({ ...params, page: String(n) }).toString();
   return (
     <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
       <span>

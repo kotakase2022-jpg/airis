@@ -30,7 +30,9 @@ export function RowActions({
         </div>
         <div>
           一時パスワード:{" "}
-          <span className="select-all break-all font-mono font-semibold">{finalState.tempPassword}</span>
+          <span className="font-mono font-semibold break-all select-all">
+            {finalState.tempPassword}
+          </span>
         </div>
         <div className="mt-1 text-[10px] leading-relaxed text-emerald-600">
           この一時パスワードは今回のみ表示されます。安全な方法で利用者本人へ伝達してください。

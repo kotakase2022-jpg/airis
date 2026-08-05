@@ -48,7 +48,10 @@ export default async function NotificationsPage() {
                 </div>
                 {n.body && <p className="mt-1 text-xs text-slate-500">{n.body}</p>}
                 {n.link && (
-                  <Link href={n.link} className="mt-1 inline-block text-xs text-blue-600 hover:underline">
+                  <Link
+                    href={n.link}
+                    className="mt-1 inline-block text-xs text-blue-600 hover:underline"
+                  >
                     詳細を見る →
                   </Link>
                 )}

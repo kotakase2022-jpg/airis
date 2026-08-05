@@ -218,7 +218,9 @@ test("販売員ID編集: R2が氏名・生年月日・電話・メールを更�
   expect(criticalErrors(errors)).toEqual([]);
 });
 
-test("販売員ID編集: R7は自店配下（210001）を編集できる（⑦は自店配下のみ §14-11）", async ({ page }) => {
+test("販売員ID編集: R7は自店配下（210001）を編集できる（⑦は自店配下のみ §14-11）", async ({
+  page,
+}) => {
   test.setTimeout(60_000);
   const lastName = P("配下編集");
   const staff = await mkStaff({ lastName, agencyCode: "210001" });

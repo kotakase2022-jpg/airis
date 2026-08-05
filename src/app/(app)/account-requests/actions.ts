@@ -88,8 +88,10 @@ export async function createRequestAction(
     if (!agencyIdInput) return { error: "所属代理店を選択してください" };
     const agency = await prisma.agency.findUnique({ where: { id: agencyIdInput } });
     if (!agency) return { error: "所属代理店が見つかりません" };
-    if (role === "R7" && agency.tier !== 1) return { error: "一次代理店管理者には1次代理店を選択してください" };
-    if (role === "R8" && agency.tier !== 2) return { error: "二次代理店管理者には2次代理店を選択してください" };
+    if (role === "R7" && agency.tier !== 1)
+      return { error: "一次代理店管理者には1次代理店を選択してください" };
+    if (role === "R8" && agency.tier !== 2)
+      return { error: "二次代理店管理者には2次代理店を選択してください" };
     if (!user.isDummy && agency.isDummy) return { error: "所属代理店が不正です" };
     // 代理店スコープ検証（§3.1）: クライアント由来のIDを信用しない
     const scope = await agencyScope(user);
@@ -181,10 +183,7 @@ export async function firstApproveAction(
 // ---------------------------------------------------------------------------
 
 // loginId 自動採番のプレフィックス（§4 / 指示のID体系）
-function loginPrefix(
-  role: string,
-  agency: { code: string; tier: number } | null
-): string | null {
+function loginPrefix(role: string, agency: { code: string; tier: number } | null): string | null {
   switch (role) {
     case "R1":
       return "airis_slb_sys_";
@@ -301,10 +300,16 @@ export async function finalApproveAction(
     });
   } catch {
     await audit(user.loginId, "account_request_final_approve", req.requestId, "failure");
-    return { error: "承認処理が競合したため中断しました。一覧を再読み込みして状態を確認してください" };
+    return {
+      error: "承認処理が競合したため中断しました。一覧を再読み込みして状態を確認してください",
+    };
   }
 
-  await audit(user.loginId, "account_request_final_approve", `${req.requestId} -> ${issuedLoginId}`);
+  await audit(
+    user.loginId,
+    "account_request_final_approve",
+    `${req.requestId} -> ${issuedLoginId}`
+  );
   if (req.createdBy) {
     await notify(
       req.createdBy,
@@ -320,10 +325,7 @@ export async function finalApproveAction(
 // ---------------------------------------------------------------------------
 // 却下（①②③は全承認待ち、⑦はpending_firstのみ）
 // ---------------------------------------------------------------------------
-export async function rejectAction(
-  _prev: ActionState,
-  formData: FormData
-): Promise<ActionState> {
+export async function rejectAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const user = await requirePage("account-requests");
   if (user.dummy) return { error: "閲覧専用アカウントのため操作できません" };
 

@@ -18,14 +18,19 @@ export function parseCsv(text: string): string[][] {
     const c = clean[i];
     if (inQuotes) {
       if (c === '"') {
-        if (clean[i + 1] === '"') { cur += '"'; i++; }
-        else inQuotes = false;
+        if (clean[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else inQuotes = false;
       } else cur += c;
     } else if (c === '"') inQuotes = true;
-    else if (c === ",") { row.push(cur); cur = ""; }
-    else if (c === "\n" || c === "\r") {
+    else if (c === ",") {
+      row.push(cur);
+      cur = "";
+    } else if (c === "\n" || c === "\r") {
       if (c === "\r" && clean[i + 1] === "\n") i++;
-      row.push(cur); cur = "";
+      row.push(cur);
+      cur = "";
       if (row.some((x) => x !== "")) rows.push(row);
       row = [];
     } else cur += c;

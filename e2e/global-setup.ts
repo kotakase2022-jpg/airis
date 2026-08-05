@@ -6,7 +6,8 @@ import { ACCOUNTS, TEST_MFA_SECRET } from "./helpers";
 
 export default async function globalSetup() {
   const db = new PrismaClient({
-    datasourceUrl: "postgresql://postgres:postgres@localhost:5433/airis",
+    datasourceUrl:
+      process.env.QA_DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5433/airis",
   });
   const loginIds = Object.values(ACCOUNTS).map((a) => a.loginId);
   await db.account.updateMany({

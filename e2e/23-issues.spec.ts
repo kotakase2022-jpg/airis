@@ -16,7 +16,9 @@ test("日報: 提出済みの日付を選ぶと既存値が読み込まれ、1�
   test.setTimeout(90_000);
   const DATE = "2026-08-21"; // シード日報（月初2日）や他テストと衝突しない日付
   const staff = await db().salesStaff.findFirst({ where: { salesId: "110001C001" } });
-  await db().dailyReport.deleteMany({ where: { salesStaffId: staff!.id, date: DATE, type: "訪販" } });
+  await db().dailyReport.deleteMany({
+    where: { salesStaffId: staff!.id, date: DATE, type: "訪販" },
+  });
 
   await login(page, "R9");
   await page.goto("/reports");
@@ -60,7 +62,9 @@ test("日報: 提出済みの日付を選ぶと既存値が読み込まれ、1�
   expect(rec?.negotiations).toBe(6);
   expect(rec?.area).toBe(`QA23エリア${RUN}`);
 
-  await db().dailyReport.deleteMany({ where: { salesStaffId: staff!.id, date: DATE, type: "訪販" } });
+  await db().dailyReport.deleteMany({
+    where: { salesStaffId: staff!.id, date: DATE, type: "訪販" },
+  });
 });
 
 // ================================================================

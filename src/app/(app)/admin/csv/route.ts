@@ -1,16 +1,20 @@
 import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCurrentUser, isAdminIpAllowed } from "@/lib/auth";
+import { getCurrentUser } from "@/lib/auth";
 import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, Role, canAccess } from "@/lib/roles";
 import { can } from "@/lib/permissions";
 import { csvResponse, toCsv } from "@/lib/csv";
 import { audit, today } from "@/lib/util";
+import { isAdminIpAllowedFromSettings } from "@/lib/settings";
+import {
+  ERASURE_ACTIONS,
+  ERASURE_CSV_HEADERS,
+  erasureCsvRows,
+  toErasureReports,
+} from "@/lib/erasure";
 
 function jst(d: Date, len: number): string {
-  return new Date(d.getTime() + 9 * 3600 * 1000)
-    .toISOString()
-    .slice(0, len)
-    .replace("T", " ");
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, len).replace("T", " ");
 }
 
 // 管理画面CSVエクスポート
@@ -26,8 +30,11 @@ export async function GET(req: NextRequest) {
     await audit(user.loginId, "csv_export", "admin", "denied");
     return new Response("Forbidden", { status: 403 });
   }
-  // 管理系エンドポイントのIP許可リスト（§10.1）。ページ（/admin）と同じ制御を必ず適用する
-  const ipCheck = await isAdminIpAllowed();
+  // 管理系エンドポイントのIP許可リスト（§10.1）。ページ（/admin）と同じ制御を必ず適用する。
+  // 判定は設定テーブル対応版（DB → 環境変数 → 既定値）を使う。DBに値が無い場合は
+  // 従来どおり環境変数 ADMIN_IP_ALLOWLIST を見るので既存環境と互換
+  // （src/lib/auth.ts の isAdminIpAllowed() 側の参照差し替えは統合担当が行う）。
+  const ipCheck = await isAdminIpAllowedFromSettings();
   if (!ipCheck.allowed) {
     await audit(user.loginId, "csv_export", `admin ip=${ipCheck.ip} (allowlist)`, "denied");
     return new Response("Forbidden", { status: 403 });
@@ -54,6 +61,25 @@ export async function GET(req: NextRequest) {
     return csvResponse(`アクセスログ_${today()}.csv`, csv);
   }
 
+  if (type === "erasure") {
+    // 削除完了レポートCSV（§10.3 / SEC要件②#31。削除証明用）:
+    // 対象件数・データ種別・実行日時・実行者を、削除操作の監査ログ（append-only §10.4）から復元する。
+    // ?id=<監査ログID> で1回の削除実行分だけを出力できる。
+    const id = req.nextUrl.searchParams.get("id");
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        action: { in: [ERASURE_ACTIONS.agency, ERASURE_ACTIONS.pii] },
+        result: "success",
+        ...(id ? { id } : {}),
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true, actor: true, action: true, target: true, createdAt: true },
+    });
+    const csv = toCsv(ERASURE_CSV_HEADERS, erasureCsvRows(toErasureReports(logs)));
+    await audit(user.loginId, "csv_export", "erasure_reports"); // CSV出力自体も監査対象（§3.6）
+    return csvResponse(`削除完了レポート_${today()}.csv`, csv);
+  }
+
   if (type === "audit") {
     // 監査ログCSV（全件）
     const logs = await prisma.auditLog.findMany({ orderBy: { createdAt: "desc" } });
@@ -73,7 +99,17 @@ export async function GET(req: NextRequest) {
   });
   const csv = toCsv(
     // 削除日時（§3.4 論理削除・1年保持）を含める（検収指摘 問題一覧No.10）
-    ["ログインID", "ロール", "氏名", "メール", "所属代理店コード", "ステータス", "作成日", "最終PW変更日", "削除日時"],
+    [
+      "ログインID",
+      "ロール",
+      "氏名",
+      "メール",
+      "所属代理店コード",
+      "ステータス",
+      "作成日",
+      "最終PW変更日",
+      "削除日時",
+    ],
     accounts.map((a) => [
       a.loginId,
       ROLE_LABELS[a.role as Role] ?? a.role,

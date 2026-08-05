@@ -3,6 +3,7 @@ import { Paperclip } from "lucide-react";
 import { requirePage } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { SNC_ADMIN_ROLES, ROLE_LABELS, type Role } from "@/lib/roles";
+import { announcementFeature, can } from "@/lib/permissions";
 import {
   Card,
   Badge,
@@ -59,7 +60,7 @@ export default async function AnnouncementsPage({
   const isAdmin = !user.dummy && SNC_ADMIN_ROLES.includes(user.role);
 
   if (isAdmin) {
-    return <AdminView page={page} />;
+    return <AdminView page={page} role={user.role} />;
   }
   return <ViewerView page={page} userId={user.id} role={user.role} dummy={user.dummy} />;
 }
@@ -67,7 +68,7 @@ export default async function AnnouncementsPage({
 // ─────────────────────────────────────────────
 // SNC管理側（①②③）: 作成・送信・停止・削除・既読率
 // ─────────────────────────────────────────────
-async function AdminView({ page }: { page: number }) {
+async function AdminView({ page, role }: { page: number; role: Role }) {
   // 実データのみ（④ダミー表示用データは isDummy=true で分離 §3.5）
   const where = { status: { not: "deleted" }, isDummy: false };
   const [total, importantCount, stoppedCount, announcements] = await Promise.all([
@@ -155,7 +156,9 @@ async function AdminView({ page }: { page: number }) {
               <tbody>
                 {announcements.map((a) => {
                   const targetList = a.important
-                    ? targets.filter((t) => audienceTargetRoles(a.audience).includes(t.role as Role))
+                    ? targets.filter((t) =>
+                        audienceTargetRoles(a.audience).includes(t.role as Role)
+                      )
                     : [];
                   const readSet = readMap.get(a.id) ?? new Set<string>();
                   const readCount = targetList.filter((t) => readSet.has(t.id)).length;
@@ -191,7 +194,11 @@ async function AdminView({ page }: { page: number }) {
                               {readCount} / {targetList.length}
                             </span>
                             <span className="ml-1 text-xs text-slate-500">
-                              （{targetList.length === 0 ? 0 : Math.round((readCount / targetList.length) * 100)}%）
+                              （
+                              {targetList.length === 0
+                                ? 0
+                                : Math.round((readCount / targetList.length) * 100)}
+                              %）
                             </span>
                             {unreadList.length > 0 && (
                               <details className="mt-1">
@@ -222,9 +229,14 @@ async function AdminView({ page }: { page: number }) {
                               important={a.important}
                             />
                           )}
-                          {/* 送信・停止・削除は結果状態（権限不足・状態不整合・DB例外）を
-                              その場で表示するクライアントコンポーネントに委譲する（§3.2） */}
-                          <AnnouncementRowActions id={a.id} status={a.status} />
+                          {/* 複製・送信・停止・削除は結果状態（権限不足・状態不整合・DB例外）を
+                              その場で表示するクライアントコンポーネントに委譲する（§3.2）。
+                              複製作成の可否は宛先チャネル別の登録権（§5.1）で判定する（§7.7） */}
+                          <AnnouncementRowActions
+                            id={a.id}
+                            status={a.status}
+                            canCreate={can(role, announcementFeature(a.audience), "create")}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -280,9 +292,7 @@ async function ViewerView({
     <div>
       <PageHeader title="お知らせ" />
       {dummy && (
-        <InfoBanner>
-          SNC閲覧アカウントのため読み取り専用です。既読は記録されません。
-        </InfoBanner>
+        <InfoBanner>SNC閲覧アカウントのため読み取り専用です。既読は記録されません。</InfoBanner>
       )}
       <div className="mb-5 grid grid-cols-3 gap-4">
         <StatCard value={total} label="お知らせ件数" tone="blue" />
@@ -329,9 +339,12 @@ async function ViewerView({
                       {a.title}
                     </Link>
                     {attachments.length > 0 && (
-                      <span className="inline-flex items-center gap-0.5 text-xs text-slate-400"><Paperclip className="h-3 w-3" />{attachments.length}</span>
+                      <span className="inline-flex items-center gap-0.5 text-xs text-slate-400">
+                        <Paperclip className="h-3 w-3" />
+                        {attachments.length}
+                      </span>
                     )}
-                    <span className="ml-auto whitespace-nowrap text-xs text-slate-400">
+                    <span className="ml-auto text-xs whitespace-nowrap text-slate-400">
                       {fmtJst(a.sentAt)}
                     </span>
                   </div>

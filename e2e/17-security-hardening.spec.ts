@@ -317,9 +317,7 @@ test.describe("§3.1 AccountRequest の RLS", () => {
           select: { requestId: true },
         });
       });
-      expect(bypass.map((r) => r.requestId).sort()).toEqual(
-        [agencyRequestId, sncRequestId].sort()
-      );
+      expect(bypass.map((r) => r.requestId).sort()).toEqual([agencyRequestId, sncRequestId].sort());
 
       // 5) コンテキスト無しでは書き込みもできない（WITH CHECK / fail-closed）
       await expect(

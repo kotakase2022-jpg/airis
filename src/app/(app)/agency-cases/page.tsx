@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { requirePage, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { CASE_STATUSES } from "@/lib/roles";
+import { CaseStatusFilterSelect } from "@/components/cases/status-filter";
 import { InfoBanner, PageHeader, btnOutline, inputCls } from "@/components/ui";
 import { CaseCardData, CaseCardList, Pagination } from "@/components/cases/case-card";
 
@@ -82,14 +82,8 @@ export default async function AgencyCasesPage({
           placeholder="案件ID・件名・代理店で検索"
           className={`${inputCls} max-w-xs`}
         />
-        <select name="status" defaultValue={status} className={`${inputCls} w-48`}>
-          <option value="">すべてのステータス</option>
-          {CASE_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
+        {/* ステータスの選択肢はマスタ（StatusMaster kind="case"）から描画する（§7.8） */}
+        <CaseStatusFilterSelect value={status} />
         <button className={btnOutline}>検索</button>
       </form>
 

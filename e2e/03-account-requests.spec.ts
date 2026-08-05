@@ -3,7 +3,8 @@
  * データプレフィクス: QA2
  */
 import { test, expect, Page, Locator } from "@playwright/test";
-import { completeMfaIfNeeded,
+import {
+  completeMfaIfNeeded,
   ACCOUNTS,
   db,
   login,
@@ -30,9 +31,7 @@ async function statValue(page: Page, label: string): Promise<number> {
 async function openRequestForm(page: Page) {
   await page.goto("/account-requests");
   await page.getByRole("button", { name: "＋ アカウント申請" }).click();
-  await expect(
-    page.getByRole("heading", { name: "アカウント申請", exact: true })
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "アカウント申請", exact: true })).toBeVisible();
 }
 
 async function roleOptionValues(page: Page): Promise<string[]> {
@@ -42,7 +41,9 @@ async function roleOptionValues(page: Page): Promise<string[]> {
 }
 
 test.describe("Airisアカウント申請ページ（§7.2）", () => {
-  test("R2: 証跡ファイルは必須（未添付はサーバ側でもエラーになりDBに作成されない）", async ({ page }) => {
+  test("R2: 証跡ファイルは必須（未添付はサーバ側でもエラーになりDBに作成されない）", async ({
+    page,
+  }) => {
     await login(page, "R2");
     await openRequestForm(page);
 
@@ -59,16 +60,18 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
       document.querySelector('input[name="evidence"]')?.removeAttribute("required")
     );
     await page.getByRole("button", { name: "申請する" }).click();
-    await expect(
-      page.getByText("上長承認証跡ファイルを添付してください")
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("上長承認証跡ファイルを添付してください")).toBeVisible({
+      timeout: 10_000,
+    });
 
     // DBに申請が作成されていない
     const req = await db().accountRequest.findFirst({ where: { email } });
     expect(req).toBeNull();
   });
 
-  test("R2: 証跡を添付して申請→一覧に「承認待ち」表示→DBにpending_finalで保存（コンソールエラー0）", async ({ page }) => {
+  test("R2: 証跡を添付して申請→一覧に「承認待ち」表示→DBにpending_finalで保存（コンソールエラー0）", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     await login(page, "R2");
     await openRequestForm(page);
@@ -80,9 +83,9 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
     await page.locator('input[name="email"]').fill(email);
     await page.locator('input[name="evidence"]').setInputFiles(EVIDENCE);
     await page.getByRole("button", { name: "申請する" }).click();
-    await expect(
-      page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)).toBeVisible({
+      timeout: 10_000,
+    });
 
     // DB: AccountRequest(pending_final) + 証跡ファイル + 履歴 requested
     const req = await db().accountRequest.findFirst({ where: { email } });
@@ -97,7 +100,11 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
 
     // 監査ログ（§3.3）: account_request_create
     const auditRow = await db().auditLog.findFirst({
-      where: { actor: ACCOUNTS.R2.loginId, action: "account_request_create", target: req!.requestId },
+      where: {
+        actor: ACCOUNTS.R2.loginId,
+        action: "account_request_create",
+        target: req!.requestId,
+      },
     });
     expect(auditRow).not.toBeNull();
 
@@ -125,9 +132,9 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
     await page.locator('input[name="email"]').fill(email);
     await page.locator('input[name="evidence"]').setInputFiles(EVIDENCE);
     await page.getByRole("button", { name: "申請する" }).click();
-    await expect(
-      page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)).toBeVisible({
+      timeout: 10_000,
+    });
 
     const req = await db().accountRequest.findFirst({ where: { email } });
     const history = req!.history as { event: string; at: string }[];
@@ -140,35 +147,21 @@ test.describe("Airisアカウント申請ページ（§7.2）", () => {
     await login(page, "R5");
     await openRequestForm(page);
     expect(await roleOptionValues(page)).toEqual(["R5"]);
-    await expect(page.locator('select[name="role"] option')).toHaveText([
-      /⑤/,
-    ]);
+    await expect(page.locator('select[name="role"] option')).toHaveText([/⑤/]);
   });
 
   test("§6.1 申請可能ロール制限: R7のフォームには⑦⑧のみ", async ({ page }) => {
     await login(page, "R7");
     await openRequestForm(page);
     expect(await roleOptionValues(page)).toEqual(["R7", "R8"]);
-    await expect(page.locator('select[name="role"] option')).toHaveText([
-      /⑦/,
-      /⑧/,
-    ]);
+    await expect(page.locator('select[name="role"] option')).toHaveText([/⑦/, /⑧/]);
   });
 
   // 発注者指示 2026-08-05: ②は②〜⑩を申請できるが①（サスラボシステム管理）は申請できない
   test("②の申請可能ロールは②〜⑩（①は選べない）", async ({ page }) => {
     await login(page, "R2");
     await openRequestForm(page);
-    expect(await roleOptionValues(page)).toEqual([
-      "R2",
-      "R3",
-      "R4",
-      "R5",
-      "R6",
-      "R7",
-      "R8",
-      "R10",
-    ]);
+    expect(await roleOptionValues(page)).toEqual(["R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"]);
     await expect(page.locator('select[name="role"] option')).not.toHaveText([/①/]);
   });
 
@@ -227,7 +220,9 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
   let tempPassword = "";
   let expectedLoginId = "";
 
-  test("R8が申請→pending_first(一次承認待ち)になり、R8自身に承認ボタンは出ない", async ({ page }) => {
+  test("R8が申請→pending_first(一次承認待ち)になり、R8自身に承認ボタンは出ない", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     await login(page, "R8");
     await openRequestForm(page);
@@ -242,9 +237,9 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
     await page.locator('select[name="agencyId"]').selectOption(s1!.id);
     await page.locator('input[name="evidence"]').setInputFiles(EVIDENCE);
     await page.getByRole("button", { name: "申請する" }).click();
-    await expect(
-      page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)).toBeVisible({
+      timeout: 10_000,
+    });
 
     // DB: pending_first（⑧の申請は⑦の1次承認を経る）
     const req = await db().accountRequest.findFirst({ where: { email: flowEmail } });
@@ -288,7 +283,9 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
     expect(auditRow).not.toBeNull();
   });
 
-  test("R3が最終承認→一時パスワードが一度だけ表示され、DBにAccountが採番規則どおり作成される", async ({ page }) => {
+  test("R3が最終承認→一時パスワードが一度だけ表示され、DBにAccountが採番規則どおり作成される", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
 
     // 採番規則: airis_2 + 代理店コード(210001) + _ + 3桁連番（§4 / §6.1-4）
@@ -346,7 +343,9 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
     expect(criticalErrors(errors)).toEqual([]);
   });
 
-  test("発行された一時PWで新アカウントログイン→強制パスワード変更→変更完了までは他画面に遷移不可", async ({ page }) => {
+  test("発行された一時PWで新アカウントログイン→強制パスワード変更→変更完了までは他画面に遷移不可", async ({
+    page,
+  }) => {
     expect(issuedLoginId).not.toBe("");
     expect(tempPassword).not.toBe("");
 
@@ -356,9 +355,7 @@ test.describe.serial("承認フロー（§6.1: R8申請→R7一次承認→R3最
     await page.getByRole("button", { name: "ログイン" }).click();
     await completeMfaIfNeeded(page, issuedLoginId); // 新規アカウントはMFA初回登録を通過（§4.2）
     await page.waitForURL(/\/password/, { timeout: 15_000 });
-    await expect(
-      page.getByRole("heading", { name: "パスワードの変更" })
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "パスワードの変更" })).toBeVisible();
 
     // 変更完了まで他機能へ遷移不可（§10.1）
     await page.goto("/dashboard");
@@ -393,9 +390,9 @@ test.describe("却下・統計・アクセス制御", () => {
     await page.locator('input[name="email"]').fill(email);
     await page.locator('input[name="evidence"]').setInputFiles(EVIDENCE);
     await page.getByRole("button", { name: "申請する" }).click();
-    await expect(
-      page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/アカウント申請を受け付けました（REQ-\d+）/)).toBeVisible({
+      timeout: 10_000,
+    });
 
     // R2で却下（理由必須）
     // ※申請対象ロールが⑥（SNC系）のため、職務分離（§6.1-3 / 要件1-1）により却下できるのは
@@ -468,9 +465,7 @@ test.describe("却下・統計・アクセス制御", () => {
     await login(page, "R2");
 
     await page.goto("/account-requests");
-    const reqLabels = await page
-      .locator("div.grid > div.rounded-2xl div.truncate")
-      .allInnerTexts();
+    const reqLabels = await page.locator("div.grid > div.rounded-2xl div.truncate").allInnerTexts();
     // §7.2「統計カード（表示対象 / 承認待ち / 登録済み / 停止・削除）」
     expect(reqLabels).toEqual(["表示対象", "承認待ち", "登録済み", "停止・削除"]);
 
@@ -481,14 +476,14 @@ test.describe("却下・統計・アクセス制御", () => {
     expect(adminLabels).toEqual(["表示対象", "承認待ち", "登録済み", "停止・削除"]);
   });
 
-  test("権限外アクセス: R9/R10は/account-requestsへ直接アクセスできずダッシュボードへ", async ({ page }) => {
+  test("権限外アクセス: R9/R10は/account-requestsへ直接アクセスできずダッシュボードへ", async ({
+    page,
+  }) => {
     const since = new Date(Date.now() - 60_000);
 
     await login(page, "R9");
     // ナビにリンクが出ない（§3.2 UI層）
-    await expect(
-      page.getByRole("link", { name: "Airisアカウント申請" })
-    ).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Airisアカウント申請" })).toHaveCount(0);
     await page.goto("/account-requests");
     await expect(page).toHaveURL(/\/dashboard/);
 
@@ -512,9 +507,7 @@ test.describe("却下・統計・アクセス制御", () => {
     await login(page, "R2");
     const res = await page.goto("/account-requests?page=9999");
     expect(res!.status()).toBe(200);
-    await expect(
-      page.getByRole("heading", { name: "Airisアカウント申請" })
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Airisアカウント申請" })).toBeVisible();
   });
 });
 
@@ -525,7 +518,8 @@ test.describe("却下・統計・アクセス制御", () => {
 //     ③（SNC運用者）は代理店系（⑦⑧⑩）の最終承認・却下に限定される。
 //   UI（ボタン非表示）とサーバ側（server action の直接実行）の両方を検証する（§3.2）。
 // ---------------------------------------------------------------------------
-test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承認・却下できない（§6.1-3 / 要件1-1）", () => {
+test.describe
+  .serial("職務分離: ③はSNC系ロールの申請を最終承認・却下できない（§6.1-3 / 要件1-1）", () => {
   const sncName = `QA2職務分離SNC-${RUN}`;
   const sncEmail = `qa2-sod-snc-${RUN}@example.com`;
   const agencyName = `QA2職務分離代理店-${RUN}`;
@@ -574,7 +568,9 @@ test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承�
     }, newId);
   }
 
-  test("R3の一覧: SNC系ロール（④）の申請には最終承認・却下ボタンが出ない（⑧の申請には出る）", async ({ page }) => {
+  test("R3の一覧: SNC系ロール（④）の申請には最終承認・却下ボタンが出ない（⑧の申請には出る）", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     await login(page, "R3");
     await page.goto("/account-requests");
@@ -596,7 +592,9 @@ test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承�
     expect(criticalErrors(errors)).toEqual([]);
   });
 
-  test("R3: idを差し替えてSNC系ロールの申請を却下しようとしてもサーバ側で拒否される", async ({ page }) => {
+  test("R3: idを差し替えてSNC系ロールの申請を却下しようとしてもサーバ側で拒否される", async ({
+    page,
+  }) => {
     await login(page, "R3");
     await page.goto("/account-requests");
     const agencyRow = page.locator("tbody tr", { hasText: agencyName });
@@ -616,7 +614,9 @@ test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承�
     expect(req!.rejectReason).toBeNull();
     expect((req!.history as { event: string }[]).map((h) => h.event)).toEqual(["requested"]);
     // ⑧の申請も却下されていない
-    const agencyReq = await db().accountRequest.findFirst({ where: { requestId: agencyRequestId } });
+    const agencyReq = await db().accountRequest.findFirst({
+      where: { requestId: agencyRequestId },
+    });
     expect(agencyReq!.status).toBe("pending_final");
 
     // 拒否は監査ログに記録される（§3.3）
@@ -631,7 +631,9 @@ test.describe.serial("職務分離: ③はSNC系ロールの申請を最終承�
     expect(denied).not.toBeNull();
   });
 
-  test("R3: idを差し替えてSNC系ロールの申請を最終承認しようとしてもサーバ側で拒否される（アカウント未発行）", async ({ page }) => {
+  test("R3: idを差し替えてSNC系ロールの申請を最終承認しようとしてもサーバ側で拒否される（アカウント未発行）", async ({
+    page,
+  }) => {
     await login(page, "R3");
     await page.goto("/account-requests");
     const agencyRow = page.locator("tbody tr", { hasText: agencyName });

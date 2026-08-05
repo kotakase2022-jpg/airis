@@ -8,6 +8,7 @@ import { useActionState } from "react";
 import { btnDanger, btnOutline, btnPrimary } from "@/components/ui";
 import {
   deleteAnnouncementAction,
+  duplicateAnnouncementAction,
   sendAnnouncementAction,
   stopAnnouncementAction,
   type AnnouncementRowState,
@@ -23,17 +24,42 @@ function latestState(states: AnnouncementRowState[]): AnnouncementRowState {
   return latest;
 }
 
-export function AnnouncementRowActions({ id, status }: { id: string; status: string }) {
+export function AnnouncementRowActions({
+  id,
+  status,
+  canCreate,
+}: {
+  id: string;
+  status: string;
+  // 複製作成の可否（§5.1「登」）。UI層でボタンを出すかの判定。
+  // API層（duplicateAnnouncementAction）でも同じ can() で再検証する（§3.2）。
+  canCreate: boolean;
+}) {
   const [sendState, sendAction, sendPending] = useActionState(sendAnnouncementAction, undefined);
   const [stopState, stopAction, stopPending] = useActionState(stopAnnouncementAction, undefined);
   const [deleteState, deleteAction, deletePending] = useActionState(
     deleteAnnouncementAction,
     undefined
   );
-  const latest = latestState([sendState, stopState, deleteState]);
+  const [dupState, dupAction, dupPending] = useActionState(duplicateAnnouncementAction, undefined);
+  const latest = latestState([sendState, stopState, deleteState, dupState]);
 
   return (
     <div className="flex flex-wrap items-start gap-2">
+      {/* 複製作成（§7.7）: 文面・添付を引き継いだ下書きを作る。送信済み・停止のお知らせも複製できる */}
+      {canCreate && (
+        <form action={dupAction}>
+          <input type="hidden" name="id" value={id} />
+          <button
+            type="submit"
+            disabled={dupPending}
+            className={btnOutline}
+            data-testid="announcement-duplicate"
+          >
+            {dupPending ? "複製中..." : "複製"}
+          </button>
+        </form>
+      )}
       {status === "draft" && (
         <form action={sendAction}>
           <input type="hidden" name="id" value={id} />

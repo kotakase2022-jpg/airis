@@ -1,0 +1,7 @@
+.next
+node_modules
+public
+prisma/migrations
+qa/evidence
+package-lock.json
+*.md

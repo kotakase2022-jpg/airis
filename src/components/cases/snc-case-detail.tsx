@@ -2,11 +2,25 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope } from "@/lib/auth";
-import { CASE_STATUSES } from "@/lib/roles";
 import { can, caseFeature } from "@/lib/permissions";
 import { audit } from "@/lib/util";
-import { Badge, Card, EmptyState, InfoBanner, PageHeader, SectionTitle, StatusBadge, btnDanger, btnOutline, btnPrimary, inputCls, labelCls } from "@/components/ui";
-import { DeadlineBadge, fmtDateTime, seriesBasePath, seriesLabel } from "./badges";
+// ステータスはマスタ化（StatusMaster kind="case"）してあり、値の増減はDBで行う（§7.8）
+import { caseStatusOptions, statusEventLabel, statusHistoryOf } from "@/lib/status";
+import {
+  Badge,
+  Card,
+  EmptyState,
+  InfoBanner,
+  PageHeader,
+  SectionTitle,
+  StatusBadge,
+  btnDanger,
+  btnOutline,
+  btnPrimary,
+  inputCls,
+  labelCls,
+} from "@/components/ui";
+import { CaseStatusBadge, DeadlineBadge, fmtDateTime, seriesBasePath, seriesLabel } from "./badges";
 import { CaseThread, parseMessageFiles } from "./thread";
 import { ReplyForm } from "./reply-form";
 import {
@@ -72,6 +86,18 @@ export async function SncCaseDetailPage({
   const scope = await agencyScope(user);
   if (scope && !scope.includes(c.primaryAgencyId)) redirect(base);
 
+  // ステータスのセレクトはマスタ（StatusMaster）から描画する。DBに行を足す/消すだけで
+  // コード変更・再デプロイなしに選択肢が増減する（§7.8「値はマスタ化して増減できる実装に」）。
+  const statusMaster = await caseStatusOptions();
+  // マスタから外された値が現在のステータスの場合、セレクトに無いと勝手に別の値へ変わってしまうため
+  // 現在値を末尾に補う（意図しないステータス変更の防止）
+  const statusChoices = statusMaster.some((o) => o.value === c.status)
+    ? statusMaster
+    : [...statusMaster, { value: c.status, tone: null }];
+
+  // 状態遷移履歴（§4.1。requested / update / suspend / delete / restore を時刻付きで表示）
+  const transitions = await statusHistoryOf("case", c.id);
+
   // 窓口案件詳細の参照は監査ログ記録対象（§3.3）
   await audit(user.loginId, "case_view", c.caseNo);
 
@@ -108,17 +134,25 @@ export async function SncCaseDetailPage({
 
       <Card className="mb-5">
         <div className="mb-4 flex flex-wrap items-center gap-2">
-          <StatusBadge label={c.status} />
+          <CaseStatusBadge
+            label={c.status}
+            tone={statusMaster.find((o) => o.value === c.status)?.tone}
+          />
           <DeadlineBadge deadline={c.deadline} />
-          <Badge tone={agencyRead ? "green" : "yellow"}>{agencyRead ? "代理店既読" : "代理店未読"}</Badge>
+          <Badge tone={agencyRead ? "green" : "yellow"}>
+            {agencyRead ? "代理店既読" : "代理店未読"}
+          </Badge>
           <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
             {canUpdate && (
               <>
-                <form action={changeStatusAction.bind(null, c.id)} className="flex items-center gap-2">
+                <form
+                  action={changeStatusAction.bind(null, c.id)}
+                  className="flex items-center gap-2"
+                >
                   <select name="status" defaultValue={c.status} className={`${inputCls} w-32`}>
-                    {CASE_STATUSES.map((s) => (
-                      <option key={s} value={s}>
-                        {s}
+                    {statusChoices.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.value}
                       </option>
                     ))}
                   </select>
@@ -140,7 +174,9 @@ export async function SncCaseDetailPage({
             {/* 削除（§5.1「削」）: 論理削除（§3.4） */}
             {canDelete && !isDeleted && (
               <form action={deleteCaseAction.bind(null, c.id)}>
-                <button className={btnOutline + " whitespace-nowrap !text-red-600"}>案件を削除</button>
+                <button className={btnOutline + " whitespace-nowrap !text-red-600"}>
+                  案件を削除
+                </button>
               </form>
             )}
             {canRestore && (
@@ -286,13 +322,11 @@ export async function SncCaseDetailPage({
         {/* 停止・削除済の案件は返信不可（server action 側でも拒否する） */}
         {!user.isDummy && !isInactive && <ReplyForm caseId={c.id} allowFiles />}
         {isInactive && (
-          <p className="mt-3 text-sm text-slate-400">
-            「{c.status}」の案件のため返信できません。
-          </p>
+          <p className="mt-3 text-sm text-slate-400">「{c.status}」の案件のため返信できません。</p>
         )}
       </Card>
 
-      <Card>
+      <Card className="mb-5">
         <SectionTitle>ステータス変更履歴</SectionTitle>
         {c.statusHistory.length === 0 ? (
           <EmptyState message="ステータス変更履歴はありません。" />
@@ -304,6 +338,28 @@ export async function SncCaseDetailPage({
                 <StatusBadge label={h.fromStatus} />
                 <span>→</span>
                 <StatusBadge label={h.toStatus} />
+                <span>（{h.changedBy}）</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      {/* 状態遷移履歴（§4.1）: 遷移イベント（requested/変更/停止/削除/復旧）を時刻付きで表示する */}
+      <Card>
+        <SectionTitle>状態遷移履歴</SectionTitle>
+        {transitions.length === 0 ? (
+          <EmptyState message="状態遷移履歴はありません。" />
+        ) : (
+          <ul className="space-y-2">
+            {transitions.map((h) => (
+              <li key={h.id} className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                <span>{fmtDateTime(h.changedAt)}</span>
+                <Badge tone="blue">{statusEventLabel(h.event)}</Badge>
+                {h.fromStatus && <StatusBadge label={h.fromStatus} />}
+                {h.fromStatus && h.toStatus && <span>→</span>}
+                {h.toStatus && <StatusBadge label={h.toStatus} />}
+                {h.reason && <span>理由: {h.reason}</span>}
                 <span>（{h.changedBy}）</span>
               </li>
             ))}

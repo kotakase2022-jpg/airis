@@ -2,7 +2,8 @@
 
 // 訪販員申請 CSV一括申請フォーム（SPEC §7.4 / §3.6）
 // - ひな形CSVの列順どおりのファイルをアップロード
-// - 誓約書PDFは `{誓約書No}-{連番3桁}.pdf` のファイル名で複数同時にアップロードし、CSV行順に突合
+// - 誓約書PDFは `{誓約書No}-{連番3桁}.pdf` のファイル名でCSV行順に突合する。受け取り方は
+//   zip一括（§7.4「CSV と同時に zip で一括アップロード」）と個別PDFの複数選択の2通り
 // - エラーが1件でもあれば「n行目: 理由」を一覧表示し、全件登録されない
 import { useActionState, useState } from "react";
 import { btnPrimary, btnOutline } from "@/components/ui";
@@ -45,12 +46,11 @@ export function CsvBulkForm() {
       </div>
 
       <div className="mb-4 rounded-xl bg-blue-50 px-4 py-3 text-xs leading-relaxed text-blue-900">
-        <div>
-          CSVの列（この順序）: {FIELD_AGENT_CSV_HEADERS.join(",")}
-        </div>
+        <div>CSVの列（この順序）: {FIELD_AGENT_CSV_HEADERS.join(",")}</div>
         <div className="mt-1">
           誓約書PDFは <strong>誓約書No-連番3桁.pdf</strong>（例: 誓約書No 70 で30行 →
-          70-001.pdf〜70-030.pdf）のファイル名でCSVの行順に突合します。
+          70-001.pdf〜70-030.pdf）のファイル名でCSVの行順に突合します。zipで一括アップロードでき、
+          個別のPDFを複数選択することもできます（zip内のフォルダ階層は無視し、ファイル名で突合します）。
           エラーが1件でもある場合は<strong>全件登録されません</strong>。
         </div>
       </div>
@@ -70,7 +70,18 @@ export function CsvBulkForm() {
         </div>
         <div>
           <label className="mb-1 block text-xs font-semibold text-slate-600">
-            誓約書PDF（複数選択可・任意）
+            誓約書PDF（zip一括・任意）
+          </label>
+          <input
+            type="file"
+            name="pledgeZip"
+            accept=".zip,application/zip,application/x-zip-compressed"
+            className="w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-50 file:px-3 file:py-2 file:text-sm file:font-semibold file:text-blue-700"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-semibold text-slate-600">
+            誓約書PDF（個別に複数選択・任意）
           </label>
           <input
             type="file"

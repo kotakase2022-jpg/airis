@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  # 静的検査・単体テスト・ビルド（§2「ESLint + Prettier + tsc --noEmit をCIで必須化」）
   quality:
     runs-on: ubuntu-latest
     steps:
@@ -14,8 +15,76 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - run: npm run format:check
       - run: npx tsc --noEmit
       - run: npm run test:unit
       - run: npm run build
         env:
           DATABASE_URL: postgresql://user:pass@localhost:5432/dummy
+
+  # E2E（実DB + RLS + 実ブラウザ。§12 M8「E2E総仕上げ」）
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: airis
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5433/airis
+      DATABASE_URL_UNPOOLED: postgresql://postgres:postgres@localhost:5433/airis
+      APP_DATABASE_URL: postgresql://airis_app:airis_app_test@localhost:5433/airis
+      CRON_SECRET: qa-test-secret
+      PASSWORD_PEPPER_V1: qa-test-pepper-v1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run migrate:deploy
+      - run: npm run rls
+        env:
+          RLS_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/airis
+      - run: npm run seed
+      - run: npm run build
+      - name: start app
+        run: npx next start -p 3100 &
+      - name: wait for app
+        run: npx wait-on http://localhost:3100/login --timeout 60000
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: qa/evidence/playwright-report
+
+  # 依存ライブラリとコンテナイメージの脆弱性スキャン（§10.5 SEC②#40）
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # 依存ライブラリ: high 以上の既知脆弱性でCIを落とす
+      - name: npm audit (high+)
+        run: npm audit --audit-level=high
+      # Dockerイメージ（開発用DB）: Trivy でOS/ライブラリ脆弱性をスキャン。
+      # ベースイメージ由来の未修正分でCIを落とさないため exit-code=0（結果はログで確認する）
+      - name: Trivy image scan (postgres:16)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: postgres:16
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table

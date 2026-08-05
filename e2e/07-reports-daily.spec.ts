@@ -58,10 +58,7 @@ test.beforeAll(async () => {
   // 自スイート（QA5プレフィクス）の過去データを掃除して自己完結にする
   await db().dailyReport.deleteMany({
     where: {
-      OR: [
-        { area: { startsWith: "QA5" } },
-        { activityContent: { startsWith: "QA5" } },
-      ],
+      OR: [{ area: { startsWith: "QA5" } }, { activityContent: { startsWith: "QA5" } }],
     },
   });
   // 月初見込ロック検証で使う月は「月内に見込が1件も無い」状態から開始する
@@ -248,7 +245,12 @@ test("R9: 訪販日報の保存→DB検証→同日再提出で上書き（レ�
 
   // 月初見込は月内最古のレコードが保持し続ける（当月の見込は1つだけ 要件6-3）
   const holder = await db().dailyReport.findFirst({
-    where: { salesStaffId: staffId, type: "訪販", date: { startsWith: MONTH }, forecastAcq: { not: null } },
+    where: {
+      salesStaffId: staffId,
+      type: "訪販",
+      date: { startsWith: MONTH },
+      forecastAcq: { not: null },
+    },
     orderBy: { date: "asc" },
     select: { date: true, forecastAcq: true },
   });
@@ -264,7 +266,14 @@ test("R9: 保存後にKPIタイル12個のラベルが表示される", async ({
   await saveVisitReport(
     page,
     D_KPI,
-    { acquisitions: "1", workers: "1", visits: "10", meetings: "5", negotiations: "2", contracts: "1" },
+    {
+      acquisitions: "1",
+      workers: "1",
+      visits: "10",
+      meetings: "5",
+      negotiations: "2",
+      contracts: "1",
+    },
     { area: "QA5-KPI検証" }
   );
 
@@ -383,7 +392,15 @@ test("R9: 訪販の月初見込は月の初回提出時のみ入力（2回目提
   await saveVisitReport(
     page,
     D_FC1,
-    { forecastAcq: "30", acquisitions: "2", workers: "1", visits: "10", meetings: "5", negotiations: "2", contracts: "1" },
+    {
+      forecastAcq: "30",
+      acquisitions: "2",
+      workers: "1",
+      visits: "10",
+      meetings: "5",
+      negotiations: "2",
+      contracts: "1",
+    },
     { area: "QA5-月初見込1" }
   );
   // 2回目提出: 見込99を入力（仕様上は受け付けない/無視されるべき）
@@ -420,7 +437,15 @@ test("R9: CSV取込では確定済み月初見込が上書きされない（月�
   await saveVisitReport(
     page,
     D_CFC1,
-    { forecastAcq: "40", acquisitions: "1", workers: "1", visits: "10", meetings: "5", negotiations: "2", contracts: "1" },
+    {
+      forecastAcq: "40",
+      acquisitions: "1",
+      workers: "1",
+      visits: "10",
+      meetings: "5",
+      negotiations: "2",
+      contracts: "1",
+    },
     { area: "QA5-CSV月初見込の確定" }
   );
   expect(await monthForecastPairs(M_CSV_FC)).toEqual([[D_CFC1, 40]]);
@@ -435,7 +460,12 @@ test("R9: CSV取込では確定済み月初見込が上書きされない（月�
   // 月内全行の見込を検証: 確定済みの40が維持され、後日日付には見込を保存しない
   await expect
     .poll(async () => JSON.stringify(await monthForecastPairs(M_CSV_FC)), { timeout: 10_000 })
-    .toBe(JSON.stringify([[D_CFC1, 40], [D_CFC2, null]]));
+    .toBe(
+      JSON.stringify([
+        [D_CFC1, 40],
+        [D_CFC2, null],
+      ])
+    );
 
   // 見込以外の値はCSVで正しく上書き・追加されている（取込自体は成功している証明）
   const rows = await db().dailyReport.findMany({
@@ -467,7 +497,13 @@ test("R9: CSV取込のみでも月内の見込は最古日付の1件だけ（後
 
   await expect
     .poll(async () => JSON.stringify(await monthForecastPairs(M_CSV_ONLY)), { timeout: 10_000 })
-    .toBe(JSON.stringify([[D_CO1, 30], [D_CO2, null], [D_CO3, null]]));
+    .toBe(
+      JSON.stringify([
+        [D_CO1, 30],
+        [D_CO2, null],
+        [D_CO3, null],
+      ])
+    );
 });
 
 test("稼働提出物の通知は代理店管理者（⑦⑧）のみに届く（⑨販売員には配信しない）（§3.7 / §5.1）", async ({
@@ -511,7 +547,9 @@ test("稼働提出物の通知は代理店管理者（⑦⑧）のみに届く�
   });
   await form.locator('input[name="memo"]').fill(SUB_MEMO_NOTIFY);
   await form.getByRole("button", { name: "提出する" }).click();
-  await expect(page.getByText(`「${SUB_KIND_NOTIFY}」（${M_SUB_NOTIFY}）を提出しました`)).toBeVisible({
+  await expect(
+    page.getByText(`「${SUB_KIND_NOTIFY}」（${M_SUB_NOTIFY}）を提出しました`)
+  ).toBeVisible({
     timeout: 15_000,
   });
 
@@ -660,7 +698,10 @@ test("異常系: 日付未入力では保存できない（必須バリデーシ
   await expect(page.getByText("日報を保存しました")).toHaveCount(0);
 });
 
-test("権限外アクセス: R5(HL窓口)/R10(稼働終了)は /reports に入れない", async ({ page, request }) => {
+test("権限外アクセス: R5(HL窓口)/R10(稼働終了)は /reports に入れない", async ({
+  page,
+  request,
+}) => {
   // 未認証はCSVテンプレも401（ホストは playwright.config の baseURL / QA_BASE_URL に従う）
   const anon = await request.get("/reports/csv?template=visit");
   expect(anon.status()).toBe(401);
@@ -689,7 +730,14 @@ test.describe("モバイルビュー（375x812）", () => {
     await saveVisitReport(
       page,
       D_MOBILE,
-      { acquisitions: "1", workers: "1", visits: "15", meetings: "6", negotiations: "3", contracts: "1" },
+      {
+        acquisitions: "1",
+        workers: "1",
+        visits: "15",
+        meetings: "6",
+        negotiations: "3",
+        contracts: "1",
+      },
       { area: "QA5-モバイル入力", activityContent: "QA5 スマホからの提出テスト" }
     );
 
@@ -718,7 +766,9 @@ test("R9: 集計・実績確認タブ KPIカード6枚のラベル表示（自�
   await expect(page.getByText("日報レコード")).toBeVisible();
   await expect(page.locator("tbody tr").first()).toBeVisible();
   expect(await page.locator("tbody tr").filter({ hasText: "210001C001" }).count()).toBe(0);
-  expect(await page.locator("tbody tr").filter({ hasText: "110001C001" }).count()).toBeGreaterThan(0);
+  expect(await page.locator("tbody tr").filter({ hasText: "110001C001" }).count()).toBeGreaterThan(
+    0
+  );
 
   // ⑨に削除権限は無い（§5.1: 提（自己修正可）のみ）→ 削除ボタンが出ない
   await expect(page.getByRole("button", { name: "削除" })).toHaveCount(0);

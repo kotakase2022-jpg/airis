@@ -135,7 +135,10 @@ async function detectAbuseSignals(db: PrismaClient): Promise<AbuseSignal[]> {
 // 収集し、アカウント単位で時系列に並べて返す。
 // 認証処理側の書き込み先がどちらであっても検知できるよう両方を情報源とする
 // （同一ログインが二重に記録されても、IPが同じなら「IP変化」とは判定されない）。
-async function recentLoginSuccesses(db: PrismaClient, since: Date): Promise<Map<string, LoginSuccess[]>> {
+async function recentLoginSuccesses(
+  db: PrismaClient,
+  since: Date
+): Promise<Map<string, LoginSuccess[]>> {
   const [accessRows, auditRows] = await Promise.all([
     db.accessLog.findMany({
       where: { result: "success", createdAt: { gte: since } },
@@ -148,8 +151,12 @@ async function recentLoginSuccesses(db: PrismaClient, since: Date): Promise<Map<
   ]);
 
   const events: LoginSuccess[] = [
-    ...accessRows.filter((r) => r.ip && r.ip !== UNKNOWN_IP).map((r) => ({ actor: r.loginId, ip: r.ip!, at: r.createdAt })),
-    ...auditRows.filter((r) => r.ip && r.ip !== UNKNOWN_IP).map((r) => ({ actor: r.actor, ip: r.ip!, at: r.createdAt })),
+    ...accessRows
+      .filter((r) => r.ip && r.ip !== UNKNOWN_IP)
+      .map((r) => ({ actor: r.loginId, ip: r.ip!, at: r.createdAt })),
+    ...auditRows
+      .filter((r) => r.ip && r.ip !== UNKNOWN_IP)
+      .map((r) => ({ actor: r.actor, ip: r.ip!, at: r.createdAt })),
   ].sort((a, b) => a.at.getTime() - b.at.getTime());
 
   const byActor = new Map<string, LoginSuccess[]>();
@@ -259,7 +266,9 @@ export async function GET(req: NextRequest) {
         summary.remindedAccounts += r7s.length;
       }
       // SNC運用者(R3)へはサマリで通知（要件9-2: SNC運用者アカウントへ通知）
-      const caseList = overdue.map((c) => `${c.caseNo}（期限: ${c.deadline} / ${c.primaryAgency.name}）`).join(" / ");
+      const caseList = overdue
+        .map((c) => `${c.caseNo}（期限: ${c.deadline} / ${c.primaryAgency.name}）`)
+        .join(" / ");
       await notifyRole(
         ["R3"],
         `【リマインド】期限超過の窓口案件が${overdue.length}件あります`,

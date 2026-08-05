@@ -305,7 +305,9 @@ export function RowActions({
         <form
           action={deleteAction}
           onSubmit={(e) => {
-            if (!window.confirm("この販売員IDを削除します（論理削除・1年間保持）。よろしいですか？")) {
+            if (
+              !window.confirm("この販売員IDを削除します（論理削除・1年間保持）。よろしいですか？")
+            ) {
               e.preventDefault();
             }
           }}

@@ -351,7 +351,9 @@ test("お知らせ: 権限を失ったアカウントの停止操作は「停止
   await expect(err, "権限不足でも無反応にしない").toBeVisible({ timeout: 15_000 });
   await expect(err).toContainText("お知らせの停止権限がありません");
 
-  expect((await db().announcement.findUniqueOrThrow({ where: { id: ann.id } })).status).toBe("sent");
+  expect((await db().announcement.findUniqueOrThrow({ where: { id: ann.id } })).status).toBe(
+    "sent"
+  );
   await expect
     .poll(
       async () =>

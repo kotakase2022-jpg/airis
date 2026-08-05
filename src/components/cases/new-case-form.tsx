@@ -26,8 +26,7 @@ export type StaffPick = {
 
 // 起票テンプレ雛形（§7.8 一字一句）。「代理店確認依頼」のみ ■顧客要望 → ■確認内容
 const TEMPLATE_BODIES: Record<string, string> = {
-  音声提出依頼:
-    "■依頼理由\n\n■顧客要望\n\n■顧客情報\nISP受付番号：\n代理店コード：\n代理店名称：",
+  音声提出依頼: "■依頼理由\n\n■顧客要望\n\n■顧客情報\nISP受付番号：\n代理店コード：\n代理店名称：",
   代理店様から顧客への架電依頼:
     "■依頼理由\n\n■顧客要望\n\n■顧客情報\nISP受付番号：\n代理店コード：\n代理店名称：",
   代理店確認依頼:
@@ -151,8 +150,7 @@ export function NewCaseForm({
             <option value="">指定なし</option>
             {staff
               .filter(
-                (s) =>
-                  primaryId && (s.agencyId === primaryId || s.agencyParentId === primaryId)
+                (s) => primaryId && (s.agencyId === primaryId || s.agencyParentId === primaryId)
               )
               .map((s) => (
                 <option key={s.id} value={s.id}>

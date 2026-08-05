@@ -44,11 +44,7 @@ export function PageIcon({ page, className }: { page: string; className?: string
 }
 
 // ヘッダ左のページアイコン+太字タイトル。現在のパスから該当メニュー項目を解決する。
-export function HeaderTitle({
-  items,
-}: {
-  items: { key: string; label: string; href: string }[];
-}) {
+export function HeaderTitle({ items }: { items: { key: string; label: string; href: string }[] }) {
   const pathname = usePathname();
   // 最長一致（/reports より /reports/xxx を優先しないよう href の長い順で判定）
   const item = [...items]

@@ -1,13 +1,7 @@
 // §7.7 お知らせ・情報周知 / §7.12 ドキュメント / /files/[id] ダウンロード
 // データプレフィクス: QA7
 import { test, expect } from "@playwright/test";
-import {
-  ACCOUNTS,
-  db,
-  login,
-  collectConsoleErrors,
-  criticalErrors,
-} from "./helpers";
+import { ACCOUNTS, db, login, collectConsoleErrors, criticalErrors } from "./helpers";
 
 const T_ALL = "QA7-全体向けお知らせ（添付付き）";
 const T_PRIMARY = "QA7-1次店向けお知らせ";
@@ -56,7 +50,9 @@ test.afterAll(async () => {
 // §7.7 お知らせ
 // ─────────────────────────────────────────────────────────────
 
-test("お知らせ: R3が全体向け（添付付き）を作成 → DB保存・R7/R8/R9へ通知・R8/R9の一覧に表示", async ({ page }) => {
+test("お知らせ: R3が全体向け（添付付き）を作成 → DB保存・R7/R8/R9へ通知・R8/R9の一覧に表示", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const errors = collectConsoleErrors(page);
 
@@ -170,7 +166,9 @@ test("お知らせ: R3が1次店向けを作成 → R7に表示・R8/R9には非
   await expect(page.getByText(T_PRIMARY)).toHaveCount(0);
 });
 
-test("お知らせ: 重要フラグ → 一覧上部ピン+重要バッジ、R9閲覧でAnnouncementRead記録、R3側で既読率・未読者確認", async ({ page }) => {
+test("お知らせ: 重要フラグ → 一覧上部ピン+重要バッジ、R9閲覧でAnnouncementRead記録、R3側で既読率・未読者確認", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   // R3: 重要フラグ付きで作成
   await login(page, "R3");
@@ -178,7 +176,9 @@ test("お知らせ: 重要フラグ → 一覧上部ピン+重要バッジ、R9�
   await page.locator('select[name="audience"]').selectOption("all");
   await page.locator('input[name="important"]').check();
   await page.locator('input[name="title"]').fill(T_IMPORTANT);
-  await page.locator('textarea[name="body"]').fill("QA7: 重要なお知らせです。必ず確認してください。");
+  await page
+    .locator('textarea[name="body"]')
+    .fill("QA7: 重要なお知らせです。必ず確認してください。");
   await page.getByRole("button", { name: "作成して送信" }).click();
   await expect(page.getByText("お知らせを送信しました")).toBeVisible({ timeout: 15_000 });
 
@@ -235,10 +235,24 @@ test("お知らせ: 停止/削除 → 閲覧側から消える（停止=リダ�
   // 準備: DB直接で2件作成（自己完結）
   const d = db();
   const annStop = await d.announcement.create({
-    data: { audience: "all", title: T_STOP, body: "QA7 停止テスト", status: "sent", sentAt: new Date(), createdBy: ACCOUNTS.R3.loginId },
+    data: {
+      audience: "all",
+      title: T_STOP,
+      body: "QA7 停止テスト",
+      status: "sent",
+      sentAt: new Date(),
+      createdBy: ACCOUNTS.R3.loginId,
+    },
   });
   const annDel = await d.announcement.create({
-    data: { audience: "all", title: T_DEL, body: "QA7 削除テスト", status: "sent", sentAt: new Date(), createdBy: ACCOUNTS.R3.loginId },
+    data: {
+      audience: "all",
+      title: T_DEL,
+      body: "QA7 削除テスト",
+      status: "sent",
+      sentAt: new Date(),
+      createdBy: ACCOUNTS.R3.loginId,
+    },
   });
 
   // R9: 両方見える
@@ -254,7 +268,9 @@ test("お知らせ: 停止/削除 → 閲覧側から消える（停止=リダ�
   await stopRow.getByRole("button", { name: "停止" }).click();
   await expect(stopRow.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
   await expect
-    .poll(async () => (await d.announcement.findUnique({ where: { id: annStop.id } }))?.status, { timeout: 10_000 })
+    .poll(async () => (await d.announcement.findUnique({ where: { id: annStop.id } }))?.status, {
+      timeout: 10_000,
+    })
     .toBe("stopped");
 
   // R3: 削除（論理削除 → 管理一覧からも消える）
@@ -262,7 +278,9 @@ test("お知らせ: 停止/削除 → 閲覧側から消える（停止=リダ�
   await delRow.getByRole("button", { name: "削除" }).click();
   await expect(page.locator("tbody > tr", { hasText: T_DEL })).toHaveCount(0, { timeout: 15_000 });
   await expect
-    .poll(async () => (await d.announcement.findUnique({ where: { id: annDel.id } }))?.status, { timeout: 10_000 })
+    .poll(async () => (await d.announcement.findUnique({ where: { id: annDel.id } }))?.status, {
+      timeout: 10_000,
+    })
     .toBe("deleted");
 
   // R9: 一覧から両方消えている
@@ -280,7 +298,9 @@ test("お知らせ: 停止/削除 → 閲覧側から消える（停止=リダ�
   expect(res!.status()).toBe(404);
 });
 
-test("お知らせ 異常系: 必須未入力（空白のみ）はエラー、存在しないIDは404、R5はページアクセス不可", async ({ page }) => {
+test("お知らせ 異常系: 必須未入力（空白のみ）はエラー、存在しないIDは404、R5はページアクセス不可", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   await login(page, "R3");
   await page.goto("/announcements");
@@ -314,7 +334,9 @@ test("お知らせ 異常系: 必須未入力（空白のみ）はエラー、�
 // §7.12 ドキュメント
 // ─────────────────────────────────────────────────────────────
 
-test("ドキュメント: R2がsnc/primary/all各1件アップロード → ロール別可視性（R9=all, R7=all+primary, R5=all+snc, R3=全部）", async ({ page }) => {
+test("ドキュメント: R2がsnc/primary/all各1件アップロード → ロール別可視性（R9=all, R7=all+primary, R5=all+snc, R3=全部）", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const errors = collectConsoleErrors(page);
 
@@ -390,15 +412,30 @@ test("ドキュメント: R2がsnc/primary/all各1件アップロード → ロ�
   expect(criticalErrors(errors)).toEqual([]);
 });
 
-test("ドキュメント: 削除はSNCのみ（R7にアップロード・削除UIが出ない / R2で削除するとDBから消える）", async ({ page }) => {
+test("ドキュメント: 削除はSNCのみ（R7にアップロード・削除UIが出ない / R2で削除するとDBから消える）", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const d = db();
   // 準備: 削除対象ドキュメントをDB直接で作成（自己完結）
   const stored = await d.storedFile.create({
-    data: { name: "QA7-del.txt", mime: "text/plain", size: 10, data: Buffer.from("QA7 delete"), uploadedBy: null },
+    data: {
+      name: "QA7-del.txt",
+      mime: "text/plain",
+      size: 10,
+      data: Buffer.from("QA7 delete"),
+      uploadedBy: null,
+    },
   });
   const doc = await d.document.create({
-    data: { title: DOC_DEL, category: "QA7カテゴリ", visibility: "all", fileId: stored.id, fileName: stored.name, createdBy: ACCOUNTS.R2.loginId },
+    data: {
+      title: DOC_DEL,
+      category: "QA7カテゴリ",
+      visibility: "all",
+      fileId: stored.id,
+      fileName: stored.name,
+      createdBy: ACCOUNTS.R2.loginId,
+    },
   });
 
   // R7: アップロードフォームなし・削除ボタンなし（閲覧のみ）
@@ -414,28 +451,58 @@ test("ドキュメント: 削除はSNCのみ（R7にアップロード・削除U
   const row = page.locator("tbody > tr", { hasText: DOC_DEL });
   await expect(row).toHaveCount(1);
   await row.getByRole("button", { name: "削除" }).click();
-  await expect(page.locator("tbody > tr", { hasText: DOC_DEL })).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator("tbody > tr", { hasText: DOC_DEL })).toHaveCount(0, {
+    timeout: 15_000,
+  });
   await expect
     .poll(async () => d.document.count({ where: { id: doc.id } }), { timeout: 10_000 })
     .toBe(0);
   expect(await d.storedFile.count({ where: { id: stored.id } })).toBe(0);
 });
 
-test("R4ダミー表示: お知らせ・ドキュメントも偽データのみ表示され実データは見えない（§3.5/§5.2）", async ({ page }) => {
+test("R4ダミー表示: お知らせ・ドキュメントも偽データのみ表示され実データは見えない（§3.5/§5.2）", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const d = db();
   // 実データ（非ダミー）としてお知らせ2件・全体公開ドキュメント1件を用意
   const annAll = await d.announcement.create({
-    data: { audience: "all", title: "QA7-実データお知らせ（R4非表示確認）", body: "実データ", status: "sent", sentAt: new Date(), createdBy: ACCOUNTS.R3.loginId },
+    data: {
+      audience: "all",
+      title: "QA7-実データお知らせ（R4非表示確認）",
+      body: "実データ",
+      status: "sent",
+      sentAt: new Date(),
+      createdBy: ACCOUNTS.R3.loginId,
+    },
   });
   const annPrimary = await d.announcement.create({
-    data: { audience: "primary", title: "QA7-実データ1次店向け（R4非表示確認）", body: "実データ", status: "sent", sentAt: new Date(), createdBy: ACCOUNTS.R3.loginId },
+    data: {
+      audience: "primary",
+      title: "QA7-実データ1次店向け（R4非表示確認）",
+      body: "実データ",
+      status: "sent",
+      sentAt: new Date(),
+      createdBy: ACCOUNTS.R3.loginId,
+    },
   });
   const stored = await d.storedFile.create({
-    data: { name: "QA7-real.txt", mime: "text/plain", size: 8, data: Buffer.from("realdata"), uploadedBy: null },
+    data: {
+      name: "QA7-real.txt",
+      mime: "text/plain",
+      size: 8,
+      data: Buffer.from("realdata"),
+      uploadedBy: null,
+    },
   });
   const doc = await d.document.create({
-    data: { title: "QA7-実データドキュメント（R4非表示確認）", visibility: "all", fileId: stored.id, fileName: stored.name, createdBy: ACCOUNTS.R2.loginId },
+    data: {
+      title: "QA7-実データドキュメント（R4非表示確認）",
+      visibility: "all",
+      fileId: stored.id,
+      fileName: stored.name,
+      createdBy: ACCOUNTS.R2.loginId,
+    },
   });
 
   try {
@@ -465,7 +532,10 @@ test("R4ダミー表示: お知らせ・ドキュメントも偽データのみ�
   }
 });
 
-test("ファイルダウンロード /files/[id]: ログイン時200+内容一致+監査ログ、未ログイン401、存在しないID403", async ({ page, request }) => {
+test("ファイルダウンロード /files/[id]: ログイン時200+内容一致+監査ログ、未ログイン401、存在しないID403", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(120_000);
   const d = db();
   // 準備: 公開範囲allのドキュメント（DB直接作成で自己完結）
@@ -473,7 +543,13 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
   //   StoredFile 単体ではなく Document から参照された状態で検証する。
   const content = "QA7 download check content 12345";
   const stored = await d.storedFile.create({
-    data: { name: "QA7-download.txt", mime: "text/plain", size: content.length, data: Buffer.from(content), uploadedBy: null },
+    data: {
+      name: "QA7-download.txt",
+      mime: "text/plain",
+      size: content.length,
+      data: Buffer.from(content),
+      uploadedBy: null,
+    },
   });
   const doc = await d.document.create({
     data: {
@@ -501,7 +577,11 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
 
     // 監査ログにダウンロード記録（§3.3 / §7.12）
     const log = await d.auditLog.findFirst({
-      where: { actor: ACCOUNTS.R9.loginId, action: "file_download", target: { contains: stored.id } },
+      where: {
+        actor: ACCOUNTS.R9.loginId,
+        action: "file_download",
+        target: { contains: stored.id },
+      },
     });
     expect(log, "file_download の監査ログが残ること").not.toBeNull();
 
@@ -511,7 +591,13 @@ test("ファイルダウンロード /files/[id]: ログイン時200+内容一�
 
     // 参照元エンティティを持たない孤立ファイルは拒否（fail-closed §10.5）
     const orphan = await d.storedFile.create({
-      data: { name: "QA7-orphan.txt", mime: "text/plain", size: 4, data: Buffer.from("orph"), uploadedBy: null },
+      data: {
+        name: "QA7-orphan.txt",
+        mime: "text/plain",
+        size: 4,
+        data: Buffer.from("orph"),
+        uploadedBy: null,
+      },
     });
     const orphanRes = await page.request.get(`/files/${orphan.id}`);
     expect(orphanRes.status(), "孤立ファイルは403で拒否される").toBe(403);

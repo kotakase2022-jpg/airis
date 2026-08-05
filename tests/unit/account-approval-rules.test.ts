@@ -44,9 +44,7 @@ describe("canFinalApproveRequest（§6.1-3 職務分離）", () => {
       for (const target of TARGETS) {
         const expected =
           (["R1", "R2", "R3"] as string[]).includes(actor) &&
-          (SNC_TARGET_ROLES.includes(target)
-            ? SNC_TARGET_APPROVER_ROLES.includes(actor)
-            : true);
+          (SNC_TARGET_ROLES.includes(target) ? SNC_TARGET_APPROVER_ROLES.includes(actor) : true);
         expect(canFinalApproveRequest(actor, target), `${actor} -> ${target}`).toBe(expected);
       }
     }

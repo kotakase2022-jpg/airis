@@ -4,17 +4,27 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { CurrentUser, agencyScope, requireUser } from "@/lib/auth";
-import { CASE_STATUSES, CASE_TEMPLATES, PageKey, Role, SNC_ROLES, canAccess } from "@/lib/roles";
+import { CASE_TEMPLATES, PageKey, Role, SNC_ROLES, canAccess } from "@/lib/roles";
 import { can, caseFeature, type Operation } from "@/lib/permissions";
 import { audit, notify, notifyRole, storeFile } from "@/lib/util";
+// ステータスはマスタ化（StatusMaster）してあり、値の増減はDBで行う（§7.8）。
+// server action 側のバリデーションもマスタ値で行う（UI層のセレクトだけに頼らない）。
+import {
+  caseStatusValues,
+  defaultCaseStatus,
+  isCaseStatus,
+  recordStatusHistory,
+  type StatusEvent,
+} from "@/lib/status";
 
 type Series = "HL" | "CSC";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // 窓口案件の「停」「削」用ステータス（§5.1 停=suspend / 削=delete）。
-// スキーマ（Case.status）は自由文字列で、roles.ts の CASE_STATUSES（未対応〜完了）は
-// 「案件の対応状況」マスタなので拡張せず、停止・論理削除はこの2値で表現する（§3.4 論理削除）。
+// スキーマ（Case.status）は自由文字列で、ステータスマスタ（StatusMaster kind="case" /
+// 既定値は roles.ts の CASE_STATUSES = 未対応〜完了）は「案件の対応状況」の定義なので拡張せず、
+// 停止・論理削除はこの2値で表現する（§3.4 論理削除）。
 // ※ 同じ2値を snc-case-list.tsx / snc-case-detail.tsx でも定義している（"use server" ファイルは
 //    async 関数以外を export できないため。値を変える場合は3ファイルを同時に更新すること）
 const CASE_SUSPENDED = "停止";
@@ -140,6 +150,8 @@ export async function createCaseAction(
   if (!title) title = `${templateKind}／${primary.name}／${ispNumber}`;
 
   const caseNo = `${series === "HL" ? "HLC" : "CSC"}-${Date.now()}`;
+  // 起票時のステータスはマスタの先頭（既定では「未対応」）。マスタで並び順を変えれば追従する（§7.8）
+  const initialStatus = await defaultCaseStatus();
   const created = await prisma.case.create({
     data: {
       series,
@@ -150,7 +162,7 @@ export async function createCaseAction(
       secondaryAgencyId: secondary?.id ?? null,
       ispNumber: ispNumber || null,
       deadline,
-      status: CASE_STATUSES[0], // 未対応
+      status: initialStatus,
       salesStaffId,
       createdBy: user.name,
       messages: {
@@ -162,6 +174,16 @@ export async function createCaseAction(
         },
       },
     },
+  });
+
+  // 状態遷移履歴（§4.1 requested = 起票・申請）
+  await recordStatusHistory({
+    entityType: "case",
+    entityId: created.id,
+    event: "requested",
+    fromStatus: null,
+    toStatus: created.status,
+    changedBy: user.loginId,
   });
 
   // 起票時: 当該一次代理店のR7アカウント全員へ通知（要件9-2①）
@@ -201,7 +223,8 @@ export async function replyCaseAction(
   }
   const isAgencySide = user.role === "R7" || user.role === "R10";
   if (isAgencySide) {
-    if (!canAccess(user.role, "agency-cases")) return { error: "この案件への返信権限がありません。" };
+    if (!canAccess(user.role, "agency-cases"))
+      return { error: "この案件への返信権限がありません。" };
     // 自店案件のみ返信可（§3.1 スコープ検証）
     const scope = await agencyScope(user);
     if (!scope || !scope.includes(c.primaryAgencyId)) {
@@ -217,7 +240,9 @@ export async function replyCaseAction(
   // 添付ファイルはSNC側のみ許可（代理店側のフォームには添付UI自体が無いが、サーバ側でも拒否する）
   const attachments: { id: string; name: string }[] = [];
   if (!isAgencySide) {
-    const files = formData.getAll("files").filter((f): f is File => f instanceof File && f.size > 0);
+    const files = formData
+      .getAll("files")
+      .filter((f): f is File => f instanceof File && f.size > 0);
     for (const f of files) {
       const stored = await storeFile(f, user.loginId);
       if ("error" in stored) return { error: stored.error };
@@ -332,7 +357,9 @@ async function changeStatus(caseId: string, formData: FormData): Promise<CaseAct
   }
 
   const toStatus = String(formData.get("status") ?? "");
-  if (!(CASE_STATUSES as readonly string[]).includes(toStatus)) {
+  // マスタ（StatusMaster kind="case"）に存在する値のみ受け付ける。
+  // マスタで値を増やせば、コード変更なしにこのバリデーションも追従する（§7.8）。
+  if (!(await isCaseStatus(toStatus))) {
     return { error: "ステータスの指定が不正です。" };
   }
   if (toStatus === c.status) return { error: `すでに「${c.status}」のため変更はありません。` };
@@ -341,6 +368,15 @@ async function changeStatus(caseId: string, formData: FormData): Promise<CaseAct
   await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
   await prisma.caseStatusHistory.create({
     data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
+  // 状態遷移履歴（§4.1）。ステータス変更は §5.1 凡例の「変」= update イベントとして記録する。
+  await recordStatusHistory({
+    entityType: "case",
+    entityId: c.id,
+    event: "update",
+    fromStatus: c.status,
+    toStatus,
+    changedBy: user.loginId,
   });
 
   await audit(user.loginId, "case_status_change", `${c.caseNo}: ${c.status} → ${toStatus}`);
@@ -381,7 +417,8 @@ async function changeCaseState(
   caseId: string,
   op: Operation,
   toStatus: string,
-  action: string
+  action: string,
+  event: StatusEvent
 ): Promise<CaseActionState> {
   const c = await prisma.case.findUnique({ where: { id: caseId } });
   if (!c) return { error: "案件が見つかりません。" };
@@ -395,6 +432,15 @@ async function changeCaseState(
   await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
   await prisma.caseStatusHistory.create({
     data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
+  // 状態遷移履歴（§4.1 suspend / delete）
+  await recordStatusHistory({
+    entityType: "case",
+    entityId: c.id,
+    event,
+    fromStatus: c.status,
+    toStatus,
+    changedBy: user.loginId,
   });
   await audit(user.loginId, action, `${c.caseNo}: ${c.status} → ${toStatus}`);
   revalidateCasePaths(series, c.id);
@@ -434,12 +480,12 @@ export async function assignCaseAction(caseId: string, formData: FormData): Prom
 }
 
 export async function suspendCaseAction(caseId: string): Promise<void> {
-  await changeCaseState(caseId, "suspend", CASE_SUSPENDED, "case_suspend");
+  await changeCaseState(caseId, "suspend", CASE_SUSPENDED, "case_suspend", "suspend");
 }
 
 // 削除（①②③＋担当窓口・論理削除 §3.4）
 export async function deleteCaseAction(caseId: string): Promise<void> {
-  await changeCaseState(caseId, "delete", CASE_DELETED, "case_delete");
+  await changeCaseState(caseId, "delete", CASE_DELETED, "case_delete", "delete");
 }
 
 // 復旧（停止解除・誤削除の復旧）。停止前／削除前のステータスへ戻す。
@@ -458,12 +504,25 @@ export async function restoreCaseAction(caseId: string): Promise<void> {
     where: { caseId: c.id, toStatus: c.status },
     orderBy: { changedAt: "desc" },
   });
+  // 履歴の値がマスタから外された（active=false・削除された）場合もマスタの先頭へ戻す（§7.8）
+  const masterValues = await caseStatusValues();
   const toStatus =
-    last && !isInactive(last.fromStatus) ? last.fromStatus : (CASE_STATUSES[0] as string);
+    last && !isInactive(last.fromStatus) && masterValues.includes(last.fromStatus)
+      ? last.fromStatus
+      : masterValues[0];
 
   await prisma.case.update({ where: { id: c.id }, data: { status: toStatus } });
   await prisma.caseStatusHistory.create({
     data: { caseId: c.id, fromStatus: c.status, toStatus, changedBy: user.name },
+  });
+  // 状態遷移履歴（§4.1。停止・削除からの復旧）
+  await recordStatusHistory({
+    entityType: "case",
+    entityId: c.id,
+    event: "restore",
+    fromStatus: c.status,
+    toStatus,
+    changedBy: user.loginId,
   });
   await audit(user.loginId, "case_restore", `${c.caseNo}: ${c.status} → ${toStatus}`);
   revalidateCasePaths(series, c.id);

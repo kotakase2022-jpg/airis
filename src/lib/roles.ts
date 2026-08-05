@@ -25,8 +25,16 @@ export const ROLE_LABELS: Record<Role, string> = {
 };
 
 export const ROLE_NUM: Record<Role, string> = {
-  R1: "①", R2: "②", R3: "③", R4: "④", R5: "⑤",
-  R6: "⑥", R7: "⑦", R8: "⑧", R9: "⑨", R10: "⑩",
+  R1: "①",
+  R2: "②",
+  R3: "③",
+  R4: "④",
+  R5: "⑤",
+  R6: "⑥",
+  R7: "⑦",
+  R8: "⑧",
+  R9: "⑨",
+  R10: "⑩",
 };
 
 // SNC系（テナント横断可）
@@ -58,18 +66,77 @@ export const MENU: {
   roles: Role[];
   dummyFor?: Role[]; // ④はダミー表示
 }[] = [
-  { key: "dashboard", label: "ダッシュボード", href: "/dashboard", roles: ["R1","R2","R3","R4","R5","R6","R7","R8","R9","R10"] },
-  { key: "account-requests", label: "Airisアカウント申請", href: "/account-requests", roles: ["R1","R2","R3","R4","R5","R6","R7","R8"] },
-  { key: "sales-staff", label: "販売員ID管理", href: "/sales-staff", roles: ["R1","R2","R3","R4","R7","R8"], dummyFor: ["R4"] },
-  { key: "field-agents", label: "訪販員申請・管理", href: "/field-agents", roles: ["R1","R2","R3","R4","R7","R8"], dummyFor: ["R4"] },
-  { key: "reports", label: "各種資料の提出", href: "/reports", roles: ["R1","R2","R3","R4","R7","R8","R9"], dummyFor: ["R4"] },
-  { key: "agencies", label: "下位代理店", href: "/agencies", roles: ["R1","R2","R3","R4","R7"], dummyFor: ["R4"] },
-  { key: "admin", label: "管理画面", href: "/admin", roles: ["R1","R2","R4"], dummyFor: ["R4"] },
-  { key: "hotline", label: "ホットライン窓口", href: "/hotline", roles: ["R1","R2","R3","R5"] },
-  { key: "consumer-center", label: "消費者センター窓口", href: "/consumer-center", roles: ["R1","R2","R3","R6"] },
-  { key: "agency-cases", label: "窓口案件", href: "/agency-cases", roles: ["R7","R10"] },
-  { key: "announcements", label: "お知らせ", href: "/announcements", roles: ["R1","R2","R3","R4","R7","R8","R9"], dummyFor: ["R4"] },
-  { key: "documents", label: "ドキュメント", href: "/documents", roles: ["R1","R2","R3","R4","R5","R6","R7","R8","R9"], dummyFor: ["R4"] },
+  {
+    key: "dashboard",
+    label: "ダッシュボード",
+    href: "/dashboard",
+    roles: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10"],
+  },
+  {
+    key: "account-requests",
+    label: "Airisアカウント申請",
+    href: "/account-requests",
+    roles: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"],
+  },
+  {
+    key: "sales-staff",
+    label: "販売員ID管理",
+    href: "/sales-staff",
+    roles: ["R1", "R2", "R3", "R4", "R7", "R8"],
+    dummyFor: ["R4"],
+  },
+  {
+    key: "field-agents",
+    label: "訪販員申請・管理",
+    href: "/field-agents",
+    roles: ["R1", "R2", "R3", "R4", "R7", "R8"],
+    dummyFor: ["R4"],
+  },
+  {
+    key: "reports",
+    label: "各種資料の提出",
+    href: "/reports",
+    roles: ["R1", "R2", "R3", "R4", "R7", "R8", "R9"],
+    dummyFor: ["R4"],
+  },
+  {
+    key: "agencies",
+    label: "下位代理店",
+    href: "/agencies",
+    roles: ["R1", "R2", "R3", "R4", "R7"],
+    dummyFor: ["R4"],
+  },
+  // ③の管理画面アクセスは発注者指示（2026-08-05）により〇。§4.2「MFA・パスワードの
+  // リセットは②③が実行」と整合させるため、③は閲覧+リセット系のみ可（停止/削除/ロール変更は①②のまま §5.1）
+  {
+    key: "admin",
+    label: "管理画面",
+    href: "/admin",
+    roles: ["R1", "R2", "R3", "R4"],
+    dummyFor: ["R4"],
+  },
+  { key: "hotline", label: "ホットライン窓口", href: "/hotline", roles: ["R1", "R2", "R3", "R5"] },
+  {
+    key: "consumer-center",
+    label: "消費者センター窓口",
+    href: "/consumer-center",
+    roles: ["R1", "R2", "R3", "R6"],
+  },
+  { key: "agency-cases", label: "窓口案件", href: "/agency-cases", roles: ["R7", "R10"] },
+  {
+    key: "announcements",
+    label: "お知らせ",
+    href: "/announcements",
+    roles: ["R1", "R2", "R3", "R4", "R7", "R8", "R9"],
+    dummyFor: ["R4"],
+  },
+  {
+    key: "documents",
+    label: "ドキュメント",
+    href: "/documents",
+    roles: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9"],
+    dummyFor: ["R4"],
+  },
 ];
 
 export function canAccess(role: Role, page: PageKey): boolean {
@@ -87,13 +154,13 @@ export function isDummyView(role: Role, page: PageKey): boolean {
 // ②は①（サスラボシステム管理）を申請できない（発注者指示 2026-08-05）:
 // 保守ベンダーである①の発行を発注者側の運用で増やせないようにするため、①の発行は①のみが行う。
 export const REQUESTABLE_ROLES: Record<Role, Role[]> = {
-  R1: ["R1","R2","R3","R4","R5","R6","R7","R8","R10"],
-  R2: ["R2","R3","R4","R5","R6","R7","R8","R10"],
-  R3: ["R3","R4","R5","R6","R7","R8","R10"],
+  R1: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"],
+  R2: ["R2", "R3", "R4", "R5", "R6", "R7", "R8", "R10"],
+  R3: ["R3", "R4", "R5", "R6", "R7", "R8", "R10"],
   R4: ["R4"],
   R5: ["R5"],
   R6: ["R6"],
-  R7: ["R7","R8"],
+  R7: ["R7", "R8"],
   R8: ["R8"],
   R9: [],
   R10: [],

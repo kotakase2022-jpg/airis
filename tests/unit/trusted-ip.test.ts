@@ -75,9 +75,9 @@ describe("TRUST_PROXY=true のとき x-forwarded-for の末尾hopのみ信頼す
 
 describe("TRUST_VERCEL_HEADERS=true（VERCEL=1）のとき x-vercel-forwarded-for を信頼する", () => {
   it("末尾hopを採用する（多段でも耐偽装）", () => {
-    expect(
-      resolveTrustedIp(h({ "x-vercel-forwarded-for": "spoof, 198.51.100.9" }), VERCEL)
-    ).toBe("198.51.100.9");
+    expect(resolveTrustedIp(h({ "x-vercel-forwarded-for": "spoof, 198.51.100.9" }), VERCEL)).toBe(
+      "198.51.100.9"
+    );
     expect(resolveTrustedIp(h({ "x-vercel-forwarded-for": "198.51.100.9" }), VERCEL)).toBe(
       "198.51.100.9"
     );

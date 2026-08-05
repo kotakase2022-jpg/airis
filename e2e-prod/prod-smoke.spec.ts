@@ -59,16 +59,124 @@ const CASES: {
   pw: string;
   menu: string[];
 }[] = [
-  { role: "R1", loginId: "airis_slb_sys_001", pw: PW_ADMIN, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","下位代理店","管理画面","ホットライン窓口","消費者センター窓口","お知らせ","ドキュメント"] },
-  { role: "R2", loginId: "airis_snc_adm_001", pw: PW_ADMIN, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","下位代理店","管理画面","ホットライン窓口","消費者センター窓口","お知らせ","ドキュメント"] },
-  { role: "R3", loginId: "airis_snc_ops_0001", pw: PW_ADMIN, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","下位代理店","ホットライン窓口","消費者センター窓口","お知らせ","ドキュメント"] },
-  { role: "R4", loginId: "airis_snc_vew_001", pw: PW_GENERAL, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","下位代理店","管理画面","お知らせ","ドキュメント"] },
-  { role: "R5", loginId: "airis_snc_spt1_001", pw: PW_GENERAL, menu: ["ダッシュボード","Airisアカウント申請","ホットライン窓口","ドキュメント"] },
-  { role: "R6", loginId: "airis_snc_spt2_001", pw: PW_GENERAL, menu: ["ダッシュボード","Airisアカウント申請","消費者センター窓口","ドキュメント"] },
-  { role: "R7", loginId: "airis_1110001_001", pw: PW_ADMIN, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","下位代理店","窓口案件","お知らせ","ドキュメント"] },
-  { role: "R8", loginId: "airis_2210001_001", pw: PW_GENERAL, menu: ["ダッシュボード","Airisアカウント申請","販売員ID管理","訪販員申請・管理","各種資料の提出","お知らせ","ドキュメント"] },
-  { role: "R9", loginId: "110001C001", pw: PW_GENERAL, menu: ["ダッシュボード","各種資料の提出","お知らせ","ドキュメント"] },
-  { role: "R10", loginId: "airis_1190001_001", pw: PW_ADMIN, menu: ["ダッシュボード","窓口案件"] },
+  {
+    role: "R1",
+    loginId: "airis_slb_sys_001",
+    pw: PW_ADMIN,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "下位代理店",
+      "管理画面",
+      "ホットライン窓口",
+      "消費者センター窓口",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R2",
+    loginId: "airis_snc_adm_001",
+    pw: PW_ADMIN,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "下位代理店",
+      "管理画面",
+      "ホットライン窓口",
+      "消費者センター窓口",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R3",
+    loginId: "airis_snc_ops_0001",
+    pw: PW_ADMIN,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "下位代理店",
+      "ホットライン窓口",
+      "消費者センター窓口",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R4",
+    loginId: "airis_snc_vew_001",
+    pw: PW_GENERAL,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "下位代理店",
+      "管理画面",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R5",
+    loginId: "airis_snc_spt1_001",
+    pw: PW_GENERAL,
+    menu: ["ダッシュボード", "Airisアカウント申請", "ホットライン窓口", "ドキュメント"],
+  },
+  {
+    role: "R6",
+    loginId: "airis_snc_spt2_001",
+    pw: PW_GENERAL,
+    menu: ["ダッシュボード", "Airisアカウント申請", "消費者センター窓口", "ドキュメント"],
+  },
+  {
+    role: "R7",
+    loginId: "airis_1110001_001",
+    pw: PW_ADMIN,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "下位代理店",
+      "窓口案件",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R8",
+    loginId: "airis_2210001_001",
+    pw: PW_GENERAL,
+    menu: [
+      "ダッシュボード",
+      "Airisアカウント申請",
+      "販売員ID管理",
+      "訪販員申請・管理",
+      "各種資料の提出",
+      "お知らせ",
+      "ドキュメント",
+    ],
+  },
+  {
+    role: "R9",
+    loginId: "110001C001",
+    pw: PW_GENERAL,
+    menu: ["ダッシュボード", "各種資料の提出", "お知らせ", "ドキュメント"],
+  },
+  { role: "R10", loginId: "airis_1190001_001", pw: PW_ADMIN, menu: ["ダッシュボード", "窓口案件"] },
 ];
 
 for (const c of CASES) {
@@ -86,13 +194,22 @@ for (const c of CASES) {
 
     const nav = page.locator("nav");
     for (const item of c.menu) {
-      await expect(nav.getByRole("link", { name: item, exact: true }), `${c.role}: メニュー「${item}」が表示されるべき`).toBeVisible();
+      await expect(
+        nav.getByRole("link", { name: item, exact: true }),
+        `${c.role}: メニュー「${item}」が表示されるべき`
+      ).toBeVisible();
     }
     for (const item of MENU_ALL.filter((m) => !c.menu.includes(m))) {
-      await expect(nav.getByRole("link", { name: item, exact: true }), `${c.role}: メニュー「${item}」は表示されないべき`).toHaveCount(0);
+      await expect(
+        nav.getByRole("link", { name: item, exact: true }),
+        `${c.role}: メニュー「${item}」は表示されないべき`
+      ).toHaveCount(0);
     }
 
-    await page.screenshot({ path: `../qa/screenshots/prod-${c.role}-dashboard.png`, fullPage: true });
+    await page.screenshot({
+      path: `../qa/screenshots/prod-${c.role}-dashboard.png`,
+      fullPage: true,
+    });
     expect(consoleErrors, "ページエラーが発生しないこと").toEqual([]);
   });
 }

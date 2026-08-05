@@ -45,14 +45,18 @@ const CSV_MATRIX: { path: string; allowed: RoleKey[]; spec: string }[] = [
   },
   {
     path: "/admin/csv?type=inventory",
-    allowed: ["R1", "R2"],
-    spec: "§5.2 Airisアカウント管理=①②のみ（④ダミーは実データのエクスポート不可 §3.5）",
+    // ③は発注者指示（2026-08-05「③の管理画面を〇」）で管理画面アクセス可＝棚卸CSVも取得できる。
+    // ④はダミー表示のため実データのエクスポート不可（§3.5）。
+    allowed: ["R1", "R2", "R3"],
+    spec: "§5.2 Airisアカウント管理=①②③（③は発注者指示2026-08-05で追加。④ダミーは実データのエクスポート不可 §3.5）",
   },
 ];
 
 test.describe("主要CSVルートの権限（§5.1 / §5.2）", () => {
   for (const role of ALL_ROLES) {
-    test(`${role}(${ACCOUNTS[role].label}): 主要CSVルートの可否が権限表どおり`, async ({ page }) => {
+    test(`${role}(${ACCOUNTS[role].label}): 主要CSVルートの可否が権限表どおり`, async ({
+      page,
+    }) => {
       await login(page, role);
       for (const route of CSV_MATRIX) {
         const res = await page.request.get(route.path, { maxRedirects: 0 });
@@ -61,14 +65,10 @@ test.describe("主要CSVルートの権限（§5.1 / §5.2）", () => {
           expect(res.status(), `${role} → ${route.path} は許可（${route.spec}）`).toBe(200);
           expect(contentType, `${role} → ${route.path} はCSVが返る`).toContain("csv");
         } else {
-          expect(
-            res.status(),
-            `${role} → ${route.path} は不許可（${route.spec}）`
-          ).not.toBe(200);
-          expect(
-            contentType,
-            `${role} → ${route.path} はCSV本文を返してはいけない`
-          ).not.toContain("csv");
+          expect(res.status(), `${role} → ${route.path} は不許可（${route.spec}）`).not.toBe(200);
+          expect(contentType, `${role} → ${route.path} はCSV本文を返してはいけない`).not.toContain(
+            "csv"
+          );
         }
       }
     });
@@ -107,7 +107,9 @@ function csvRows(body: string): string[][] {
     .map(splitCsvRow);
 }
 
-test("R4（SNC閲覧）: 販売員CSVはダミー代理店のデータのみ（§3.5 ダミー表示モード）", async ({ page }) => {
+test("R4（SNC閲覧）: 販売員CSVはダミー代理店のデータのみ（§3.5 ダミー表示モード）", async ({
+  page,
+}) => {
   const agencies = await db().agency.findMany({ select: { code: true, isDummy: true } });
   const dummyCodes = new Set(agencies.filter((a) => a.isDummy).map((a) => a.code));
   const realCodes = new Set(agencies.filter((a) => !a.isDummy).map((a) => a.code));
@@ -178,7 +180,9 @@ test.describe("ドキュメントの操作権限（§7.12 / §5.2）", () => {
     });
   }
 
-  test("R10（稼働終了代理店）: /documents はアクセス不可（§5.2 ドキュメント=×）", async ({ page }) => {
+  test("R10（稼働終了代理店）: /documents はアクセス不可（§5.2 ドキュメント=×）", async ({
+    page,
+  }) => {
     await login(page, "R10");
     await page.goto("/documents");
     await expect(page).toHaveURL(/\/dashboard/, { timeout: 15_000 });
@@ -229,8 +233,7 @@ test.describe("Airisアカウント申請の承認権限（§5.1 / §6.1）", ()
     await db().accountRequest.deleteMany({ where: { requestId: { startsWith: "QA20-" } } });
   });
 
-  const row = (page: Page, requestId: string) =>
-    page.locator("tbody tr", { hasText: requestId });
+  const row = (page: Page, requestId: string) => page.locator("tbody tr", { hasText: requestId });
 
   test("R7（1次代理店管理者）: 一承のみ持つ（pending_firstに1次承認 / pending_finalには承認ボタン無し）", async ({
     page,
@@ -281,7 +284,9 @@ test.describe("Airisアカウント申請の承認権限（§5.1 / §6.1）", ()
     }
   });
 
-  test("R4（SNC閲覧）: 申請フォームは出る（§3.5 例外）が他ロールの申請は見えない", async ({ page }) => {
+  test("R4（SNC閲覧）: 申請フォームは出る（§3.5 例外）が他ロールの申請は見えない", async ({
+    page,
+  }) => {
     await login(page, "R4");
     await page.goto("/account-requests");
     // §3.5 例外: ④のAirisアカウント申請（自ロール④のみ §6.1）は実データとして受け付ける
@@ -292,7 +297,9 @@ test.describe("Airisアカウント申請の承認権限（§5.1 / §6.1）", ()
 
   // §3.6「全件ロールバック」/ §3.1: 最終承認は Account 発行 + 申請更新の2テーブル書き込みなので、
   // 片方が失敗したら両方とも書かれないこと（真のトランザクション）を検証する。
-  test("§3.6 最終承認は真のトランザクション: ID採番が衝突すると申請も更新されない", async ({ page }) => {
+  test("§3.6 最終承認は真のトランザクション: ID採番が衝突すると申請も更新されない", async ({
+    page,
+  }) => {
     const d = db();
     const agency = await d.agency.findUniqueOrThrow({ where: { code: "210001" } });
     const prefix = `airis_2${agency.code}_`; // ⑧のアカウントID体系（§4）
@@ -353,7 +360,9 @@ test.describe("Airisアカウント申請の承認権限（§5.1 / §6.1）", ()
     }
   });
 
-  test("R9/R10: /account-requests はアクセス不可（§5.2 Airisアカウント申請=×）", async ({ page }) => {
+  test("R9/R10: /account-requests はアクセス不可（§5.2 Airisアカウント申請=×）", async ({
+    page,
+  }) => {
     for (const role of ["R9", "R10"] as RoleKey[]) {
       await page.context().clearCookies();
       await login(page, role);

@@ -9,16 +9,20 @@ import {
   effectiveRole,
   getCurrentUser,
   getMfaPendingSession,
-  hashPassword,
+  hashPasswordWithPepperVersion,
   trustedIpFrom,
   verifyPassword,
   verifyPasswordLenient,
 } from "@/lib/auth";
 import { MFA_MAX_ATTEMPTS, mfaRequiredForRole, verifyMfaCode } from "@/lib/mfa";
-import { ADMIN_PW_ROLES, Role } from "@/lib/roles";
+import {
+  isPasswordExpired,
+  passwordPolicy,
+  passwordReuseError,
+  validateNewPassword,
+} from "@/lib/password-policy";
+import { Role } from "@/lib/roles";
 import { audit } from "@/lib/util";
-
-const PW_HISTORY_GENERATIONS = 24; // §4.2 再利用禁止: 過去24世代
 
 // 認証エンドポイントのレート制限（§10.1 / SEC要件②）: 同一IP+同一IDで1分に5回まで
 const RATE_WINDOW_MS = 60 * 1000;
@@ -34,11 +38,8 @@ const RATE_LIMIT_ERROR = "試行が多すぎます。しばらくしてからお
 // アクセスログ（=ロック判定・レート制限の情報源）が記録できない場合はログインを拒否する（fail-closed）
 const ACCESS_LOG_ERROR = "ログイン処理を完了できませんでした。しばらくしてから再試行してください";
 
-// パスワード有効期間（§4.2: ①②③⑦=90日 / その他=180日）
-// 判定は実効ロール（稼働終了代理店の⑦⑧は⑩＝一般ポリシー）で行う。
-function passwordMaxAgeDays(role: string): number {
-  return ADMIN_PW_ROLES.includes(role as Role) ? 90 : 180;
-}
+// パスワードポリシー（桁数・有効期間・履歴世代数）は src/lib/password-policy.ts に集約し、
+// 環境変数で変更できる（§10.1「ポリシー値は設定で変更可能に」）。既定値は §4.2 の表どおり。
 
 // 直近ウィンドウ内のログイン失敗回数（AccessLog を唯一の情報源として集計 §3.3 / 要件1-6）。
 // 監査ログ（AuditLog）は書き込み失敗を業務停止の理由にしない設計（util.audit は例外を飲む）ため、
@@ -122,7 +123,10 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
     return { error: RATE_LIMIT_ERROR };
   }
 
-  const account = await prisma.account.findUnique({ where: { loginId }, include: { agency: true } });
+  const account = await prisma.account.findUnique({
+    where: { loginId },
+    include: { agency: true },
+  });
   if (!account || account.status === "deleted" || account.status === "suspended") {
     const logged = await recordAccess({
       loginId,
@@ -160,7 +164,8 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
 
   // 入力ゆらぎ（前後空白・全角英数・引用符の巻き込み）を吸収して照合する。
   // 一致した候補（check.matched）は再ハッシュの入力に使う。
-  const check = verifyPasswordLenient(password, account.passwordHash);
+  // 照合は account.pepperVersion のペッパーを最優先で試す（§10.3 / SEC②#42。pepper.ts）。
+  const check = verifyPasswordLenient(password, account.passwordHash, account.pepperVersion);
   if (!check.ok) {
     const logged = await recordAccess({
       loginId,
@@ -186,14 +191,28 @@ export async function loginAction(_prev: { error?: string } | undefined, formDat
     return { error: logged ? GENERIC_LOGIN_ERROR : ACCESS_LOG_ERROR };
   }
 
-  // 旧アルゴリズム（bcrypt）・ペッパー未適用の旧ハッシュは、パスワード検証を通過した時点で
-  // Argon2id + 現行ペッパーへ再ハッシュ（§10.3 / SEC②#42）。passwordUpdatedAt は据え置く。
+  // 旧アルゴリズム（bcrypt）・旧バージョン／未適用のペッパーだったハッシュは、パスワード検証を
+  // 通過した時点で Argon2id + 現行バージョンのペッパーへ再ハッシュし、適用済みバージョンIDを
+  // Account.pepperVersion に記録する（§10.3 / SEC②#42。ペッパーの無停止ローテーション）。
+  // passwordUpdatedAt は据え置く（パスワード自体は変わっていないため有効期限は延びない）。
   if (check.needsRehash) {
+    const rehashed = hashPasswordWithPepperVersion(check.matched);
     await prisma.account.update({
       where: { id: account.id },
-      data: { passwordHash: hashPassword(check.matched) },
+      data: { passwordHash: rehashed.hash, pepperVersion: rehashed.pepperVersion },
     });
-    await audit(loginId, "password_rehash", "algorithm=argon2id pepper_version=v1");
+    await audit(
+      loginId,
+      "password_rehash",
+      `algorithm=argon2id pepper_version=${rehashed.pepperVersion ?? "none"}`
+    );
+  } else if ((account.pepperVersion ?? null) !== check.pepperVersion) {
+    // ハッシュは現行方式のまま。記録されているバージョンIDだけが実態とずれている場合
+    // （ペッパー導入前に作られた行など）は、再ハッシュせずメタデータのみ補正する。
+    await prisma.account.update({
+      where: { id: account.id },
+      data: { pepperVersion: check.pepperVersion },
+    });
   }
 
   // ===== MFA（TOTP §4.2）=====
@@ -239,8 +258,7 @@ async function finalizeLogin(
   // パスワード有効期限（§4.2）: 期限超過なら強制変更フラグを立てて/passwordへ誘導。
   // 実効ロールで判定する（稼働終了代理店の⑦⑧=⑩は一般ポリシー180日）。
   const role = effectiveRole(account.role as Role, account.agency?.status);
-  const maxAgeMs = passwordMaxAgeDays(role) * 24 * 3600 * 1000;
-  const expired = Date.now() - account.passwordUpdatedAt.getTime() > maxAgeMs;
+  const expired = isPasswordExpired(account.passwordUpdatedAt, role, new Date());
   const logged = await recordAccess({
     loginId: account.loginId,
     accountId: account.id,
@@ -262,10 +280,7 @@ async function finalizeLogin(
 }
 
 // ===== MFAコード検証（登録済みアカウントのログイン時 §4.2）=====
-export async function verifyMfaAction(
-  _prev: { error?: string } | undefined,
-  formData: FormData
-) {
+export async function verifyMfaAction(_prev: { error?: string } | undefined, formData: FormData) {
   const pending = await getMfaPendingSession();
   if (!pending) redirect("/login");
   const acc = pending.account;
@@ -313,10 +328,7 @@ export async function verifyMfaAction(
 
 // ===== MFA登録（QRコード読み取り後のコード確認 §4.2）=====
 // (a) mfaPendingセッション（必須ロールの初回登録）と (b) 通常セッションの任意登録（⑨）の両方に対応。
-export async function enrollMfaAction(
-  _prev: { error?: string } | undefined,
-  formData: FormData
-) {
+export async function enrollMfaAction(_prev: { error?: string } | undefined, formData: FormData) {
   const code = String(formData.get("code") ?? "");
   const { ip, ua } = await requestMeta();
 
@@ -375,7 +387,10 @@ export async function enrollMfaAction(
   redirect("/dashboard");
 }
 
-export async function changePasswordAction(_prev: { error?: string } | undefined, formData: FormData) {
+export async function changePasswordAction(
+  _prev: { error?: string } | undefined,
+  formData: FormData
+) {
   const user = await getCurrentUser();
   if (!user) redirect("/login");
   const current = String(formData.get("current") ?? "");
@@ -385,42 +400,48 @@ export async function changePasswordAction(_prev: { error?: string } | undefined
   const account = await prisma.account.findUnique({ where: { id: user.id } });
   // 現在パスワードの照合はログインと同じゆらぎ吸収を適用する（ログインで通った入力が
   // ここで弾かれる不整合を防ぐ）。新パスワードは入力そのままを尊重する。
-  if (!account || !verifyPasswordLenient(current, account.passwordHash).ok) {
+  if (!account || !verifyPasswordLenient(current, account.passwordHash, account.pepperVersion).ok) {
     return { error: "現在のパスワードが正しくありません" };
   }
   if (next !== confirm) return { error: "新しいパスワードが一致しません" };
-  // 桁数は実効ロールで判定（§4.2）。稼働終了代理店（⑦⑧→⑩）は一般ポリシー14桁。
-  const minLen = ADMIN_PW_ROLES.includes(user.role as Role) ? 20 : 14;
-  if (next.length < minLen) return { error: `パスワードは${minLen}桁以上にしてください` };
-  if (!/[A-Z]/.test(next) || !/[a-z]/.test(next) || !/[0-9]/.test(next)) {
-    return { error: "大文字・小文字・数字をそれぞれ含めてください" };
-  }
+  // 桁数・文字種は実効ロールで判定（§4.2）。稼働終了代理店（⑦⑧→⑩）は一般ポリシー14桁。
+  const policy = passwordPolicy();
+  const formatError = validateNewPassword(next, user.role, policy);
+  if (formatError) return { error: formatError };
 
-  // 再利用禁止（§4.2: 過去24世代）: 現在のパスワード + PasswordHistory（直近24世代）と照合
+  // 再利用禁止（§4.2: 過去24世代）: 現在のパスワード + PasswordHistory（直近24世代）と照合。
+  // 履歴のハッシュはバージョン列を持たないため、pepperVersion 指定なしで既知の全バージョンを試す。
   const history = await prisma.passwordHistory.findMany({
     where: { accountId: user.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: PW_HISTORY_GENERATIONS,
+    take: policy.historyGenerations,
   });
   if (
-    verifyPassword(next, account.passwordHash).ok ||
+    verifyPassword(next, account.passwordHash, account.pepperVersion).ok ||
     history.some((h) => verifyPassword(next, h.hash).ok)
   ) {
-    return { error: "過去24世代と同じパスワードは使用できません" };
+    return { error: passwordReuseError(policy) };
   }
 
-  // 旧パスワードを履歴へ保存してから更新（24世代を超える古い履歴は削除）
+  // 旧パスワードを履歴へ保存してから更新（24世代を超える古い履歴は削除）。
+  // 新しいハッシュに適用したペッパーのバージョンIDも記録する（SEC②#42）。
   await prisma.passwordHistory.create({
     data: { accountId: user.id, hash: account.passwordHash },
   });
+  const hashed = hashPasswordWithPepperVersion(next);
   await prisma.account.update({
     where: { id: user.id },
-    data: { passwordHash: hashPassword(next), mustChangePassword: false, passwordUpdatedAt: new Date() },
+    data: {
+      passwordHash: hashed.hash,
+      pepperVersion: hashed.pepperVersion,
+      mustChangePassword: false,
+      passwordUpdatedAt: new Date(),
+    },
   });
   const excess = await prisma.passwordHistory.findMany({
     where: { accountId: user.id },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    skip: PW_HISTORY_GENERATIONS,
+    skip: policy.historyGenerations,
     select: { id: true },
   });
   if (excess.length > 0) {

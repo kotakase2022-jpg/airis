@@ -15,7 +15,7 @@ export function AuthBrand({ subtitle }: { subtitle?: string }) {
           className="h-auto w-full"
         />
       </div>
-      <h1 className="mb-2 whitespace-nowrap text-center text-[clamp(16px,4.2vw,28px)] font-bold leading-tight tracking-tight text-[#1B3B6F]">
+      <h1 className="mb-2 text-center text-[clamp(16px,4.2vw,28px)] leading-tight font-bold tracking-tight whitespace-nowrap text-[#1B3B6F]">
         So-net光 販売代理店支援ポータル
       </h1>
       {subtitle && <p className="mb-7 text-center text-sm text-slate-500">{subtitle}</p>}

@@ -13,10 +13,22 @@ export const MFA_MAX_ATTEMPTS = 5; // 連続失敗でセッション破棄→ロ
 // 時計ずれ許容: 前後30秒（1ステップ）
 const EPOCH_TOLERANCE_SEC = 30;
 
+// 開発時のMFAスキップ（§9-1「MFAは開発時スキップ可能なenvフラグ」）。
+// MFA_DEV_SKIP=true のとき、MFA未登録アカウントへの強制登録（/mfa/setup）を行わない。
+// 本番相当環境（VERCEL が設定されている）では環境変数があっても常に無効＝MFA必須とする
+// （§4.2 ①〜⑧⑩は必須。設定ミスで本番のMFAが外れないよう fail-safe にする）。
+// 既にMFA登録済み（mfaEnabled=true）のアカウントは、このフラグに関係なくコード検証を要求する
+// （ログイン処理側が account.mfaEnabled を優先して判定する）。
+export function mfaDevSkipEnabled(): boolean {
+  if (process.env.VERCEL) return false;
+  return process.env.MFA_DEV_SKIP === "true";
+}
+
 // ⑨（販売員）のみ利用任意（§4.2）。実効ロールでなく生ロールで判定する
 // （稼働終了代理店の⑦⑧=⑩も必須のため）。
 export function mfaRequiredForRole(rawRole: Role): boolean {
-  return rawRole !== "R9";
+  if (rawRole === "R9") return false;
+  return !mfaDevSkipEnabled();
 }
 
 export function generateMfaSecret(): string {

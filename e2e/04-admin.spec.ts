@@ -4,7 +4,8 @@
  */
 import { test, expect, Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
-import { completeMfaIfNeeded,
+import {
+  completeMfaIfNeeded,
   ACCOUNTS,
   db,
   login,
@@ -73,22 +74,39 @@ test.describe("管理画面アクセス制御（§5.2: ①②のみ・④ダミ�
     expect(criticalErrors(errors)).toEqual([]);
   });
 
-  test("R3/R8は/adminへ直接アクセスできずダッシュボードへリダイレクト（監査ログ記録）", async ({ page }) => {
+  // 発注者指示（2026-08-05）により③の管理画面アクセスは〇。
+  // ③は閲覧+リセット代行（§4.2）まで。変更・停止・削除は①②のみ（§5.1）。
+  test("R3は/adminにアクセスでき、メニューにも表示される（発注者指示 2026-08-05）", async ({
+    page,
+  }) => {
+    await login(page, "R3");
+    // サイドメニューのリンク（ダッシュボードの「管理画面 →」と区別するため aside 内に限定）
+    await expect(
+      page.locator("aside nav").getByRole("link", { name: "管理画面", exact: true })
+    ).toBeVisible();
+    await page.goto("/admin");
+    await expect(
+      page.getByRole("heading", { name: "管理画面（Airisアカウント管理）" })
+    ).toBeVisible();
+    // 実データの一覧が見える（ダミーではない）
+    await page.goto("/admin?q=airis_snc_adm_001");
+    await expect(accountRow(page, "airis_snc_adm_001")).toHaveCount(1);
+  });
+
+  test("R8は/adminへ直接アクセスできずダッシュボードへリダイレクト（監査ログ記録）", async ({
+    page,
+  }) => {
     const since = new Date(Date.now() - 60_000);
 
-    await login(page, "R3");
-    await expect(page.getByRole("link", { name: "管理画面" })).toHaveCount(0);
-    await page.goto("/admin");
-    await expect(page).toHaveURL(/\/dashboard/);
-
     await login(page, "R8");
+    await expect(page.getByRole("link", { name: "管理画面" })).toHaveCount(0);
     await page.goto("/admin");
     await expect(page).toHaveURL(/\/dashboard/);
 
     // 権限外アクセスの試みが監査ログに記録される（§3.3）
     const denied = await db().auditLog.findFirst({
       where: {
-        actor: ACCOUNTS.R3.loginId,
+        actor: ACCOUNTS.R8.loginId,
         action: "access_denied",
         target: { contains: "page=admin" },
         createdAt: { gte: since },
@@ -191,9 +209,7 @@ test.describe("アカウント一覧・検索・フィルタ（§7.2）", () => 
 
     // 存在しないIDの検索は0件（異常系）
     await page.goto(`/admin?q=qa2_no_such_account_xyz`);
-    await expect(
-      page.getByText("条件に一致するアカウントがありません。")
-    ).toBeVisible();
+    await expect(page.getByText("条件に一致するアカウントがありません。")).toBeVisible();
   });
 });
 
@@ -244,7 +260,9 @@ test.describe.serial("アカウントライフサイクル（停止/再開/削�
     expect(resumeLog).not.toBeNull();
   });
 
-  test("削除→DBでdeleted（論理削除・deletedAt記録）、復旧→deletedAtがクリアされる", async ({ page }) => {
+  test("削除→DBでdeleted（論理削除・deletedAt記録）、復旧→deletedAtがクリアされる", async ({
+    page,
+  }) => {
     page.on("dialog", (d) => d.accept());
     await login(page, "R2");
     await page.goto(`/admin?q=${lcId}`);
@@ -253,7 +271,9 @@ test.describe.serial("アカウントライフサイクル（停止/再開/削�
 
     // 削除（論理削除 §3.4: 物理削除しない）
     await row.getByRole("button", { name: "削除", exact: true }).click();
-    await expect(page.getByText(new RegExp(`${lcId} を削除しました`))).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(new RegExp(`${lcId} を削除しました`))).toBeVisible({
+      timeout: 10_000,
+    });
     let acc = await db().account.findUnique({ where: { loginId: lcId } });
     expect(acc).not.toBeNull(); // レコードは残る
     expect(acc!.status).toBe("deleted");
@@ -268,7 +288,9 @@ test.describe.serial("アカウントライフサイクル（停止/再開/削�
 
     // 復旧
     await restoreBtn.click();
-    await expect(page.getByText(new RegExp(`${lcId} を復旧しました`))).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(new RegExp(`${lcId} を復旧しました`))).toBeVisible({
+      timeout: 10_000,
+    });
     acc = await db().account.findUnique({ where: { loginId: lcId } });
     expect(acc!.deletedAt).toBeNull();
     expect(acc!.status).toBe("suspended"); // 安全のため停止中として復元（アプリ仕様）
@@ -290,9 +312,9 @@ test.describe.serial("アカウントライフサイクル（停止/再開/削�
     await page.locator('input[name="loginId"]').fill(lcId);
     await page.locator('input[name="password"]').fill(`Qa2-Initial-${RUN}!x`);
     await page.getByRole("button", { name: "ログイン" }).click();
-    await expect(
-      page.getByText("IDまたはパスワードが正しくありません")
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({
+      timeout: 10_000,
+    });
     await expect(page).toHaveURL(/\/login/);
   });
 });
@@ -308,7 +330,9 @@ test.describe.serial("パスワードリセット（管理者代行 §4.2）", (
     await createQa2Account(prId, { status: "active" });
   });
 
-  test("R2がPWリセット→一時パスワードが一度だけ表示され、DBは初回変更必須になる", async ({ page }) => {
+  test("R2がPWリセット→一時パスワードが一度だけ表示され、DBは初回変更必須になる", async ({
+    page,
+  }) => {
     page.on("dialog", (d) => d.accept());
     await login(page, "R2");
     await page.goto(`/admin?q=${prId}`);
@@ -345,9 +369,7 @@ test.describe.serial("パスワードリセット（管理者代行 §4.2）", (
     await page.getByRole("button", { name: "ログイン" }).click();
     await completeMfaIfNeeded(page, prId); // PWリセット後もMFAは維持され検証を通過（§4.2）
     await page.waitForURL(/\/password/, { timeout: 15_000 });
-    await expect(
-      page.getByRole("heading", { name: "パスワードの変更" })
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: "パスワードの変更" })).toBeVisible();
 
     // 変更完了まで他機能へ遷移不可（§10.1）
     await page.goto("/admin");
@@ -369,7 +391,9 @@ test.describe.serial("パスワードリセット（管理者代行 §4.2）", (
 // CSV出力（棚卸・監査ログ §3.6）と監査ログビューア（§3.3）
 // ---------------------------------------------------------------------------
 test.describe("CSV出力・監査ログ", () => {
-  test("棚卸CSV: レスポンスがCSV（BOM付きUTF-8）でヘッダ行が正しく、SNC系アカウントも含む", async ({ page }) => {
+  test("棚卸CSV: レスポンスがCSV（BOM付きUTF-8）でヘッダ行が正しく、SNC系アカウントも含む", async ({
+    page,
+  }) => {
     await login(page, "R2");
     await page.goto("/admin");
     await expect(page.getByRole("link", { name: "棚卸CSV出力" })).toBeVisible();
@@ -420,14 +444,22 @@ test.describe("CSV出力・監査ログ", () => {
     expect(log).not.toBeNull();
   });
 
-  test("CSV権限: R3は403、未認証は401（異常系）", async ({ page, browser }) => {
+  // ③は発注者指示（2026-08-05）で管理画面〇のため200。権限外の検証は⑨（管理画面×）で行う
+  test("CSV権限: R3は200（管理画面〇）/ R9は403 / 未認証は401（異常系）", async ({
+    page,
+    browser,
+  }) => {
     await login(page, "R3");
+    const r3res = await page.request.get("/admin/csv?type=inventory");
+    expect(r3res.status()).toBe(200);
+
+    await login(page, "R9");
     const res = await page.request.get("/admin/csv?type=inventory");
     expect(res.status()).toBe(403);
 
     // 権限外エクスポートの試みも監査ログに記録
     const denied = await db().auditLog.findFirst({
-      where: { actor: ACCOUNTS.R3.loginId, action: "csv_export", result: "denied" },
+      where: { actor: ACCOUNTS.R9.loginId, action: "csv_export", result: "denied" },
       orderBy: { createdAt: "desc" },
     });
     expect(denied).not.toBeNull();
@@ -459,12 +491,8 @@ test.describe("CSV出力・監査ログ", () => {
 
     // 画面の監査ログビューア（直近100件）にも表示される
     await page.reload();
-    await expect(
-      page.getByRole("heading", { name: /監査ログ（直近100件）/ })
-    ).toBeVisible();
-    await expect(
-      page.locator("td", { hasText: "view_admin" }).first()
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { name: /監査ログ（直近100件）/ })).toBeVisible();
+    await expect(page.locator("td", { hasText: "view_admin" }).first()).toBeVisible();
   });
 
   test("アクセスログCSVダウンロード機能が提供されている（§7.2/§3.3/要件1-6）", async ({ page }) => {
@@ -477,7 +505,10 @@ test.describe("CSV出力・監査ログ", () => {
     ).toBeVisible();
   });
 
-  test("存在しないファイルIDは403（存在オラクル対策 §10.5）・未認証は401（異常系）", async ({ page, browser }) => {
+  test("存在しないファイルIDは403（存在オラクル対策 §10.5）・未認証は401（異常系）", async ({
+    page,
+    browser,
+  }) => {
     await login(page, "R2");
     const res = await page.request.get("/files/qa2_no_such_file_id");
     expect(res.status()).toBe(403);
@@ -494,7 +525,9 @@ test.describe("CSV出力・監査ログ", () => {
 
 // ============ アカウント変更（氏名・メール・ロール §5.1「変」/ BUG-014修正の検証） ============
 test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
-  test("R2がSNC系（代理店非所属）アカウントの氏名・メール・ロールを変更できる", async ({ page }) => {
+  test("R2がSNC系（代理店非所属）アカウントの氏名・メール・ロールを変更できる", async ({
+    page,
+  }) => {
     const loginId = `qa2_edit_snc_${RUN}`;
     // 代理店非所属のSNC系アカウント（R5）をDB直で作成
     const acc = await db().account.create({
@@ -533,11 +566,15 @@ test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
       });
       expect(log).not.toBeNull();
     } finally {
-      await db().account.delete({ where: { id: acc.id } }).catch(() => {});
+      await db()
+        .account.delete({ where: { id: acc.id } })
+        .catch(() => {});
     }
   });
 
-  test("代理店所属アカウントのロールはR7/R8のみ・R9は編集ボタン非表示（異常系）", async ({ page }) => {
+  test("代理店所属アカウントのロールはR7/R8のみ・R9は編集ボタン非表示（異常系）", async ({
+    page,
+  }) => {
     const loginId = `qa2_edit_agency_${RUN}`;
     const { id } = await createQa2Account(loginId, { role: "R8" });
     try {
@@ -553,16 +590,24 @@ test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
       const r9row = accountRow(page, "110001C001");
       await expect(r9row.getByRole("button", { name: "編集" })).toHaveCount(0);
     } finally {
-      await db().account.delete({ where: { id } }).catch(() => {});
+      await db()
+        .account.delete({ where: { id } })
+        .catch(() => {});
     }
   });
 
-  test("SNC系（agencyId=null）アカウントの停止・再開ができる（BUG-002アクション側の検証）", async ({ page }) => {
+  test("SNC系（agencyId=null）アカウントの停止・再開ができる（BUG-002アクション側の検証）", async ({
+    page,
+  }) => {
     const loginId = `qa2_snc_ops_${RUN}`;
     const acc = await db().account.create({
       data: {
-        loginId, role: "R5", name: "QA2 SNC停止テスト", status: "active",
-        passwordHash: "x", mustChangePassword: false,
+        loginId,
+        role: "R5",
+        name: "QA2 SNC停止テスト",
+        status: "active",
+        passwordHash: "x",
+        mustChangePassword: false,
       },
     });
     try {
@@ -575,7 +620,9 @@ test.describe("アカウント変更（§5.1 変更・権限変更）", () => {
       const after = await db().account.findUnique({ where: { id: acc.id } });
       expect(after?.status).toBe("suspended");
     } finally {
-      await db().account.delete({ where: { id: acc.id } }).catch(() => {});
+      await db()
+        .account.delete({ where: { id: acc.id } })
+        .catch(() => {});
     }
   });
 });
@@ -615,9 +662,9 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       await row2.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`);
       page.once("dialog", (d) => d.accept());
       await row2.getByRole("button", { name: "保存" }).click();
-      await expect(
-        row2.getByText("一次代理店管理者には1次代理店を選択してください")
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(row2.getByText("一次代理店管理者には1次代理店を選択してください")).toBeVisible({
+        timeout: 10_000,
+      });
       expect((await db().account.findUnique({ where: { id: tier2Id } }))!.role).toBe("R8");
 
       // 1次代理店所属 → ⑧（二次代理店管理者）に変更しようとするとエラー
@@ -629,9 +676,9 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       await row1.locator('input[name="reason"]').fill(`QA2変更理由 ${RUN}`);
       page.once("dialog", (d) => d.accept());
       await row1.getByRole("button", { name: "保存" }).click();
-      await expect(
-        row1.getByText("二次代理店管理者には2次代理店を選択してください")
-      ).toBeVisible({ timeout: 10_000 });
+      await expect(row1.getByText("二次代理店管理者には2次代理店を選択してください")).toBeVisible({
+        timeout: 10_000,
+      });
       expect((await db().account.findUnique({ where: { id: tier1Acc.id } }))!.role).toBe("R7");
 
       // tier整合が保たれる変更（ロールは据え置きで氏名変更）は成功する
@@ -647,8 +694,12 @@ test.describe("アカウント変更のtier整合（§3.1 / §5.1 権限変更�
       expect(after!.name).toBe(`QA2 tier1 更新 ${RUN}`);
       expect(after!.role).toBe("R7");
     } finally {
-      await db().account.delete({ where: { id: tier2Id } }).catch(() => {});
-      await db().account.delete({ where: { id: tier1Acc.id } }).catch(() => {});
+      await db()
+        .account.delete({ where: { id: tier2Id } })
+        .catch(() => {});
+      await db()
+        .account.delete({ where: { id: tier1Acc.id } })
+        .catch(() => {});
     }
   });
 });

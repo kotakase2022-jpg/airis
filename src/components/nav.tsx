@@ -15,13 +15,11 @@ export function NavLinks({ items }: { items: { key: string; label: string; href:
             <Link
               href={item.href}
               className={`relative flex items-center rounded-lg px-3 py-2.5 text-sm font-medium transition ${
-                active
-                  ? "bg-blue-50 text-blue-700"
-                  : "text-slate-600 hover:bg-slate-50"
+                active ? "bg-blue-50 text-blue-700" : "text-slate-600 hover:bg-slate-50"
               }`}
             >
               {active && (
-                <span className="absolute left-0 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-blue-600" />
+                <span className="absolute top-1/2 left-0 h-6 w-1 -translate-y-1/2 rounded-r bg-blue-600" />
               )}
               <PageIcon page={item.key} className="mr-2 h-4 w-4 shrink-0" />
               {item.label}

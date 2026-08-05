@@ -235,7 +235,9 @@ test.describe.serial("パスワード履歴: 24世代ウィンドウと剪定", 
 test.describe("パスワード有効期限", () => {
   const daysAgo = (d: number) => new Date(Date.now() - d * 24 * 3600 * 1000);
 
-  test("管理者ロール(R3): 91日経過 → ログイン時に/passwordへ誘導・mustChangePassword=true", async ({ page }) => {
+  test("管理者ロール(R3): 91日経過 → ログイン時に/passwordへ誘導・mustChangePassword=true", async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     const ID = `QA13_exp_adm_${RUN}`;
     const PW = `QA13-Admin-Expired-${RUN}a`; // 20桁以上
@@ -244,9 +246,7 @@ test.describe("パスワード有効期限", () => {
     try {
       await submitLogin(page, ID, PW);
       await page.waitForURL(/\/password/, { timeout: 15_000 });
-      await expect(
-        page.getByRole("heading", { name: "パスワードの変更" })
-      ).toBeVisible();
+      await expect(page.getByRole("heading", { name: "パスワードの変更" })).toBeVisible();
 
       // DB: mustChangePassword が立つ
       const acc = await db().account.findUnique({ where: { loginId: ID } });

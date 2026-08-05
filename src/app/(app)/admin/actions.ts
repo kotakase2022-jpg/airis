@@ -7,10 +7,53 @@ import { hashPassword, requirePage } from "@/lib/auth";
 import { ADMIN_PW_ROLES, REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
 import { can, type Operation } from "@/lib/permissions";
 import { audit, requiresAgency } from "@/lib/util";
+import type { CurrentUser } from "@/lib/auth";
+import {
+  ADMIN_IP_ALLOWLIST_KEY,
+  SETTING_DEFINITIONS,
+  setSetting,
+  type SettingKey,
+} from "@/lib/settings";
+import {
+  ERASURE_ACTIONS,
+  PII_ENTITY_LABELS,
+  anonymizeEntity,
+  eraseAgencyData,
+  type ErasureActor,
+  type ErasureReport,
+  type PiiEntityType,
+} from "@/lib/erasure";
+import {
+  canAnonymizePii,
+  canEraseTenantData,
+  canManageVendorFlag,
+  canUpdateSettings,
+} from "./authz";
 
 export type AdminActionState =
-  | { error?: string; message?: string; tempPassword?: string; targetLoginId?: string }
-  | undefined;
+  { error?: string; message?: string; tempPassword?: string; targetLoginId?: string } | undefined;
+
+// セキュリティ設定の変更結果（§10.1）
+export type SettingActionState = { error?: string; message?: string; warning?: string } | undefined;
+
+// 削除実行の結果（§10.3。report は削除完了レポート SEC要件②#31）
+export type ErasureActionState =
+  { error?: string; message?: string; report?: ErasureReport } | undefined;
+
+// 実行者のベンダー区分（Account.isVendor = サスラボ保守区分 §10.1）を解決する。
+// セッション（CurrentUser）は isVendor を持たないため、操作時にDBから読む。
+// 監査ログの target に vendor=true を含め、ベンダー操作を区別できるようにする（SEC要件①）。
+async function actorContext(user: CurrentUser): Promise<ErasureActor> {
+  const me = await prisma.account.findUnique({
+    where: { id: user.id },
+    select: { isVendor: true },
+  });
+  return { loginId: user.loginId, accountId: user.id, isVendor: !!me?.isVendor };
+}
+
+function withVendorMark(target: string, isVendor: boolean): string {
+  return isVendor ? `${target} vendor=true` : target;
+}
 
 // 管理画面の操作 → §5.1「Airisアカウント」列の操作の対応（§3.2 宣言的マップ経由で判定する）。
 // §5.1 では 変/停/閲/削 はいずれも①②のみ。§6.1-5「Airisアカウントの停止・削除は①②のみ」。
@@ -19,8 +62,11 @@ const ADMIN_OP_PERMISSION: Record<string, Operation> = {
   resume: "suspend", // 停止の解除は「停」権限の範囲
   delete: "delete", // 削（§3.4 論理削除）
   restore: "delete", // 論理削除の復旧は「削」権限の範囲（§3.4 / 要件1-5）
-  reset_password: "update", // パスワードリセットの管理者代行（§4.2）は「変」の範囲
-  mfa_reset: "update", // 認証アプリ紛失時のMFAリセット（§4.2）も「変」の範囲
+  // リセット代行は §4.2「MFAリセット・パスワードリセットは管理者代行フローを用意（②③が実行）」。
+  // ②③が共通で持つ操作は「承」（approve_final = ①②③）なのでこれで判定する。
+  // 「変」（update = ①②）で判定すると③が実行できず §4.2 を満たせない。
+  reset_password: "approve_final",
+  mfa_reset: "approve_final",
 };
 
 // 一時パスワード生成（大文字・小文字・数字を必ず含む。紛らわしい文字は除外）
@@ -79,19 +125,23 @@ export async function accountAction(
     return { error: "自分自身のアカウントは操作できません" };
   }
 
+  // ベンダー（サスラボ社保守）による操作は監査ログで区別できるようにする（§10.1 / SEC要件①）
+  const actor = await actorContext(user);
+  const tgt = (target: string) => withVendorMark(target, actor.isVendor);
+
   switch (op) {
     case "suspend": {
       if (account.status !== "active") return { error: "登録済みのアカウントのみ停止できます" };
       await prisma.account.update({ where: { id }, data: { status: "suspended" } });
       await prisma.session.deleteMany({ where: { accountId: id } }); // 即時セッション破棄
-      await audit(user.loginId, "account_suspend", account.loginId);
+      await audit(user.loginId, "account_suspend", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を停止しました` };
     }
     case "resume": {
       if (account.status !== "suspended") return { error: "停止中のアカウントのみ再開できます" };
       await prisma.account.update({ where: { id }, data: { status: "active" } });
-      await audit(user.loginId, "account_resume", account.loginId);
+      await audit(user.loginId, "account_resume", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を再開しました` };
     }
@@ -104,7 +154,7 @@ export async function accountAction(
         data: { status: "deleted", deletedAt: new Date() },
       });
       await prisma.session.deleteMany({ where: { accountId: id } });
-      await audit(user.loginId, "account_delete", account.loginId);
+      await audit(user.loginId, "account_delete", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を削除しました（論理削除・1年間保持）` };
     }
@@ -115,7 +165,7 @@ export async function accountAction(
         where: { id },
         data: { status: "suspended", deletedAt: null },
       });
-      await audit(user.loginId, "account_restore", account.loginId);
+      await audit(user.loginId, "account_restore", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} を復旧しました（停止中として復元）` };
     }
@@ -135,21 +185,22 @@ export async function accountAction(
         },
       });
       await prisma.session.deleteMany({ where: { accountId: id } });
-      await audit(user.loginId, "password_reset", account.loginId);
+      await audit(user.loginId, "password_reset", tgt(account.loginId));
       revalidatePath("/admin");
       // 一時パスワードは戻り値でのみ返し、DB・URLには残さない（一度だけインライン表示）
       return { tempPassword: temp, targetLoginId: account.loginId };
     }
     case "mfa_reset": {
       if (account.status === "deleted") return { error: "削除済のアカウントはリセットできません" };
-      if (!account.mfaEnabled && !account.mfaSecret) return { error: "MFAが未登録のアカウントです" };
+      if (!account.mfaEnabled && !account.mfaSecret)
+        return { error: "MFAが未登録のアカウントです" };
       // 認証アプリ紛失時のリセット（§4.2）。次回ログイン時にQRコードから再登録させる
       await prisma.account.update({
         where: { id },
         data: { mfaEnabled: false, mfaSecret: null },
       });
       await prisma.session.deleteMany({ where: { accountId: id } }); // 即時セッション破棄
-      await audit(user.loginId, "mfa_reset", account.loginId);
+      await audit(user.loginId, "mfa_reset", tgt(account.loginId));
       revalidatePath("/admin");
       return { message: `${account.loginId} のMFAをリセットしました（次回ログイン時に再登録）` };
     }
@@ -180,12 +231,14 @@ export async function updateAccountAction(
   const role = String(formData.get("role") ?? "");
 
   if (!id || !name) return { error: "氏名は必須です" };
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { error: "メールアドレスの形式が不正です" };
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return { error: "メールアドレスの形式が不正です" };
 
   const account = await prisma.account.findUnique({ where: { id }, include: { agency: true } });
   if (!account) return { error: "対象アカウントが見つかりません" };
   if (account.agency?.isDummy) return { error: "サンプルデータのアカウントは操作できません" };
-  if (account.role === "R9") return { error: "販売員IDのアカウントは販売員ID管理から変更してください" };
+  if (account.role === "R9")
+    return { error: "販売員IDのアカウントは販売員ID管理から変更してください" };
 
   // メール重複チェック（問題一覧No.39 / §4.1「1人1ID」）: 他の有効アカウントと同一メールは不可
   if (email) {
@@ -220,7 +273,9 @@ export async function updateAccountAction(
   }
 
   // 変更理由（必須・監査ログに記録。検収指摘 問題一覧No.15）
-  const reason = String(formData.get("reason") ?? "").trim().slice(0, 200);
+  const reason = String(formData.get("reason") ?? "")
+    .trim()
+    .slice(0, 200);
   if (!reason) return { error: "変更理由を入力してください" };
 
   const roleChanged = role !== account.role;
@@ -232,15 +287,172 @@ export async function updateAccountAction(
     // 権限変更は即時反映のためセッション破棄（次回ログインから新ロール）
     await prisma.session.deleteMany({ where: { accountId: id } });
   }
+  const actor = await actorContext(user);
+  const detail = roleChanged
+    ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
+    : account.loginId;
   await audit(
     user.loginId,
     roleChanged ? "account_role_change" : "account_update",
-    `${
-      roleChanged
-        ? `${account.loginId}: ${ROLE_LABELS[account.role as Role]} → ${ROLE_LABELS[role as Role]}`
-        : account.loginId
-    } reason=${reason}`
+    `${withVendorMark(detail, actor.isVendor)} reason=${reason}`
   );
   revalidatePath("/admin");
   return { message: `${account.loginId} を更新しました` };
+}
+
+// ===== ベンダー区分（Account.isVendor = サスラボ保守区分。§10.1 / SEC要件①） =====
+// 「サスラボ社の保守アカウントも個人単位で発行し、同じ監査ログ基盤で記録（ベンダー区分属性を
+// 持たせる）」を機能させるための変更経路。付与できるのは①のみ（authz.ts の導出根拠を参照）。
+export async function updateVendorFlagAction(
+  _prev: AdminActionState,
+  formData: FormData
+): Promise<AdminActionState> {
+  const user = await requirePage("admin");
+  if (user.dummy) {
+    await audit(user.loginId, "account_vendor_change", undefined, "denied");
+    return { error: "閲覧専用アカウントのため操作できません" };
+  }
+  if (!canManageVendorFlag(user.role)) {
+    await audit(user.loginId, "account_vendor_change", `role=${user.role}`, "denied");
+    return {
+      error: "ベンダー区分の変更権限がありません（サスラボ社システム管理アカウントのみ）",
+    };
+  }
+
+  const id = String(formData.get("id") ?? "");
+  const next = String(formData.get("isVendor") ?? "") === "true";
+  if (!id) return { error: "不正なリクエストです" };
+
+  const account = await prisma.account.findUnique({ where: { id }, include: { agency: true } });
+  if (!account) return { error: "対象アカウントが見つかりません" };
+  if (account.agency?.isDummy) return { error: "サンプルデータのアカウントは操作できません" };
+  if (account.isVendor === next) {
+    return { error: `${account.loginId} のベンダー区分は既にその値です` };
+  }
+
+  await prisma.account.update({ where: { id }, data: { isVendor: next } });
+  const actor = await actorContext(user);
+  await audit(
+    user.loginId,
+    "account_vendor_change",
+    withVendorMark(`${account.loginId}: isVendor ${account.isVendor} → ${next}`, actor.isVendor)
+  );
+  revalidatePath("/admin");
+  return {
+    message: `${account.loginId} のベンダー区分を${next ? "「ベンダー」に設定" : "解除"}しました`,
+  };
+}
+
+// ===== セキュリティ設定の変更（§10.1 IP許可リスト / §3.3 設定変更の監査） =====
+export async function updateSecuritySettingAction(
+  _prev: SettingActionState,
+  formData: FormData
+): Promise<SettingActionState> {
+  const user = await requirePage("admin");
+  if (user.dummy) {
+    await audit(user.loginId, "setting_change", undefined, "denied");
+    return { error: "閲覧専用アカウントのため操作できません" };
+  }
+  // §5.1「Airisアカウント / 変」= ①②（authz.ts で宣言的マップから導出）
+  if (!canUpdateSettings(user.role)) {
+    await audit(user.loginId, "setting_change", `role=${user.role}`, "denied");
+    return { error: "設定変更の権限がありません" };
+  }
+
+  const key = String(formData.get("key") ?? "");
+  if (key !== ADMIN_IP_ALLOWLIST_KEY) return { error: "不明な設定項目です" };
+  const settingKey: SettingKey = key;
+  const value = String(formData.get("settingValue") ?? "");
+  const reason = String(formData.get("settingReason") ?? "")
+    .trim()
+    .slice(0, 200);
+  if (!reason) return { error: "変更理由を入力してください" };
+
+  const actor = await actorContext(user);
+  const result = await setSetting(settingKey, value, actor, reason);
+  if (!result.ok) return { error: result.error };
+
+  revalidatePath("/admin");
+  return {
+    message: `${SETTING_DEFINITIONS[settingKey].label}を変更しました（変更前: ${
+      result.before || "(未設定)"
+    } → 変更後: ${result.after || "(未設定)"}）`,
+    warning: result.warning,
+  };
+}
+
+// ===== テナント（代理店）単位のデータ一括削除（§10.3 / SEC要件②#31） =====
+export async function eraseAgencyAction(
+  _prev: ErasureActionState,
+  formData: FormData
+): Promise<ErasureActionState> {
+  const user = await requirePage("admin");
+  if (user.dummy) {
+    await audit(user.loginId, ERASURE_ACTIONS.agency, undefined, "denied");
+    return { error: "閲覧専用アカウントのため操作できません" };
+  }
+  if (!canEraseTenantData(user.role)) {
+    await audit(user.loginId, ERASURE_ACTIONS.agency, `role=${user.role}`, "denied");
+    return {
+      error:
+        "テナント単位のデータ一括削除の権限がありません（サスラボ社システム管理アカウントのみ）",
+    };
+  }
+
+  const agencyId = String(formData.get("agencyId") ?? "");
+  const includeChildren = String(formData.get("includeChildren") ?? "") === "on";
+  const reason = String(formData.get("erasureReason") ?? "")
+    .trim()
+    .slice(0, 200);
+  if (!reason) return { error: "削除理由を入力してください" };
+
+  const actor = await actorContext(user);
+  const result = await eraseAgencyData({ agencyId, includeChildren, reason, actor });
+  if (!result.ok) return { error: result.error };
+
+  revalidatePath("/admin");
+  return {
+    message: `${result.report.targetLabel} のデータを一括削除しました（論理削除 ${result.report.total}件）`,
+    report: result.report,
+  };
+}
+
+// ===== 個人情報のオンデマンド削除（匿名化。§10.3 / §3.4） =====
+export async function anonymizePiiAction(
+  _prev: ErasureActionState,
+  formData: FormData
+): Promise<ErasureActionState> {
+  const user = await requirePage("admin");
+  if (user.dummy) {
+    await audit(user.loginId, ERASURE_ACTIONS.pii, undefined, "denied");
+    return { error: "閲覧専用アカウントのため操作できません" };
+  }
+  if (!canAnonymizePii(user.role)) {
+    await audit(user.loginId, ERASURE_ACTIONS.pii, `role=${user.role}`, "denied");
+    return { error: "個人情報削除の権限がありません" };
+  }
+
+  const entityType = String(formData.get("entityType") ?? "");
+  // 許可された種別のみ（プロトタイプ由来のキー "toString" 等を弾く）
+  if (!Object.keys(PII_ENTITY_LABELS).includes(entityType)) return { error: "不明な対象種別です" };
+  const key = String(formData.get("targetKey") ?? "");
+  const reason = String(formData.get("anonymizeReason") ?? "")
+    .trim()
+    .slice(0, 200);
+  if (!reason) return { error: "削除理由を入力してください" };
+
+  const actor = await actorContext(user);
+  const result = await anonymizeEntity({
+    entityType: entityType as PiiEntityType,
+    key,
+    reason,
+    actor,
+  });
+  if (!result.ok) return { error: result.error };
+
+  revalidatePath("/admin");
+  return {
+    message: `${result.report.targetLabel} の個人情報を匿名化しました（${result.report.scopeLabel}）`,
+    report: result.report,
+  };
 }

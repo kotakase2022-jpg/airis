@@ -6,12 +6,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { canAccess } from "@/lib/roles";
 import { toCsv, csvResponse } from "@/lib/csv";
 import { audit, canViewFeatureInScope } from "@/lib/util";
-import {
-  VISIT_CSV_HEADERS,
-  TELE_CSV_HEADERS,
-  VISIT_CSV_EXAMPLE,
-  TELE_CSV_EXAMPLE,
-} from "../defs";
+import { VISIT_CSV_HEADERS, TELE_CSV_HEADERS, VISIT_CSV_EXAMPLE, TELE_CSV_EXAMPLE } from "../defs";
 
 export async function GET(req: NextRequest) {
   const user = await getCurrentUser();

@@ -8,10 +8,7 @@ import type { CsvUploadState } from "./defs";
 import { inputCls, labelCls, btnPrimary } from "@/components/ui";
 
 export function CsvUpload() {
-  const [state, formAction, pending] = useActionState<CsvUploadState, FormData>(
-    uploadDailyCsv,
-    {}
-  );
+  const [state, formAction, pending] = useActionState<CsvUploadState, FormData>(uploadDailyCsv, {});
 
   return (
     <div>

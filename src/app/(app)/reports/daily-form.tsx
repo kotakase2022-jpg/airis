@@ -58,10 +58,10 @@ export function DailyReportForm({
   );
   const [type, setType] = useState<"訪販" | "テレマ">("訪販");
   const [date, setDate] = useState(defaultDate);
-  const [staffId, setStaffId] = useState(fixedStaff ? fixedStaff.id : staffOptions[0]?.id ?? "");
+  const [staffId, setStaffId] = useState(fixedStaff ? fixedStaff.id : (staffOptions[0]?.id ?? ""));
   const agencyName = fixedStaff
     ? fixedStaff.agencyName
-    : staffOptions.find((s) => s.id === staffId)?.agencyName ?? "-";
+    : (staffOptions.find((s) => s.id === staffId)?.agencyName ?? "-");
   const currentStaffId = fixedStaff ? fixedStaff.id : staffId;
 
   // 選択中の（販売員×日付×タイプ）に提出済み日報があれば既存値を読み込む（問題一覧No.1）。
@@ -100,7 +100,7 @@ export function DailyReportForm({
         <div>
           <label className={labelCls}>販売員ID</label>
           {fixedStaff ? (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base sm:text-sm text-slate-700">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-700 sm:text-sm">
               {fixedStaff.label}
             </div>
           ) : (
@@ -121,7 +121,7 @@ export function DailyReportForm({
         </div>
         <div>
           <label className={labelCls}>代理店（自動）</label>
-          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base sm:text-sm text-slate-700">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-base text-slate-700 sm:text-sm">
             {agencyName}
           </div>
         </div>
@@ -137,7 +137,9 @@ export function DailyReportForm({
                 onClick={() => setType(t)}
                 className={
                   "flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition " +
-                  (type === t ? "bg-white text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700")
+                  (type === t
+                    ? "bg-white text-blue-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-700")
                 }
               >
                 {t}
@@ -146,7 +148,7 @@ export function DailyReportForm({
           </div>
         </div>
         {rec && (
-          <div className="sm:col-span-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 sm:col-span-3">
             この日付・タイプの提出済み日報を読み込みました（編集モード）。変更した項目だけ書き換えて保存できます。
           </div>
         )}
@@ -218,14 +220,19 @@ export function DailyReportForm({
 
         <div className="sm:col-span-3">
           {state.error && (
-            <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{state.error}</p>
+            <p className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">
+              {state.error}
+            </p>
           )}
           {state.success && (
             <p className="mb-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
               {state.success}
             </p>
           )}
-          <button disabled={pending} className={`${btnPrimary} w-full py-3 text-base sm:w-auto sm:py-2 sm:text-sm`}>
+          <button
+            disabled={pending}
+            className={`${btnPrimary} w-full py-3 text-base sm:w-auto sm:py-2 sm:text-sm`}
+          >
             {pending ? "保存中..." : "日報を保存する"}
           </button>
           <p className="mt-2 text-xs text-slate-500">
@@ -239,7 +246,10 @@ export function DailyReportForm({
           <SectionTitle>{state.kpiTitle ?? "当月KPI"}</SectionTitle>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
             {state.kpi.map((k) => (
-              <div key={k.label} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center">
+              <div
+                key={k.label}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-center"
+              >
                 <div className="text-xl font-bold text-slate-800">{k.value}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{k.label}</div>
               </div>

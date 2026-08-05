@@ -52,7 +52,9 @@ export function CaseCard({
             <DeadlineBadge deadline={data.deadline} />
           </div>
           {data.readBadge && (
-            <Badge tone={data.readBadge === "代理店既読" ? "green" : "yellow"}>{data.readBadge}</Badge>
+            <Badge tone={data.readBadge === "代理店既読" ? "green" : "yellow"}>
+              {data.readBadge}
+            </Badge>
           )}
         </div>
       </div>

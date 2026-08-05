@@ -1,12 +1,7 @@
 // §7.11 下位代理店 / §7.1 ダッシュボード / §3.5 R4ダミー表示モード / §14-2 稼働終了→実効ロール⑩
 // データプレフィクス: QA7（代理店コードは 9710xx 帯を使用）
 import { test, expect, Page } from "@playwright/test";
-import {
-db,
-  login,
-  collectConsoleErrors,
-  criticalErrors,
-} from "./helpers";
+import { db, login, collectConsoleErrors, criticalErrors } from "./helpers";
 
 const AG_CODE = "971010"; // 追加・編集・削除フローで使う2次代理店
 const AG_NAME = "QA7-テスト代理店A";
@@ -25,7 +20,10 @@ function statCard(scope: Page | ReturnType<Page["locator"]>, label: string) {
     .locator("div.text-2xl");
 }
 
-async function statValue(scope: Page | ReturnType<Page["locator"]>, label: string): Promise<number> {
+async function statValue(
+  scope: Page | ReturnType<Page["locator"]>,
+  label: string
+): Promise<number> {
   const txt = await statCard(scope, label).innerText({ timeout: 10_000 });
   return Number(txt.trim());
 }
@@ -59,7 +57,9 @@ test.afterAll(async () => {
 // §7.11 下位代理店
 // ─────────────────────────────────────────────────────────────
 
-test("下位代理店: R2で統計4枚・階層ツリー・一覧列が表示され、統計値がDBと一致する", async ({ page }) => {
+test("下位代理店: R2で統計4枚・階層ツリー・一覧列が表示され、統計値がDBと一致する", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const errors = collectConsoleErrors(page);
   const d = db();
@@ -102,7 +102,17 @@ test("下位代理店: R2で統計4枚・階層ツリー・一覧列が表示さ
   await expect(page.getByText("990001")).toHaveCount(0);
 
   // 一覧テーブルの列（ID / 代理店名 / 一次代理店 / 代表者 / ステータス / 登録ユーザー / 進行中案件 / 参加日 §7.11）
-  for (const col of ["ID", "代理店名", "一次代理店", "代表者", "ステータス", "登録ユーザー", "進行中案件", "参加日", "操作"]) {
+  for (const col of [
+    "ID",
+    "代理店名",
+    "一次代理店",
+    "代表者",
+    "ステータス",
+    "登録ユーザー",
+    "進行中案件",
+    "参加日",
+    "操作",
+  ]) {
     await expect(page.locator("th", { hasText: new RegExp(`^${col}$`) })).toBeVisible();
   }
   // 行の内容（210001 = セールスパートナー東京、親=東都、代表者=鈴木 四郎、参加日 2024-08-01）
@@ -158,7 +168,9 @@ test("下位代理店: R2で追加（親選択）→ 一覧・DB反映、6桁コ
   await page.locator('input[name="code"]').fill(AG_CODE);
   await page.locator('input[name="name"]').fill("QA7-重複コード店");
   await page.getByRole("button", { name: "登録する" }).click();
-  await expect(page.getByText(`代理店コード ${AG_CODE} は既に使用されています。`)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(`代理店コード ${AG_CODE} は既に使用されています。`)).toBeVisible({
+    timeout: 15_000,
+  });
   expect(await d.agency.count({ where: { code: AG_CODE } })).toBe(1);
   expect(await d.agency.count({ where: { name: "QA7-重複コード店" } })).toBe(0);
 });
@@ -171,7 +183,13 @@ test("下位代理店: R2で編集 → UI・DB反映", async ({ page }) => {
   let target = await d.agency.findUnique({ where: { code: AG_CODE } });
   if (!target) {
     target = await d.agency.create({
-      data: { code: AG_CODE, name: AG_NAME, tier: 2, parentId: p1!.id, representative: "QA7 代表太郎" },
+      data: {
+        code: AG_CODE,
+        name: AG_NAME,
+        tier: 2,
+        parentId: p1!.id,
+        representative: "QA7 代表太郎",
+      },
     });
   }
 
@@ -186,9 +204,13 @@ test("下位代理店: R2で編集 → UI・DB反映", async ({ page }) => {
 
   // DB反映
   await expect
-    .poll(async () => (await d.agency.findUnique({ where: { code: AG_CODE } }))?.name, { timeout: 10_000 })
+    .poll(async () => (await d.agency.findUnique({ where: { code: AG_CODE } }))?.name, {
+      timeout: 10_000,
+    })
     .toBe(AG_NAME2);
-  expect((await d.agency.findUnique({ where: { code: AG_CODE } }))?.representative).toBe("QA7 代表次郎");
+  expect((await d.agency.findUnique({ where: { code: AG_CODE } }))?.representative).toBe(
+    "QA7 代表次郎"
+  );
 
   // UI反映
   await page.goto(`/agencies?q=${AG_CODE}`);
@@ -234,14 +256,22 @@ test("下位代理店: 配下にデータがある代理店の削除は拒否 �
   // 配下データを消して空にする → 削除成功
   await d.salesStaff.deleteMany({ where: { salesId: AG_STAFF_ID } });
   await page.goto(`/agencies?q=${AG_CODE}`);
-  await page.locator("tbody > tr", { hasText: AG_CODE }).getByRole("button", { name: "削除" }).click();
-  await expect(page.locator("tbody > tr", { hasText: AG_CODE })).toHaveCount(0, { timeout: 15_000 });
+  await page
+    .locator("tbody > tr", { hasText: AG_CODE })
+    .getByRole("button", { name: "削除" })
+    .click();
+  await expect(page.locator("tbody > tr", { hasText: AG_CODE })).toHaveCount(0, {
+    timeout: 15_000,
+  });
   await expect
     .poll(async () => d.agency.count({ where: { code: AG_CODE } }), { timeout: 10_000 })
     .toBe(0);
 });
 
-test("下位代理店: 稼働終了に変更 → 当該R7の実効ロールが⑩（メニューはダッシュボード+窓口案件のみ）→ 戻す", async ({ page, browser }) => {
+test("下位代理店: 稼働終了に変更 → 当該R7の実効ロールが⑩（メニューはダッシュボード+窓口案件のみ）→ 戻す", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(180_000);
   const d = db();
 
@@ -256,7 +286,9 @@ test("下位代理店: 稼働終了に変更 → 当該R7の実効ロールが�
     await modal.getByRole("button", { name: "保存する" }).click();
     await expect(modal).toHaveCount(0, { timeout: 15_000 });
     await expect
-      .poll(async () => (await d.agency.findUnique({ where: { code: "110001" } }))?.status, { timeout: 10_000 })
+      .poll(async () => (await d.agency.findUnique({ where: { code: "110001" } }))?.status, {
+        timeout: 10_000,
+      })
       .toBe("closed");
 
     // 当該R7でログイン → 実効ロール⑩
@@ -289,7 +321,9 @@ test("下位代理店: 稼働終了に変更 → 当該R7の実効ロールが�
     await modal2.getByRole("button", { name: "保存する" }).click();
     await expect(modal2).toHaveCount(0, { timeout: 15_000 });
     await expect
-      .poll(async () => (await d.agency.findUnique({ where: { code: "110001" } }))?.status, { timeout: 10_000 })
+      .poll(async () => (await d.agency.findUnique({ where: { code: "110001" } }))?.status, {
+        timeout: 10_000,
+      })
       .toBe("active");
 
     // 復元後: 同じR7セッションで実効ロールが⑦に戻る（メニュー復活）
@@ -334,7 +368,9 @@ test("下位代理店: R7は閲覧のみ（追加/編集/削除ボタンなし�
 // §7.1 ダッシュボード
 // ─────────────────────────────────────────────────────────────
 
-test("ダッシュボード: R2の各セクションカード数値がDB件数と一致（販売員/訪販員/日報/代理店/窓口）", async ({ page }) => {
+test("ダッシュボード: R2の各セクションカード数値がDB件数と一致（販売員/訪販員/日報/代理店/窓口）", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const errors = collectConsoleErrors(page);
   const d = db();
@@ -342,11 +378,17 @@ test("ダッシュボード: R2の各セクションカード数値がDB件数�
   const today = jstToday();
 
   // R2スコープ = 非ダミー全代理店
-  const scopeIds = (await d.agency.findMany({ where: { isDummy: false }, select: { id: true } })).map((a) => a.id);
-  const staffOf = (s: string) => d.salesStaff.count({ where: { status: s, agencyId: { in: scopeIds } } });
+  const scopeIds = (
+    await d.agency.findMany({ where: { isDummy: false }, select: { id: true } })
+  ).map((a) => a.id);
+  const staffOf = (s: string) =>
+    d.salesStaff.count({ where: { status: s, agencyId: { in: scopeIds } } });
   const fieldOf = (s: string) =>
-    d.fieldAgentApplication.count({ where: { status: s, salesStaff: { agencyId: { in: scopeIds } } } });
-  const caseOf = (s: string) => d.case.count({ where: { status: s, primaryAgencyId: { in: scopeIds } } });
+    d.fieldAgentApplication.count({
+      where: { status: s, salesStaff: { agencyId: { in: scopeIds } } },
+    });
+  const caseOf = (s: string) =>
+    d.case.count({ where: { status: s, primaryAgencyId: { in: scopeIds } } });
 
   const expected = {
     staff: {
@@ -366,7 +408,10 @@ test("ダッシュボード: R2の各セクションカード数値がDB件数�
       where: { date: { startsWith: month }, agencyId: { in: scopeIds } },
     }),
     submissionPending: await d.submission.count({
-      where: { status: { in: ["pending_first", "pending_snc"] }, submitterAgencyId: { in: scopeIds } },
+      where: {
+        status: { in: ["pending_first", "pending_snc"] },
+        submitterAgencyId: { in: scopeIds },
+      },
     }),
     submissionApproved: await d.submission.count({
       where: { status: "approved", targetMonth: month, submitterAgencyId: { in: scopeIds } },
@@ -377,7 +422,11 @@ test("ダッシュボード: R2の各セクションカード数値がDB件数�
     caseActive: (await caseOf("確認中")) + (await caseOf("対応中")),
     caseProblem: await caseOf("問題発生"),
     caseOverdue: await d.case.count({
-      where: { status: { not: "完了" }, deadline: { lt: today }, primaryAgencyId: { in: scopeIds } },
+      where: {
+        status: { not: "完了" },
+        deadline: { lt: today },
+        primaryAgencyId: { in: scopeIds },
+      },
     }),
   };
 
@@ -402,7 +451,9 @@ test("ダッシュボード: R2の各セクションカード数値がDB件数�
   const sReports = section(/^日報・稼働提出物/);
   expect(await statValue(sReports as never, "当月の日報件数")).toBe(expected.reportCount);
   expect(await statValue(sReports as never, "提出物 承認待ち")).toBe(expected.submissionPending);
-  expect(await statValue(sReports as never, "提出物 最終承認済み（当月）")).toBe(expected.submissionApproved);
+  expect(await statValue(sReports as never, "提出物 最終承認済み（当月）")).toBe(
+    expected.submissionApproved
+  );
   // 代理店
   const sAgency = section(/^代理店$/);
   expect(await statValue(sAgency as never, "代理店数")).toBe(expected.agencyTotal);
@@ -428,7 +479,9 @@ test("ダッシュボード: R2で§7.1の追加カード（未提出者数・�
   const month = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 7);
 
   // R2スコープ = 非ダミー全代理店
-  const scopeIds = (await d.agency.findMany({ where: { isDummy: false }, select: { id: true } })).map((a) => a.id);
+  const scopeIds = (
+    await d.agency.findMany({ where: { isDummy: false }, select: { id: true } })
+  ).map((a) => a.id);
   const r2 = await d.account.findUnique({ where: { loginId: "airis_snc_adm_001" } });
   expect(r2).not.toBeNull();
 
@@ -443,7 +496,11 @@ test("ダッシュボード: R2で§7.1の追加カード（未提出者数・�
   // 提出物の提出状況 n/6（当月・スコープ内で提出済み（差戻し以外）の様式種別数）
   const expectedKinds = (
     await d.submission.findMany({
-      where: { targetMonth: month, status: { not: "rejected" }, submitterAgencyId: { in: scopeIds } },
+      where: {
+        targetMonth: month,
+        status: { not: "rejected" },
+        submitterAgencyId: { in: scopeIds },
+      },
       select: { kind: true },
       distinct: ["kind"],
     })
@@ -484,7 +541,9 @@ test("ダッシュボード: R2で§7.1の追加カード（未提出者数・�
   // 日報・稼働提出物セクション: 未提出者数 / n/6
   const sReports = section(/^日報・稼働提出物/);
   expect(await statValue(sReports as never, "当月日報の未提出者数")).toBe(expectedUnsubmitted);
-  await expect(statCard(sReports as never, "提出物の提出状況（当月）")).toHaveText(`${expectedKinds} / 6`);
+  await expect(statCard(sReports as never, "提出物の提出状況（当月）")).toHaveText(
+    `${expectedKinds} / 6`
+  );
 
   // 代理店セクション: 稼働終了数（§7.1）
   const sAgency = section(/^代理店$/);
@@ -532,7 +591,9 @@ test("ダッシュボード: R2の各セクションリンクから該当画面�
 // §3.5 R4ダミー表示モード
 // ─────────────────────────────────────────────────────────────
 
-test("R4ダミーモード: バナー表示・ダミー代理店(990001系)のみ表示・実データ非表示・操作ボタン非表示", async ({ page }) => {
+test("R4ダミーモード: バナー表示・ダミー代理店(990001系)のみ表示・実データ非表示・操作ボタン非表示", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   const errors = collectConsoleErrors(page);
   const d = db();
@@ -561,7 +622,9 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
   await expect(page).toHaveURL(/\/dashboard/);
 
   // バナー「サンプルデータ」
-  await expect(page.getByText("閲覧用アカウントのため、表示されているのはサンプルデータです。")).toBeVisible();
+  await expect(
+    page.getByText("閲覧用アカウントのため、表示されているのはサンプルデータです。")
+  ).toBeVisible();
 
   // サイドメニュー: ④向け9項目（窓口2項目は出ない §5.2）
   const navTexts = await page.locator("aside nav a").allInnerTexts();
@@ -578,11 +641,15 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
   ]);
 
   // ダッシュボードの代理店数 = ダミー代理店数のみ
-  const sAgency = page.locator("section").filter({ has: page.locator("h2", { hasText: /^代理店$/ }) });
+  const sAgency = page
+    .locator("section")
+    .filter({ has: page.locator("h2", { hasText: /^代理店$/ }) });
   expect(await statValue(sAgency as never, "代理店数")).toBe(dummyTotal);
 
   // ダッシュボードのお知らせ: サンプルのみ表示され、実お知らせは1件も出ない（§3.5）
-  const sAnn = page.locator("section").filter({ has: page.locator("h2", { hasText: /^最新のお知らせ$/ }) });
+  const sAnn = page
+    .locator("section")
+    .filter({ has: page.locator("h2", { hasText: /^最新のお知らせ$/ }) });
   await expect(sAnn).toBeVisible();
   for (const title of dummyAnnTitles) {
     await expect(sAnn.getByText(title, { exact: true })).toHaveCount(1);
@@ -591,7 +658,9 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
     await expect(sAnn.getByText(title, { exact: true })).toHaveCount(0);
   }
   // ④は①②専用の管理カード（監査イベント・不正利用アラート）を持たない（実データ非表示 §3.5）
-  await expect(page.locator("section").filter({ has: page.locator("h2", { hasText: /^管理（本日/ }) })).toHaveCount(0);
+  await expect(
+    page.locator("section").filter({ has: page.locator("h2", { hasText: /^管理（本日/ }) })
+  ).toHaveCount(0);
 
   // 販売員ID管理: ダミー販売員(990001系)のみ、実データは一切出ない
   await page.goto("/sales-staff");
@@ -624,7 +693,9 @@ test("R4ダミーモード: バナー表示・ダミー代理店(990001系)の�
 // 異常系: 権限外URL直接アクセス
 // ─────────────────────────────────────────────────────────────
 
-test("権限外アクセス: R8/R9は/agenciesへ直接アクセスするとダッシュボードへリダイレクト", async ({ page }) => {
+test("権限外アクセス: R8/R9は/agenciesへ直接アクセスするとダッシュボードへリダイレクト", async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   // R9（販売員）
   await login(page, "R9");

@@ -48,7 +48,9 @@ export function DocumentUploadForm() {
         <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{state.error}</p>
       )}
       {state.success && (
-        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{state.success}</p>
+        <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+          {state.success}
+        </p>
       )}
       <div className="mt-4">
         <button type="submit" className={btnPrimary} disabled={pending}>

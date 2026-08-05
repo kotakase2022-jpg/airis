@@ -14,7 +14,11 @@ export async function exportCasesCsv(series: "HL" | "CSC"): Promise<Response> {
   if (!user) return new Response("Unauthorized", { status: 401 });
   const pageKey: PageKey = series === "HL" ? "hotline" : "consumer-center";
   // ④（ダミー表示）は実データのエクスポート不可（§3.5）
-  if (user.isDummy || !canAccess(user.role, pageKey) || !can(user.role, caseFeature(series), "view")) {
+  if (
+    user.isDummy ||
+    !canAccess(user.role, pageKey) ||
+    !can(user.role, caseFeature(series), "view")
+  ) {
     await audit(user.loginId, "csv_export", `cases_${series} role=${user.role}`, "denied");
     return new Response("Forbidden", { status: 403 });
   }
@@ -32,7 +36,9 @@ export async function exportCasesCsv(series: "HL" | "CSC"): Promise<Response> {
   });
 
   // 担当者名の解決（assigneeAccountId → loginId/氏名）
-  const assigneeIds = [...new Set(cases.map((c) => c.assigneeAccountId).filter((v): v is string => !!v))];
+  const assigneeIds = [
+    ...new Set(cases.map((c) => c.assigneeAccountId).filter((v): v is string => !!v)),
+  ];
   const assignees = assigneeIds.length
     ? await prisma.account.findMany({
         where: { id: { in: assigneeIds } },
@@ -46,10 +52,23 @@ export async function exportCasesCsv(series: "HL" | "CSC"): Promise<Response> {
 
   const csv = toCsv(
     [
-      "案件番号", "テンプレ種別", "件名", "ステータス", "対応期限",
-      "一次代理店コード", "一次代理店名", "二次代理店コード", "二次代理店名",
-      "販売員ID", "販売員氏名", "担当者", "ISP受付番号", "メッセージ数",
-      "起票者", "起票日時", "最終更新",
+      "案件番号",
+      "テンプレ種別",
+      "件名",
+      "ステータス",
+      "対応期限",
+      "一次代理店コード",
+      "一次代理店名",
+      "二次代理店コード",
+      "二次代理店名",
+      "販売員ID",
+      "販売員氏名",
+      "担当者",
+      "ISP受付番号",
+      "メッセージ数",
+      "起票者",
+      "起票日時",
+      "最終更新",
     ],
     cases.map((c) => [
       c.caseNo,

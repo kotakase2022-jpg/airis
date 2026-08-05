@@ -7,11 +7,13 @@ import crypto from "crypto";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope, type CurrentUser } from "@/lib/auth";
-import { SNC_ADMIN_ROLES, STAFF_STATUS_LABELS, type Role } from "@/lib/roles";
-import { can } from "@/lib/permissions";
+import { STAFF_STATUS_LABELS } from "@/lib/roles";
+import { can, canApproveFirst } from "@/lib/permissions";
 import { parseCsv } from "@/lib/csv";
 import { audit, notify, notifyRole, pushHistory, storeFile, today } from "@/lib/util";
 import { FIELD_AGENT_CSV_HEADERS, pledgePdfName } from "./csv-columns";
+import { resolveAgencyScope } from "./agency-scope";
+import { unzipEntries } from "./zip";
 
 const APPLICATION_TYPES = ["稼働", "抹消"];
 const PRODUCTS = ["マルチ", "auひかり", "コラボ"];
@@ -19,17 +21,21 @@ const ATTRIBUTES = ["社員/契約社員", "パート・アルバイト", "業�
 const IDENTITY_TYPES = ["免許証", "マイナンバーカード", "パスポート"];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// 申請可: ①②③⑦⑧ / 1次承認: ①②③⑦ / 最終承認: ①②③ / 停止・再開・削除・復旧: ①②③⑦（販売員IDと同権限 §6.2-6）
-const APPLY_ROLES: Role[] = ["R1", "R2", "R3", "R7", "R8"];
-const MANAGE_ROLES: Role[] = ["R1", "R2", "R3", "R7"];
+// 権限判定は §5.1 の宣言的マップ（src/lib/permissions.ts）だけを情報源とする（§3.2）。
+// この画面でロール配列を直書きしない（tests/unit/permissions-coverage.test.ts が検出する）。
+//   申請=apply（①②③⑦⑧） / 1次承認=canApproveFirst（⑦ + 最終承認権限者①②③ §6.2-2）/
+//   最終承認=approve_final（①②③） / 停止・再開=suspend（①②③⑦） / 削除・復旧=delete（①②③⑦）
 
 export type FormState = { error?: string; success?: string };
 export type CheckState = { error?: string; warnings?: string[]; checked?: boolean };
 // CSV一括申請の結果（errors=行単位エラーレポート。1件でもあれば全件登録しない §3.6）
 export type CsvBulkState = { error?: string; errors?: string[]; success?: string };
 
+// SNC限定項目（ブラックリスト欄・SNC用メモ §7.4「SNCアカウント（①②③）でログインした場合のみ
+// 表示・編集可」）と最終承認の主体は同一集合。§5.1「訪販員申請 / 承（最終承認）＝①②③」を
+// 根拠に宣言的マップから導出する（§3.2。csv/route.ts と同じ導出）。
 function isSncAdmin(user: CurrentUser) {
-  return SNC_ADMIN_ROLES.includes(user.role);
+  return can(user.role, "field-agent", "approve_final");
 }
 
 async function staffInScope(user: CurrentUser, staffId: string) {
@@ -71,7 +77,10 @@ export async function createFieldAgentApplication(
 ): Promise<FormState> {
   const user = await requirePage("field-agents");
   if (user.dummy) return { error: "閲覧専用アカウントのため申請できません。" };
-  if (!APPLY_ROLES.includes(user.role)) return { error: "訪販員申請の権限がありません。" };
+  if (!can(user.role, "field-agent", "apply")) {
+    await audit(user.loginId, "訪販員申請作成", `role=${user.role}`, "denied");
+    return { error: "訪販員申請の権限がありません。" };
+  }
 
   const str = (k: string) => String(formData.get(k) ?? "").trim();
 
@@ -101,7 +110,8 @@ export async function createFieldAgentApplication(
   if (!["provisional", "registered"].includes(staff.status)) {
     return { error: "訪販員申請は仮登録または本登録済みの販売員IDに対してのみ可能です。" };
   }
-  if (!APPLICATION_TYPES.includes(applicationType)) return { error: "申請区分を選択してください。" };
+  if (!APPLICATION_TYPES.includes(applicationType))
+    return { error: "申請区分を選択してください。" };
   if (!PRODUCTS.includes(products)) return { error: "取扱商材を選択してください。" };
   if (!ATTRIBUTES.includes(attribute)) return { error: "属性を選択してください。" };
   if (!lastNameKana || !firstNameKana) return { error: "フリガナ（姓・名）を入力してください。" };
@@ -156,11 +166,15 @@ export async function createFieldAgentApplication(
   const sncMemo = snc ? str("sncMemo") || null : null;
 
   const defaultPrimaryName =
-    staff.agency.tier === 1 ? staff.agency.name : staff.agency.parent?.name ?? null;
+    staff.agency.tier === 1 ? staff.agency.name : (staff.agency.parent?.name ?? null);
+  // 代理店スコープ列（§3.1）: 親SalesStaffの所属から解決して保存する。RLS（prisma/rls.sql）は
+  // この2列を直接照合するため、作成時に必ず埋める。
+  const scopeColumns = resolveAgencyScope(staff.agency);
 
   const created = await prisma.fieldAgentApplication.create({
     data: {
       salesStaffId: staff.id,
+      ...scopeColumns,
       applicationType,
       products,
       attribute,
@@ -201,7 +215,12 @@ export async function createFieldAgentApplication(
     });
     await Promise.all(
       admins.map((ad) =>
-        notify(ad.id, "訪販員申請（1次承認待ち）", `${staffLabel} / 申請区分: ${applicationType}`, "/field-agents")
+        notify(
+          ad.id,
+          "訪販員申請（1次承認待ち）",
+          `${staffLabel} / 申請区分: ${applicationType}`,
+          "/field-agents"
+        )
       )
     );
   }
@@ -215,10 +234,10 @@ export async function createFieldAgentApplication(
 // - 行単位バリデーション → エラーが1件でもあれば「n行目: 理由」を返して**全件登録しない**
 // - 誓約書PDFは `{誓約書No}-{連番3桁}.pdf` のファイル名でCSV行順に突合する
 //   （例: 誓約書No 70 で30行 → 70-001.pdf 〜 70-030.pdf）
-//   ※ SPEC §7.4 は「zipで一括アップロード」と記述しているが、zipの展開はNode標準の
-//     zlibだけでは実現できず依存追加が必要なため、multiple指定のfile inputで複数PDFを
-//     同時に受け取り、同じファイル名規則で突合する方式とした（「登録後に個別添付」には
-//     しない）。TODO: zip展開ライブラリ導入時にzipアップロードも受け付ける。
+// - 受け取り方は2通り（どちらも同じファイル名規則で突合する）:
+//     1. zip一括アップロード（§7.4「CSV と同時に zip で一括アップロード」）… name="pledgeZip"
+//        展開は依存追加なしの自前実装（./zip.ts。Node標準 zlib の inflateRaw を使用）
+//     2. 個別PDFの複数選択 … name="pledgeFiles"（少数件の追加・差し替え運用のため残す）
 // ============================================================
 const CSV_MAX_ROWS = 1000;
 
@@ -240,10 +259,19 @@ const C_CONTRACTOR_PHONE = 13;
 
 function csvSafeFileName(name: string): string {
   return name
-    .replace(/^.*[\\/]/, "") // ブラウザによるパス付きファイル名対策
+    .replace(/^.*[\\/]/, "") // ブラウザによるパス付きファイル名・zip内のディレクトリ階層対策
     .replace(/[\\/\x00-\x1f]/g, "_")
     .slice(0, 255);
 }
+
+// zipに紛れ込むOS付随ファイル（macOSのリソースフォーク等）は突合対象外として無視する
+function isZipMetaEntry(entryName: string): boolean {
+  const base = entryName.replace(/^.*[\\/]/, "");
+  return entryName.startsWith("__MACOSX/") || base.startsWith("._") || base === ".DS_Store";
+}
+
+// 誓約書PDF1件（zip展開・個別選択のどちらでも同じ扱いにするための正規化）
+type PledgePdf = { name: string; size: number; read: () => Promise<Uint8Array<ArrayBuffer>> };
 
 export async function csvBulkApplyAction(
   _prev: CsvBulkState,
@@ -251,7 +279,10 @@ export async function csvBulkApplyAction(
 ): Promise<CsvBulkState> {
   const user = await requirePage("field-agents");
   if (user.dummy) return { error: "閲覧専用アカウントのため申請できません。" };
-  if (!APPLY_ROLES.includes(user.role)) return { error: "訪販員申請の権限がありません。" };
+  if (!can(user.role, "field-agent", "apply")) {
+    await audit(user.loginId, "訪販員申請CSV一括申請", `role=${user.role}`, "denied");
+    return { error: "訪販員申請の権限がありません。" };
+  }
 
   // ---- CSV本体 ----
   const file = formData.get("file");
@@ -268,10 +299,56 @@ export async function csvBulkApplyAction(
     return { error: `1回の一括申請は${CSV_MAX_ROWS}行以内にしてください。` };
   }
 
-  // ---- 誓約書PDF（複数同時アップロード）をファイル名で保持 ----
+  // ---- 誓約書PDF（zip一括 or 個別複数選択）をファイル名で保持 ----
   const maxMb = Number(process.env.FILE_MAX_MB) > 0 ? Number(process.env.FILE_MAX_MB) : 20;
-  const pdfs = new Map<string, File>(); // key=小文字ファイル名
+  // zip展開後の合計上限（zip爆弾対策 §3.8）。誓約書PDFは1件あたり数百KB想定のため、
+  // 1ファイル上限（maxMb）の10倍を全体上限とする。
+  const zipTotalLimit = maxMb * 10 * 1024 * 1024;
+  const pdfs = new Map<string, PledgePdf>(); // key=小文字ファイル名
   const fileErrors: string[] = [];
+  const addPdf = (pdf: PledgePdf) => {
+    const key = pdf.name.toLowerCase();
+    if (pdfs.has(key)) {
+      fileErrors.push(`誓約書PDF「${pdf.name}」が重複しています（zipと個別選択の両方など）。`);
+      return;
+    }
+    pdfs.set(key, pdf);
+  };
+
+  // (1) zip一括アップロード（§7.4）。展開できない形式は理由を返して取込しない（§3.6）
+  const zipFile = formData.get("pledgeZip");
+  if (zipFile instanceof File && zipFile.size > 0) {
+    const zipName = csvSafeFileName(zipFile.name);
+    if (!zipName.toLowerCase().endsWith(".zip")) {
+      fileErrors.push(`「${zipName}」はzipファイルではありません。`);
+    } else if (zipFile.size > maxMb * 1024 * 1024) {
+      fileErrors.push(`zipファイル「${zipName}」は${maxMb}MBを超えています。`);
+    } else {
+      const unzipped = unzipEntries(Buffer.from(await zipFile.arrayBuffer()), {
+        maxEntries: CSV_MAX_ROWS,
+        maxTotalBytes: zipTotalLimit,
+      });
+      if ("error" in unzipped) {
+        fileErrors.push(unzipped.error);
+      } else {
+        for (const entry of unzipped.entries) {
+          if (isZipMetaEntry(entry.name)) continue; // __MACOSX/ や ._xxx 等の付随ファイル
+          const name = csvSafeFileName(entry.name); // ディレクトリ階層は落としてファイル名で突合
+          if (!name.toLowerCase().endsWith(".pdf")) {
+            fileErrors.push(`zip内の「${name}」はPDFファイルではありません。`);
+            continue;
+          }
+          if (entry.data.length > maxMb * 1024 * 1024) {
+            fileErrors.push(`誓約書「${name}」は${maxMb}MBを超えています。`);
+            continue;
+          }
+          addPdf({ name, size: entry.data.length, read: async () => entry.data });
+        }
+      }
+    }
+  }
+
+  // (2) 個別PDFの複数選択（少数件の追加・差し替え運用のため維持）
   for (const entry of formData.getAll("pledgeFiles")) {
     if (!(entry instanceof File) || entry.size === 0) continue;
     const name = csvSafeFileName(entry.name);
@@ -283,7 +360,11 @@ export async function csvBulkApplyAction(
       fileErrors.push(`誓約書「${name}」は${maxMb}MBを超えています。`);
       continue;
     }
-    pdfs.set(name.toLowerCase(), entry);
+    addPdf({
+      name,
+      size: entry.size,
+      read: async () => new Uint8Array(await entry.arrayBuffer()),
+    });
   }
   if (fileErrors.length > 0) return { errors: fileErrors };
 
@@ -470,7 +551,7 @@ export async function csvBulkApplyAction(
   for (const [key, f] of pdfs) {
     if (!usedPdfKeys.has(key)) {
       errors.push(
-        `誓約書PDF「${csvSafeFileName(f.name)}」はCSVのどの行とも突合できません（ファイル名は 誓約書No-連番3桁.pdf）`
+        `誓約書PDF「${f.name}」はCSVのどの行とも突合できません（ファイル名は 誓約書No-連番3桁.pdf）`
       );
     }
   }
@@ -487,6 +568,9 @@ export async function csvBulkApplyAction(
   }
 
   // ---- 登録（誓約書PDF保存 → 申請レコードを createMany で一括作成） ----
+  // 数百件規模（§6.2-3）の一括申請でもラウンドトリップを増やさないため、storeFile() の
+  // 1件ずつの保存ではなく createMany でまとめて保存する。検証内容は storeFile() と同じ
+  // （拡張子ホワイトリスト=PDFのみ・上限MB・ファイル名サニタイズ §3.8）。
   const fileIdByLine = new Map<number, string>();
   const storedFiles: {
     id: string;
@@ -502,10 +586,10 @@ export async function csvBulkApplyAction(
     const id = crypto.randomUUID();
     storedFiles.push({
       id,
-      name: csvSafeFileName(pdf.name),
+      name: pdf.name,
       mime: "application/pdf", // 保存MIMEは拡張子から決定（クライアント申告値を信用しない §3.8）
       size: pdf.size,
-      data: new Uint8Array(await pdf.arrayBuffer()),
+      data: await pdf.read(),
       uploadedBy: user.loginId,
     });
     fileIdByLine.set(c.line, id);
@@ -515,6 +599,8 @@ export async function csvBulkApplyAction(
   await prisma.fieldAgentApplication.createMany({
     data: creates.map((c) => ({
       salesStaffId: c.staff.id,
+      // 代理店スコープ列（§3.1）: 単票申請と同じく親SalesStaffの所属から解決して保存する
+      ...resolveAgencyScope(c.staff.agency),
       applicationType: c.applicationType,
       products: c.products,
       attribute: c.attribute,
@@ -531,7 +617,7 @@ export async function csvBulkApplyAction(
       contractorPhone: c.attribute === "業務委託社員" ? c.contractorPhone : null,
       status: "applying",
       primaryAgencyName:
-        c.staff.agency.tier === 1 ? c.staff.agency.name : c.staff.agency.parent?.name ?? null,
+        c.staff.agency.tier === 1 ? c.staff.agency.name : (c.staff.agency.parent?.name ?? null),
       agencyName: c.staff.agency.name,
       history: pushHistory([], "requested", user.loginId) as never,
     })),
@@ -588,7 +674,8 @@ export async function duplicateCheckAction(
 ): Promise<CheckState> {
   const user = await requirePage("field-agents");
   if (user.dummy) return { error: "閲覧専用アカウントのため利用できません。" };
-  if (!APPLY_ROLES.includes(user.role)) return { error: "権限がありません。" };
+  // 申請の事前チェックなので申請権限（§5.1 訪販員申請「申」）で判定する（§3.2）
+  if (!can(user.role, "field-agent", "apply")) return { error: "権限がありません。" };
 
   const salesStaffId = String(formData.get("salesStaffId") ?? "").trim();
   if (!salesStaffId) return { error: "先に販売員IDを選択してください。" };
@@ -667,10 +754,12 @@ export async function duplicateCheckAction(
 // ============================================================
 
 // 1次承認（⑦ or SNC①②③）: applying → provisional
+// §5.1 で「一承」を持つのは⑦のみだが、最終承認権限者（①②③）は自己承認可（§6.2-2）のため
+// canApproveFirst() が中間状態への遷移も許可する（permissions.ts のコメント参照）。
 export async function firstApproveAction(formData: FormData): Promise<void> {
   const user = await requirePage("field-agents");
   const id = String(formData.get("id") ?? "");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) {
+  if (user.dummy || !canApproveFirst(user.role, "field-agent")) {
     await audit(user.loginId, "訪販員申請1次承認", `fieldAgentApplication:${id}`, "denied");
     return;
   }
@@ -745,11 +834,11 @@ export async function finalApproveAction(formData: FormData): Promise<void> {
   revalidatePath("/field-agents");
 }
 
-// 停止（①②③⑦）: provisional / registered → suspended
+// 停止（§5.1 訪販員申請「停」= ①②③⑦）: provisional / registered → suspended
 export async function suspendAction(formData: FormData): Promise<void> {
   const user = await requirePage("field-agents");
   const id = String(formData.get("id") ?? "");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) {
+  if (user.dummy || !can(user.role, "field-agent", "suspend")) {
     await audit(user.loginId, "訪販員停止", `fieldAgentApplication:${id}`, "denied");
     return;
   }
@@ -766,11 +855,11 @@ export async function suspendAction(formData: FormData): Promise<void> {
   revalidatePath("/field-agents");
 }
 
-// 再開（①②③⑦）: suspended → 元のステータス
+// 再開（停止の解除なので §5.1「停」と同一権限 = ①②③⑦）: suspended → 元のステータス
 export async function resumeAction(formData: FormData): Promise<void> {
   const user = await requirePage("field-agents");
   const id = String(formData.get("id") ?? "");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) {
+  if (user.dummy || !can(user.role, "field-agent", "suspend")) {
     await audit(user.loginId, "訪販員再開", `fieldAgentApplication:${id}`, "denied");
     return;
   }
@@ -787,11 +876,11 @@ export async function resumeAction(formData: FormData): Promise<void> {
   revalidatePath("/field-agents");
 }
 
-// 削除（①②③⑦・論理削除 §3.4）
+// 削除（§5.1 訪販員申請「削」= ①②③⑦・論理削除 §3.4）
 export async function removeAction(formData: FormData): Promise<void> {
   const user = await requirePage("field-agents");
   const id = String(formData.get("id") ?? "");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) {
+  if (user.dummy || !can(user.role, "field-agent", "delete")) {
     await audit(user.loginId, "訪販員申請削除", `fieldAgentApplication:${id}`, "denied");
     return;
   }
@@ -809,11 +898,11 @@ export async function removeAction(formData: FormData): Promise<void> {
   revalidatePath("/field-agents");
 }
 
-// 復旧（①②③⑦）: deleted → 元のステータス（誤削除バックアップ復旧 §3.4）
+// 復旧（誤削除バックアップ復旧 §3.4 なので §5.1「削」と同一権限 = ①②③⑦）: deleted → 元のステータス
 export async function restoreAction(formData: FormData): Promise<void> {
   const user = await requirePage("field-agents");
   const id = String(formData.get("id") ?? "");
-  if (user.dummy || !MANAGE_ROLES.includes(user.role)) {
+  if (user.dummy || !can(user.role, "field-agent", "delete")) {
     await audit(user.loginId, "訪販員申請復旧", `fieldAgentApplication:${id}`, "denied");
     return;
   }
@@ -876,7 +965,8 @@ export async function updateFieldApplicationAction(
   const contractorPhone = str("contractorPhone");
 
   // --- バリデーション（§7.4 列仕様。申請フォームと同一ルール） ---
-  if (!APPLICATION_TYPES.includes(applicationType)) return { error: "申請区分を選択してください。" };
+  if (!APPLICATION_TYPES.includes(applicationType))
+    return { error: "申請区分を選択してください。" };
   if (!PRODUCTS.includes(products)) return { error: "取扱商材を選択してください。" };
   if (!ATTRIBUTES.includes(attribute)) return { error: "属性を選択してください。" };
   if (!lastNameKana || !firstNameKana) return { error: "フリガナ（姓・名）を入力してください。" };

@@ -45,7 +45,9 @@ test.afterAll(async () => {
 // ================================================================
 // OWN-015: ログインの入力ゆらぎ吸収（前後空白 / 全角英数 / 引用符）+ 誤PW拒否
 // ================================================================
-test("OWN-015: 前後空白・全角・引用符付きパスワードは受理、誤パスワードは拒否", async ({ browser }) => {
+test("OWN-015: 前後空白・全角・引用符付きパスワードは受理、誤パスワードは拒否", async ({
+  browser,
+}) => {
   test.setTimeout(120_000);
   const tryLogin = async (pw: string) => {
     const ctx = await browser.newContext();
@@ -107,7 +109,9 @@ test("OWN-016: 提出済み日報のプリフィルと部分更新の保持", as
   test.setTimeout(120_000);
   const DATE = "2026-08-23";
   const staff = await db().salesStaff.findFirst({ where: { salesId: "110001C001" } });
-  await db().dailyReport.deleteMany({ where: { salesStaffId: staff!.id, date: DATE, type: "訪販" } });
+  await db().dailyReport.deleteMany({
+    where: { salesStaffId: staff!.id, date: DATE, type: "訪販" },
+  });
 
   await login(page, "R9");
   await page.goto("/reports");
@@ -151,7 +155,9 @@ test("OWN-016: 提出済み日報のプリフィルと部分更新の保持", as
   expect(rec?.contracts).toBe(2);
   expect(rec?.area).toBe(`QA9エリア${RUN}`);
 
-  await db().dailyReport.deleteMany({ where: { salesStaffId: staff!.id, date: DATE, type: "訪販" } });
+  await db().dailyReport.deleteMany({
+    where: { salesStaffId: staff!.id, date: DATE, type: "訪販" },
+  });
 });
 
 // ================================================================
@@ -196,9 +202,21 @@ test("OWN-018: Office/msg添付は受理、20MB超・不許可形式は拒否", 
   await page.locator('input[name="title"]').fill(`QA9添付形式${RUN}`);
   await page.locator('textarea[name="body"]').fill("QA9 添付形式検証");
   await page.locator('input[name="files"]').setInputFiles([
-    { name: `QA9book${RUN}.docx`, mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", buffer: Buffer.from("PK docx qa9") },
-    { name: `QA9slide${RUN}.pptx`, mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", buffer: Buffer.from("PK pptx qa9") },
-    { name: `QA9mail${RUN}.msg`, mimeType: "application/vnd.ms-outlook", buffer: Buffer.from("msg qa9") },
+    {
+      name: `QA9book${RUN}.docx`,
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      buffer: Buffer.from("PK docx qa9"),
+    },
+    {
+      name: `QA9slide${RUN}.pptx`,
+      mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      buffer: Buffer.from("PK pptx qa9"),
+    },
+    {
+      name: `QA9mail${RUN}.msg`,
+      mimeType: "application/vnd.ms-outlook",
+      buffer: Buffer.from("msg qa9"),
+    },
   ]);
   await page.getByRole("button", { name: "起票する" }).click();
   await page.waitForURL(/\/hotline\/[a-z0-9]+$/, { timeout: 20_000 });
@@ -206,7 +224,9 @@ test("OWN-018: Office/msg添付は受理、20MB超・不許可形式は拒否", 
   await expect(page.getByText(`QA9slide${RUN}.pptx`)).toBeVisible();
   await expect(page.getByText(`QA9mail${RUN}.msg`)).toBeVisible();
   const stored = await db().storedFile.findFirst({ where: { name: `QA9book${RUN}.docx` } });
-  expect(stored?.mime).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+  expect(stored?.mime).toBe(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+  );
 
   // 2) 不許可形式（.exe）→ 拒否・案件は作られない
   await page.goto("/hotline?new=1");
@@ -215,11 +235,15 @@ test("OWN-018: Office/msg添付は受理、20MB超・不許可形式は拒否", 
   await page.locator('input[name="deadline"]').fill("2026-08-31");
   await page.locator('input[name="title"]').fill(`QA9不許可${RUN}`);
   await page.locator('textarea[name="body"]').fill("QA9 不許可形式");
-  await page.locator('input[name="files"]').setInputFiles([
-    { name: `QA9bad${RUN}.exe`, mimeType: "application/octet-stream", buffer: Buffer.from("MZ") },
-  ]);
+  await page
+    .locator('input[name="files"]')
+    .setInputFiles([
+      { name: `QA9bad${RUN}.exe`, mimeType: "application/octet-stream", buffer: Buffer.from("MZ") },
+    ]);
   await page.getByRole("button", { name: "起票する" }).click();
-  await expect(page.getByText("この形式のファイルは受け付けられません", { exact: false })).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByText("この形式のファイルは受け付けられません", { exact: false })
+  ).toBeVisible({ timeout: 15_000 });
   expect(await db().case.count({ where: { title: `QA9不許可${RUN}` } })).toBe(0);
 
   // 3) 20MB超（21MB）→ 拒否・案件は作られない
@@ -230,10 +254,16 @@ test("OWN-018: Office/msg添付は受理、20MB超・不許可形式は拒否", 
   await page.locator('input[name="title"]').fill(`QA9超過${RUN}`);
   await page.locator('textarea[name="body"]').fill("QA9 サイズ超過");
   await page.locator('input[name="files"]').setInputFiles([
-    { name: `QA9big${RUN}.pdf`, mimeType: "application/pdf", buffer: Buffer.alloc(21 * 1024 * 1024, 65) },
+    {
+      name: `QA9big${RUN}.pdf`,
+      mimeType: "application/pdf",
+      buffer: Buffer.alloc(21 * 1024 * 1024, 65),
+    },
   ]);
   await page.getByRole("button", { name: "起票する" }).click();
-  await expect(page.getByText("ファイルは20MB以下にしてください", { exact: false })).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("ファイルは20MB以下にしてください", { exact: false })).toBeVisible({
+    timeout: 60_000,
+  });
   expect(await db().case.count({ where: { title: `QA9超過${RUN}` } })).toBe(0);
 });
 
@@ -279,7 +309,9 @@ test("OWN-019: 販売員ID保存・表示と代理店外販売員の拒否", asy
   await page.locator('input[name="title"]').fill(`QA9代理店外${RUN}`);
   await page.locator('textarea[name="body"]').fill("QA9 代理店外販売員の拒否検証");
   await page.getByRole("button", { name: "起票する" }).click();
-  await expect(page.getByText("指定した販売員は対象代理店に所属していません")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("指定した販売員は対象代理店に所属していません")).toBeVisible({
+    timeout: 15_000,
+  });
   expect(await db().case.count({ where: { title: `QA9代理店外${RUN}` } })).toBe(0);
 });
 
@@ -362,7 +394,11 @@ test("OWN-021: 起票時添付・担当者変更（監査記録）・代理店�
 
   // 担当者候補はSNC系のみ（代理店アカウントが混じらない）
   const options = await page.locator('select[name="assigneeAccountId"] option').allTextContents();
-  expect(options.some((o) => o.includes("airis_1110001") || o.includes("airis_2210001") || o.includes("110001C"))).toBe(false);
+  expect(
+    options.some(
+      (o) => o.includes("airis_1110001") || o.includes("airis_2210001") || o.includes("110001C")
+    )
+  ).toBe(false);
   expect(options.some((o) => o.includes("airis_snc_ops_0001"))).toBe(true);
 
   // 担当者をR3（SNC運用者）へ設定 → DB反映・監査記録
@@ -470,7 +506,11 @@ test("OWN-023: 変更理由必須・confirmダイアログ・監査ログ記録"
   await page.getByRole("button", { name: "保存" }).click();
   await expect(page.getByText(`${target} を更新しました`)).toBeVisible({ timeout: 10_000 });
   const log = await db().auditLog.findFirst({
-    where: { actor: ACCOUNTS.R2.loginId, action: "account_update", target: { contains: `reason=${reason}` } },
+    where: {
+      actor: ACCOUNTS.R2.loginId,
+      action: "account_update",
+      target: { contains: `reason=${reason}` },
+    },
   });
   expect(log, "reasonを含む監査ログが無い").not.toBeNull();
   expect(log!.target).toContain(target);
@@ -548,7 +588,10 @@ test("OWN-024: 検索・ロール・状態フィルタとページ送りの条�
 // ================================================================
 // OWN-025: 電話番号形式（0始まり10〜11桁・ハイフン任意）のサーバー側検証と入力属性
 // ================================================================
-test("OWN-025: 不正電話番号は申請・編集・CSVの3経路すべてでサーバー側拒否", async ({ page, browser }) => {
+test("OWN-025: 不正電話番号は申請・編集・CSVの3経路すべてでサーバー側拒否", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(180_000);
   const PHONE_ERR = "電話番号は0始まりの10〜11桁（ハイフン任意）で入力してください";
 
@@ -599,9 +642,15 @@ test("OWN-025: 不正電話番号は申請・編集・CSVの3経路すべてで�
   await page
     .locator('input[type="file"][name="file"]')
     .first()
-    .setInputFiles({ name: "QA9phone.csv", mimeType: "text/csv", buffer: Buffer.from("﻿" + csv, "utf8") });
+    .setInputFiles({
+      name: "QA9phone.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("﻿" + csv, "utf8"),
+    });
   await page.getByRole("button", { name: "一括申請する" }).click();
-  await expect(page.getByText(PHONE_ERR, { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(PHONE_ERR, { exact: false }).first()).toBeVisible({
+    timeout: 10_000,
+  });
   expect(await db().salesStaff.count({ where: { lastName: `QA9電話CSV${RUN}` } })).toBe(0);
 });
 
@@ -626,9 +675,15 @@ test("OWN-026: ひな形2行目の記入例と例文行取込のエラー", asyn
   await page
     .locator('input[type="file"][name="file"]')
     .first()
-    .setInputFiles({ name: "QA9template.csv", mimeType: "text/csv", buffer: Buffer.from("﻿" + tpl, "utf8") });
+    .setInputFiles({
+      name: "QA9template.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("﻿" + tpl, "utf8"),
+    });
   await page.getByRole("button", { name: "一括申請する" }).click();
-  await expect(page.getByText("取込エラー", { exact: false }).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("取込エラー", { exact: false }).first()).toBeVisible({
+    timeout: 10_000,
+  });
   expect(await db().salesStaff.count()).toBe(beforeCount); // 1件も登録されない
   expect(await db().salesStaff.count({ where: { lastName: { contains: "(例)" } } })).toBe(0);
 
@@ -645,9 +700,15 @@ test("OWN-026: ひな形2行目の記入例と例文行取込のエラー", asyn
   await page
     .locator('input[type="file"][name="file"]')
     .first()
-    .setInputFiles({ name: "QA9fa-template.csv", mimeType: "text/csv", buffer: Buffer.from("﻿" + tpl2, "utf8") });
+    .setInputFiles({
+      name: "QA9fa-template.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("﻿" + tpl2, "utf8"),
+    });
   await page.getByRole("button", { name: "一括申請する" }).click();
-  await expect(page.getByText(/取込エラー|全件登録されていません|エラー/).first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText(/取込エラー|全件登録されていません|エラー/).first()).toBeVisible({
+    timeout: 10_000,
+  });
   expect(await db().fieldAgentApplication.count()).toBe(beforeFa);
 });
 
@@ -703,7 +764,9 @@ test("OWN-028: 3経路のメール重複エラーと削除済みメール再利�
     buffer: Buffer.from("%PDF-1.4 qa9"),
   });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("このメールアドレスは既存のアカウントで使用されています")).toBeVisible({ timeout: 10_000 });
+  await expect(
+    page.getByText("このメールアドレスは既存のアカウントで使用されています")
+  ).toBeVisible({ timeout: 10_000 });
   expect(await d.accountRequest.count({ where: { name: `QA9申請重複${RUN}` } })).toBe(0);
 
   // --- 経路2: 承認時の重複（申請後に同一メールのアカウントが発行されたケース） ---
@@ -719,7 +782,9 @@ test("OWN-028: 3経路のメール重複エラーと削除済みメール再利�
     buffer: Buffer.from("%PDF-1.4 qa9"),
   });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("アカウント申請を受け付けました", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("アカウント申請を受け付けました", { exact: false })).toBeVisible({
+    timeout: 10_000,
+  });
   // 申請後に同一メールのアカウントを直接作成（別経路での発行を模擬）
   await d.account.create({
     data: {
@@ -749,7 +814,9 @@ test("OWN-028: 3経路のメール重複エラーと削除済みメール再利�
   await page.locator('input[name="reason"]').fill(`QA9重複試験${RUN}`);
   page.once("dialog", (dlg) => dlg.accept());
   await page.getByRole("button", { name: "保存" }).click();
-  await expect(page.getByText("このメールアドレスは他のアカウントで使用されています")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("このメールアドレスは他のアカウントで使用されています")).toBeVisible({
+    timeout: 10_000,
+  });
   const afterAcc = await d.account.findUnique({ where: { loginId: target } });
   expect(afterAcc?.email).toBe(beforeAcc?.email); // 変更されていない
 
@@ -777,7 +844,9 @@ test("OWN-028: 3経路のメール重複エラーと削除済みメール再利�
     buffer: Buffer.from("%PDF-1.4 qa9"),
   });
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText("アカウント申請を受け付けました", { exact: false })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("アカウント申請を受け付けました", { exact: false })).toBeVisible({
+    timeout: 10_000,
+  });
   expect(await d.accountRequest.count({ where: { name: `QA9再利用${RUN}` } })).toBe(1);
 
   // クリーンアップ（afterAllでも実施するが即時削除）

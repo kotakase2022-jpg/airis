@@ -54,7 +54,8 @@ const EXPECTED: Record<FeatureKey, Partial<Record<Operation, Role[]>>> = {
     approve_final: ["R1", "R2", "R3"],
     update: ["R1", "R2"],
     suspend: ["R1", "R2"],
-    view: ["R1", "R2"],
+    // 「閲」は発注者指示（2026-08-05「③の管理画面を〇」）で③を追加
+    view: ["R1", "R2", "R3"],
     delete: ["R1", "R2"],
   },
   // 申/承/変/停/閲/削 ×3 | ダミー | × | × | 申/一承/変/閲/停/削 | 申 | × | ×

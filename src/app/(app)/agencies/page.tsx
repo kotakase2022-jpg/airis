@@ -68,9 +68,9 @@ export default async function AgenciesPage({
   ]);
 
   // 総ユーザー数（Account数）・管轄内進行中案件（scope内の未完了Case件数 §7.11）はスコープ内代理店で集計
-  const scopedIds = (
-    await prisma.agency.findMany({ where: baseWhere, select: { id: true } })
-  ).map((a) => a.id);
+  const scopedIds = (await prisma.agency.findMany({ where: baseWhere, select: { id: true } })).map(
+    (a) => a.id
+  );
   const [userTotal, ongoingCaseTotal] = await Promise.all([
     prisma.account.count({
       where: { agencyId: { in: scopedIds }, status: { not: "deleted" } },
@@ -170,7 +170,7 @@ export default async function AgenciesPage({
             {primaries.map((p) => (
               <div
                 key={p.id}
-                className="rounded-xl border border-slate-200 border-l-4 border-l-emerald-500 bg-white px-4 py-3"
+                className="rounded-xl border border-l-4 border-slate-200 border-l-emerald-500 bg-white px-4 py-3"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-sm font-bold text-slate-800">{p.name}</span>
@@ -194,11 +194,11 @@ export default async function AgenciesPage({
                   </span>
                 </div>
                 {p.children.length > 0 && (
-                  <div className="ml-6 mt-3 space-y-2">
+                  <div className="mt-3 ml-6 space-y-2">
                     {p.children.map((c) => (
                       <div
                         key={c.id}
-                        className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 border-l-4 border-l-blue-500 bg-slate-50 px-3 py-2"
+                        className="flex flex-wrap items-center gap-2 rounded-lg border border-l-4 border-slate-200 border-l-blue-500 bg-slate-50 px-3 py-2"
                       >
                         <span className="text-sm font-medium text-slate-700">{c.name}</span>
                         <Badge tone="blue">ID: {c.code}</Badge>

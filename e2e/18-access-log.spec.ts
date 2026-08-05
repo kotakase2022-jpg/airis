@@ -31,9 +31,7 @@ const LOCK_THRESHOLD = 10; // 30分間に10回失敗でロック
 const PEPPER = process.env.PASSWORD_PEPPER_V1 ?? "";
 const ARGON2_OPTIONS = { memoryCost: 19456, timeCost: 2, parallelism: 1, outputLen: 32 };
 function hashPw(pw: string): string {
-  const input = PEPPER
-    ? crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex")
-    : pw;
+  const input = PEPPER ? crypto.createHmac("sha256", PEPPER).update(pw, "utf8").digest("hex") : pw;
   return argon2HashSync(input, ARGON2_OPTIONS);
 }
 
@@ -281,7 +279,10 @@ test.describe("X-Forwarded-For 偽装対策", () => {
       // 記録されたIPは全て末尾hop（偽装した先頭要素は1件も採用されていない）
       const logs = await accessLogsOf(ID);
       expect(logs).toHaveLength(RATE_MAX_FAILURES + 1);
-      expect(logs.every((l) => l.ip === REAL), "全件が末尾hopで記録されること").toBe(true);
+      expect(
+        logs.every((l) => l.ip === REAL),
+        "全件が末尾hopで記録されること"
+      ).toBe(true);
       expect(logs.filter((l) => l.result === "failure")).toHaveLength(RATE_MAX_FAILURES);
       const denied = logs.filter((l) => l.result === "denied");
       expect(denied).toHaveLength(1);
@@ -370,9 +371,7 @@ test.describe("アクセスログCSV・ビューア", () => {
 
       await login(page, "R2");
       await page.goto("/admin");
-      await expect(
-        page.getByRole("heading", { name: /アクセスログ（直近100件）/ })
-      ).toBeVisible();
+      await expect(page.getByRole("heading", { name: /アクセスログ（直近100件）/ })).toBeVisible();
       await expect(page.locator("td", { hasText: ID }).first()).toBeVisible();
       // アクセスログCSV出力リンクが提供されている（§7.2）
       await expect(page.getByRole("link", { name: "アクセスログCSV出力" })).toBeVisible();
@@ -442,7 +441,9 @@ test.describe("AccessLog書き込み失敗時の fail-closed", () => {
 // ※このテストは TRUST_PROXY=true で起動した検証サーバーでは skip される
 // ============================================================================
 test.describe("TRUST_PROXY のオプトイン", () => {
-  test("TRUST_PROXY未設定時はXFFを信頼せず、接続元IPは unknown として記録される", async ({ page }) => {
+  test("TRUST_PROXY未設定時はXFFを信頼せず、接続元IPは unknown として記録される", async ({
+    page,
+  }) => {
     // 検証サーバーがTRUST_PROXY=trueで起動している場合はこのケースを検証できない
     // 既定構成（TRUST_PROXY未設定）で必ず検証する。TRUST_PROXY=true のサーバーでのみskip。
     test.skip(

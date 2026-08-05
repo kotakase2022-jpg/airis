@@ -10,7 +10,13 @@ describe("toCsv（§2 単体テスト: CSVエクスポート）", () => {
   });
 
   it("ヘッダ行 + データ行を CRLF で連結する", () => {
-    const csv = toCsv(["id", "name"], [["1", "山田"], ["2", "佐藤"]]);
+    const csv = toCsv(
+      ["id", "name"],
+      [
+        ["1", "山田"],
+        ["2", "佐藤"],
+      ]
+    );
     expect(csv).toBe(BOM + "id,name\r\n1,山田\r\n2,佐藤");
   });
 

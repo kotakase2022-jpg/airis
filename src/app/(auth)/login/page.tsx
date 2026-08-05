@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { useActionState } from "react";
 import { loginAction } from "../actions";
-import { btnPrimary } from "@/components/ui";
+import { btnPrimary, SHARED_ACCOUNT_NOTICE_TEXT } from "@/components/ui";
 
 // ログイン画面（発注者提供デザイン 2026-08-05 準拠）:
 // Airisロゴカード → 「So-net光 販売代理店支援ポータル」見出し → 入力フォーム。
@@ -26,12 +26,12 @@ export default function LoginPage() {
             width={428}
             height={225}
             priority
-            className="mx-auto h-auto w-full max-h-[22vh] object-contain"
+            className="mx-auto h-auto max-h-[22vh] w-full object-contain"
           />
         </div>
 
         {/* 見出しは1行に収める（参照デザイン準拠。狭い画面では自動縮小） */}
-        <h1 className="mb-6 whitespace-nowrap text-center text-[clamp(20px,5.2vw,36px)] font-bold leading-tight tracking-tight text-[#1B3B6F]">
+        <h1 className="mb-6 text-center text-[clamp(20px,5.2vw,36px)] leading-tight font-bold tracking-tight whitespace-nowrap text-[#1B3B6F]">
           So-net光 販売代理店支援ポータル
         </h1>
 
@@ -71,8 +71,9 @@ export default function LoginPage() {
           </button>
         </form>
 
+        {/* 1人1ID（共有アカウント禁止）§4.2 SEC要件① / §10.1。文言は ui.tsx の共通定数と共有する */}
         <p className="mt-4 text-center text-xs leading-relaxed text-slate-400">
-          同じ権限を複数名で利用する場合も、利用者ごとに個別のアカウントを使用してください。
+          {SHARED_ACCOUNT_NOTICE_TEXT}
         </p>
       </div>
     </div>

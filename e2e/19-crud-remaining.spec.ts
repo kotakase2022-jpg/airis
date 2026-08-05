@@ -9,7 +9,14 @@
 //                  §7.4 のバリデーションがサーバ側で効くこと。
 
 import { test, expect, type Page } from "@playwright/test";
-import { ACCOUNTS, collectConsoleErrors, criticalErrors, db, login } from "./helpers";
+import {
+  fieldAgentScope,
+  ACCOUNTS,
+  collectConsoleErrors,
+  criticalErrors,
+  db,
+  login,
+} from "./helpers";
 
 const RUN = Date.now().toString(36);
 const P = (name: string) => `QA19${name}${RUN}`;
@@ -149,10 +156,16 @@ async function mkStaff(agencyCode: string) {
   });
 }
 
-async function mkApplication(salesStaffId: string, pledgeNo: string, extra: Record<string, unknown> = {}) {
+async function mkApplication(
+  salesStaffId: string,
+  pledgeNo: string,
+  extra: Record<string, unknown> = {}
+) {
+  const scope = await fieldAgentScope(salesStaffId);
   return db().fieldAgentApplication.create({
     data: {
       salesStaffId,
+      ...scope, // 代理店スコープ列（§3.1）
       applicationType: "稼働",
       products: "auひかり",
       attribute: "社員/契約社員",
@@ -328,7 +341,9 @@ test("QA19 提出物再提出: 同一（種別×対象月×提出元）の再提
   await form.locator('input[name="file"]').setInputFiles(xlsxUpload(`${memo}-again.xlsx`));
   await form.locator('input[name="memo"]').fill(memo2);
   await form.getByRole("button", { name: "提出する" }).click();
-  await expect(page.getByText("を再提出しました（既存の提出物を上書き / 1次店確認中）")).toBeVisible({
+  await expect(
+    page.getByText("を再提出しました（既存の提出物を上書き / 1次店確認中）")
+  ).toBeVisible({
     timeout: 20_000,
   });
 
@@ -364,7 +379,9 @@ test("QA19 権限外（提出物）: ④に差し替えUIが無い / ⑨は稼�
   // ④（SNC閲覧=ダミー）: 閲覧専用のため差し替えUIが出ない
   await freshLogin(page, "R4");
   await page.goto("/reports?tab=submissions");
-  await expect(page.getByText("SNC閲覧アカウントは閲覧専用です（ダミーデータ表示）。")).toBeVisible();
+  await expect(
+    page.getByText("SNC閲覧アカウントは閲覧専用です（ダミーデータ表示）。")
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "差し替え" })).toHaveCount(0);
 
   // ⑨（販売員）: §5.2 で稼働提出物=×。タブが出ず、tab指定でも日報タブになる
@@ -482,7 +499,9 @@ test("QA19 窓口案件削除: ⑥がCSC案件を論理削除 → status=削除�
   await expect(page.locator("summary", { hasText: "案件を編集" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "復旧" })).toBeVisible();
   // 一覧のステータスフィルタから削除済を辿れる（SNC側のみ）
-  await page.goto(`/consumer-center?q=${encodeURIComponent(c.caseNo)}&status=${encodeURIComponent("削除済")}`);
+  await page.goto(
+    `/consumer-center?q=${encodeURIComponent(c.caseNo)}&status=${encodeURIComponent("削除済")}`
+  );
   await expect(page.getByText(c.caseNo)).toBeVisible();
 
   // 復旧 → 削除前のステータス（確認中）へ戻る

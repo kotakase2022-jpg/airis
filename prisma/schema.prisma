@@ -30,6 +30,8 @@ model Agency {
   submissionsAsSubmitter Submission[] @relation("SubmissionSubmitter")
   casesAsPrimary   Case[] @relation("CasePrimary")
   casesAsSecondary Case[] @relation("CaseSecondary")
+  fieldAgentsAsPrimary   FieldAgentApplication[] @relation("FieldAgentPrimary")
+  fieldAgentsAsSecondary FieldAgentApplication[] @relation("FieldAgentSecondary")
   caseReads    CaseRead[]
 }
 
@@ -48,6 +50,9 @@ model Account {
   passwordHash       String
   mustChangePassword Boolean   @default(true)
   passwordUpdatedAt  DateTime  @default(now())
+  // パスワードハッシュに適用されているペッパーのバージョンID（§10.3 / SEC②#42）。
+  // null = ペッパー未適用。ログイン成功時に現行バージョンで再ハッシュして更新する。
+  pepperVersion      String?
   failedAttempts     Int       @default(0)
   lockedUntil        DateTime?
   mfaSecret          String? // TOTP秘密鍵（登録開始時に生成、有効化前は enabled=false のまま保持）
@@ -142,6 +147,12 @@ model FieldAgentApplication {
   /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   firstNameKana   String?
   identityType    String? // 免許証 | マイナンバーカード | パスポート
+  // 代理店スコープ（§3.1「全業務テーブルに primaryAgencyId / secondaryAgencyId」）。
+  // 申請作成時に親SalesStaffの所属から解決して保持し、RLS・アプリ層の双方で直接判定する。
+  primaryAgencyId   String?
+  primaryAgency     Agency? @relation("FieldAgentPrimary", fields: [primaryAgencyId], references: [id])
+  secondaryAgencyId String?
+  secondaryAgency   Agency? @relation("FieldAgentSecondary", fields: [secondaryAgencyId], references: [id])
   pledgeNo        String
   /// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）
   pledgeFileId    String?
@@ -301,6 +312,51 @@ model CaseStatusHistory {
   toStatus   String
   changedBy  String
   changedAt  DateTime @default(now())
+}
+
+// 状態遷移の履歴テーブル（§4.1）。
+// requested / approve_first / final_approve / reject / suspend / resume / delete などの
+// 遷移イベントを、対象エンティティ横断で時刻付きで記録する。
+// 既存の history(Json) は一覧表示用の要約として維持し、本テーブルを正の追跡元とする。
+model StatusHistory {
+  id         String   @id @default(cuid())
+  entityType String // account | account_request | sales_staff | field_agent | submission | case
+  entityId   String
+  event      String // requested|approve_first|final_approve|reject|suspend|resume|delete|restore|update
+  fromStatus String?
+  toStatus   String?
+  reason     String? // 差戻し・却下・変更の理由
+  changedBy  String // 実行者のloginId
+  changedAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([changedAt])
+}
+
+// ステータスのマスタ（§7.8「値はマスタ化して増減できる実装に」）。
+// コード変更・再デプロイなしに値を増減できるよう、DBを正の定義とし、
+// 未投入時はコード側の既定値（src/lib/roles.ts）へフォールバックする。
+model StatusMaster {
+  id        String   @id @default(cuid())
+  kind      String // case（窓口案件のステータス）ほか
+  value     String // 表示・保存される値
+  sortOrder Int      @default(0)
+  tone      String? // バッジ色（gray|blue|orange|red|green）
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([kind, value])
+}
+
+// アプリ設定（§10.1「IP許可リスト制御を設定可能に」/ §3.3「設定変更も監査ログ対象」）。
+// 環境変数より優先され、管理画面から変更できる。変更は StatusHistory/AuditLog に記録する。
+model AppSetting {
+  id        String   @id @default(cuid())
+  key       String   @unique // admin_ip_allowlist | password_admin_days | password_general_days ほか
+  value     String
+  updatedBy String?
+  updatedAt DateTime @updatedAt
 }
 
 model CaseRead {

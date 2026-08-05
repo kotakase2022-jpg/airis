@@ -4,7 +4,8 @@
 
 import { test, expect, type Page } from "@playwright/test";
 import bcrypt from "bcryptjs";
-import { completeMfaIfNeeded,
+import {
+  completeMfaIfNeeded,
   ACCOUNTS,
   PW_GENERAL,
   collectConsoleErrors,
@@ -100,14 +101,18 @@ test.afterAll(async () => {
 // 申請（正常系・異常系）
 // =====================================================================
 
-test("R8: 新規申請（姓名別枠・生年月日・電話）→ DBにapplying → R8の一覧に表示", async ({ page }) => {
+test("R8: 新規申請（姓名別枠・生年月日・電話）→ DBにapplying → R8の一覧に表示", async ({
+  page,
+}) => {
   const errors = collectConsoleErrors(page);
   const lastName = P("申請");
   await freshLogin(page, "R8");
   await gotoList(page);
 
   // 説明バナー: R8は自店のみ操作可能
-  await expect(page.getByText("操作可能な代理店")).toContainText("株式会社セールスパートナー東京（210001）");
+  await expect(page.getByText("操作可能な代理店")).toContainText(
+    "株式会社セールスパートナー東京（210001）"
+  );
 
   await page.locator("summary", { hasText: "＋ 販売員ID申請" }).click();
   // R8は所属代理店が自店固定（disabled表示 + hidden）
@@ -117,7 +122,9 @@ test("R8: 新規申請（姓名別枠・生年月日・電話）→ DBにapplyin
   await page.locator('input[name="birthDate"]').fill("1991-05-05");
   await page.locator('input[name="phone"]').fill("090-1111-2222");
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText(`${lastName} 太郎 さんの販売員IDを申請しました（申請中）`)).toBeVisible({
+  await expect(
+    page.getByText(`${lastName} 太郎 さんの販売員IDを申請しました（申請中）`)
+  ).toBeVisible({
     timeout: 10_000,
   });
 
@@ -143,7 +150,9 @@ test("R8: 新規申請（姓名別枠・生年月日・電話）→ DBにapplyin
   expect(criticalErrors(errors)).toEqual([]);
 });
 
-test("申請フォーム: 必須項目未入力はエラーになり登録されない（HTML5+サーバ側）", async ({ page }) => {
+test("申請フォーム: 必須項目未入力はエラーになり登録されない（HTML5+サーバ側）", async ({
+  page,
+}) => {
   const lastName = P("必須");
   await freshLogin(page, "R8");
   await gotoList(page);
@@ -160,7 +169,7 @@ test("申請フォーム: 必須項目未入力はエラーになり登録され
   // 2) サーバ側検証: required属性を外して空のまま送信→ サーバのエラーメッセージ
   await page.evaluate(() => {
     document
-      .querySelectorAll('input[required], select[required]')
+      .querySelectorAll("input[required], select[required]")
       .forEach((el) => el.removeAttribute("required"));
   });
   await page.locator('input[name="lastName"]').fill("");
@@ -312,7 +321,9 @@ test("自己承認: R2が自分で申請→自分で1次承認→最終承認ま
   await page.locator('input[name="birthDate"]').fill("1993-03-03");
   await page.locator('input[name="phone"]').fill("090-4444-5555");
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText(`${lastName} 五郎 さんの販売員IDを申請しました（申請中）`)).toBeVisible({
+  await expect(
+    page.getByText(`${lastName} 五郎 さんの販売員IDを申請しました（申請中）`)
+  ).toBeVisible({
     timeout: 10_000,
   });
 
@@ -402,7 +413,9 @@ test("停止→Accountもsuspended（ログイン不可）→再開→ログイ�
   // 停止中はログイン不可
   await page.context().clearCookies();
   await rawLogin(page, loginId, password);
-  await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({
+    timeout: 10_000,
+  });
   await expect(page).toHaveURL(/\/login/);
 
   // R2が再開 → 本登録に戻り、ログイン可
@@ -531,14 +544,23 @@ test("検索・代理店フィルタ・状態フィルタ・ページネーシ�
   const s3 = await agencyByCode("250008");
   await db().salesStaff.create({
     data: {
-      lastName: `${base}A`, firstName: "甲", birthDate: "1990-01-01",
-      phone: "090-7777-0001", agencyId: p2.id, status: "applying",
+      lastName: `${base}A`,
+      firstName: "甲",
+      birthDate: "1990-01-01",
+      phone: "090-7777-0001",
+      agencyId: p2.id,
+      status: "applying",
     },
   });
   await db().salesStaff.create({
     data: {
-      lastName: `${base}B`, firstName: "乙", birthDate: "1990-01-02",
-      phone: "090-7777-0002", agencyId: s3.id, status: "provisional", firstApproved: true,
+      lastName: `${base}B`,
+      firstName: "乙",
+      birthDate: "1990-01-02",
+      phone: "090-7777-0002",
+      agencyId: s3.id,
+      status: "provisional",
+      firstApproved: true,
     },
   });
 
@@ -578,7 +600,9 @@ test("検索・代理店フィルタ・状態フィルタ・ページネーシ�
 
 const CSV_HEADER = "姓,名,生年月日,電話番号,代理店コード,メールアドレス";
 
-test("CSVひな形DL: ヘッダが 姓,名,生年月日,電話番号,代理店コード,メールアドレス", async ({ page }) => {
+test("CSVひな形DL: ヘッダが 姓,名,生年月日,電話番号,代理店コード,メールアドレス", async ({
+  page,
+}) => {
   await freshLogin(page, "R8");
   const res = await page.request.get("/sales-staff/csv/template");
   expect(res.status()).toBe(200);
@@ -643,7 +667,9 @@ test("CSV一括申請: 3行中1行不正（生年月日）→ 全件拒否+「3�
   });
   await page.getByRole("button", { name: "一括申請する" }).click();
 
-  await expect(page.getByText("取込エラー（全件登録されていません）")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("取込エラー（全件登録されていません）")).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText(/3行目.*生年月日/)).toBeVisible();
 
   // 正常な1・3行目も含め全件登録されていない（§3.6 全件ロールバック）
@@ -669,21 +695,34 @@ test("販売員一覧CSV出力: R8はスコープ内（自店210001）のみ出�
   expect(body).not.toContain("関西,四郎"); // 他1次店（150008）は含まない
 });
 
-test("GiGaCC連携CSV出力: 本登録のみが含まれる（仮登録・申請中・ダミーは含まない）", async ({ page }) => {
+test("GiGaCC連携CSV出力: 本登録のみが含まれる（仮登録・申請中・ダミーは含まない）", async ({
+  page,
+}) => {
   const regName = P("G本");
   const provName = P("G仮");
   const p2 = await agencyByCode("150008");
   const regSalesId = `QA3G${RUN}`;
   await db().salesStaff.create({
     data: {
-      salesId: regSalesId, lastName: regName, firstName: "登", birthDate: "1990-06-06",
-      phone: "090-8888-0001", agencyId: p2.id, status: "registered", firstApproved: true,
+      salesId: regSalesId,
+      lastName: regName,
+      firstName: "登",
+      birthDate: "1990-06-06",
+      phone: "090-8888-0001",
+      agencyId: p2.id,
+      status: "registered",
+      firstApproved: true,
     },
   });
   await db().salesStaff.create({
     data: {
-      lastName: provName, firstName: "仮", birthDate: "1990-07-07",
-      phone: "090-8888-0002", agencyId: p2.id, status: "provisional", firstApproved: true,
+      lastName: provName,
+      firstName: "仮",
+      birthDate: "1990-07-07",
+      phone: "090-8888-0002",
+      agencyId: p2.id,
+      status: "provisional",
+      firstApproved: true,
     },
   });
 
@@ -702,7 +741,10 @@ test("GiGaCC連携CSV出力: 本登録のみが含まれる（仮登録・申請
   expect(body).not.toContain("990001");
 
   // CSV本文の全販売員IDがDB上で本登録であることを突合
-  const ids = lines.slice(1).map((l) => l.split(",")[0]).filter(Boolean);
+  const ids = lines
+    .slice(1)
+    .map((l) => l.split(",")[0])
+    .filter(Boolean);
   expect(ids.length).toBeGreaterThan(0);
   const staffRows = await db().salesStaff.findMany({ where: { salesId: { in: ids } } });
   expect(staffRows.length).toBe(ids.length);
@@ -769,7 +811,9 @@ test("権限外アクセス: R9・R5が/sales-staffへ直接アクセスする�
 test("異常系: 存在しないIDではログインできない", async ({ page }) => {
   await page.context().clearCookies();
   await rawLogin(page, `QA3-ghost-${RUN}`, PW_GENERAL);
-  await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByText("IDまたはパスワードが正しくありません")).toBeVisible({
+    timeout: 10_000,
+  });
   await expect(page).toHaveURL(/\/login/);
 });
 
@@ -788,7 +832,9 @@ function cutoffBirthDate(): string {
   return `${y}-${String(m).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-test("申請フォーム: 生年月日のデフォルトは15年前の今日（2026年時点=2011年の今日）", async ({ page }) => {
+test("申請フォーム: 生年月日のデフォルトは15年前の今日（2026年時点=2011年の今日）", async ({
+  page,
+}) => {
   // R8は所属代理店が自店固定のためフォーム入力が最小で済む
   await freshLogin(page, "R8");
   await gotoList(page);
@@ -823,7 +869,9 @@ test("申請フォーム: ちょうど15歳（15年前の今日）は申請で�
   await page.locator('input[name="phone"]').fill("090-1111-0015");
   await page.locator('input[name="birthDate"]').fill(cutoffBirthDate());
   await page.getByRole("button", { name: "申請する" }).click();
-  await expect(page.getByText(`${lastName} ちょうど さんの販売員IDを申請しました（申請中）`)).toBeVisible({
+  await expect(
+    page.getByText(`${lastName} ちょうど さんの販売員IDを申請しました（申請中）`)
+  ).toBeVisible({
     timeout: 10_000,
   });
   expect(await db().salesStaff.count({ where: { lastName } })).toBe(1);

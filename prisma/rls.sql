@@ -96,13 +96,46 @@ CREATE POLICY rls_scope ON "CaseRead" FOR ALL
     OR "agencyId" = ANY(string_to_array(current_setting('app.scope', true), ','))
   );
 
--- ===== FieldAgentApplication（親SalesStaffのポリシー経由） =====
+-- ===== FieldAgentApplication（訪販員申請: primaryAgencyId / secondaryAgencyId 直接） =====
+-- §3.1「全業務テーブルに代理店スコープ（primaryAgencyId / secondaryAgencyId）を持たせ」に合わせ、
+-- 親SalesStaffへのEXISTS参照ではなく **自テーブルのスコープ列** で判定する。
+--   1次代理店（⑦）: primaryAgencyId が自店（配下2次店の申請も1次店IDで一致）
+--   2次代理店（⑧）: secondaryAgencyId が自店
+-- 列は申請作成時に親SalesStaffの所属から解決して保存する
+-- （src/app/(app)/field-agents/agency-scope.ts）。既存行は
+-- `npx tsx "src/app/(app)/field-agents/backfill-scope.ts"` で一度だけ補完する。
+-- スコープ列がNULLの行は代理店系ロールから一切見えない（fail-closed）。
+-- スコープ列が未適用のDBに対して実行すると、DROP POLICY 後の CREATE POLICY が失敗して
+-- 「ポリシー無し（全行拒否）」の状態で残ってしまうため、先に列の存在を確認して中断する。
+DO $do$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'FieldAgentApplication'
+      AND column_name IN ('primaryAgencyId', 'secondaryAgencyId')
+    GROUP BY table_name
+    HAVING count(*) = 2
+  ) THEN
+    RAISE EXCEPTION 'FieldAgentApplication.primaryAgencyId / secondaryAgencyId が存在しません。先にマイグレーション（npm run migrate）を適用してから npm run rls を実行してください（§3.1 代理店スコープ列）';
+  END IF;
+END
+$do$;
+
 ALTER TABLE "FieldAgentApplication" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "FieldAgentApplication" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS rls_scope ON "FieldAgentApplication";
 CREATE POLICY rls_scope ON "FieldAgentApplication" FOR ALL
-  USING (EXISTS (SELECT 1 FROM "SalesStaff" s WHERE s.id = "FieldAgentApplication"."salesStaffId"))
-  WITH CHECK (EXISTS (SELECT 1 FROM "SalesStaff" s WHERE s.id = "FieldAgentApplication"."salesStaffId"));
+  USING (
+    current_setting('app.bypass', true) = 'on'
+    OR "primaryAgencyId" = ANY(string_to_array(current_setting('app.scope', true), ','))
+    OR "secondaryAgencyId" = ANY(string_to_array(current_setting('app.scope', true), ','))
+  )
+  WITH CHECK (
+    current_setting('app.bypass', true) = 'on'
+    OR "primaryAgencyId" = ANY(string_to_array(current_setting('app.scope', true), ','))
+    OR "secondaryAgencyId" = ANY(string_to_array(current_setting('app.scope', true), ','))
+  );
 
 -- ===== AccountRequest（アカウント申請: agencyId 直接。§3.1 保護対象の拡大） =====
 -- 代理店系ロール（⑦⑧）の申請は agencyId を持つ。SNC系ロール（①〜⑥）宛の申請は agencyId IS NULL。

@@ -1,13 +1,7 @@
 "use client";
 
 import { ReactNode, useActionState, useState } from "react";
-import {
-  btnDanger,
-  btnOutline,
-  btnPrimary,
-  inputCls,
-  labelCls,
-} from "@/components/ui";
+import { btnDanger, btnOutline, btnPrimary, inputCls, labelCls } from "@/components/ui";
 import {
   AgencyActionState,
   createAgencyAction,
@@ -128,7 +122,12 @@ export function AddAgencyButton({
               </div>
               <div>
                 <label className={labelCls}>参加日</label>
-                <input type="date" name="joinedAt" className={inputCls} defaultValue={defaultJoinedAt} />
+                <input
+                  type="date"
+                  name="joinedAt"
+                  className={inputCls}
+                  defaultValue={defaultJoinedAt}
+                />
               </div>
             </div>
             {state.error && <p className="text-sm text-red-600">{state.error}</p>}

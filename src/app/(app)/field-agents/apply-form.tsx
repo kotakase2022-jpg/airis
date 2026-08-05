@@ -26,14 +26,24 @@ export type StaffOption = {
 const initialForm: FormState = {};
 const initialCheck: CheckState = {};
 
-export function ApplyForm({ staff, isSnc }: { staff: StaffOption[]; isSnc: boolean }) {
-  const [open, setOpen] = useState(false);
+export function ApplyForm({
+  staff,
+  isSnc,
+  initialStaffId = "",
+}: {
+  staff: StaffOption[];
+  isSnc: boolean;
+  // 一覧の行内「訪販申請」ボタン（§7.4 操作列）から遷移したときの初期選択販売員。
+  // 指定時はフォームを開いた状態で描画する（page.tsx が key で再マウントする）。
+  initialStaffId?: string;
+}) {
+  const [open, setOpen] = useState(initialStaffId !== "");
   const [createState, createAction, creating] = useActionState(
     createFieldAgentApplication,
     initialForm
   );
   const [checkState, checkAction, checking] = useActionState(duplicateCheckAction, initialCheck);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(initialStaffId);
   const [products, setProducts] = useState("マルチ");
   const [attribute, setAttribute] = useState("社員/契約社員");
 
@@ -250,7 +260,9 @@ export function ApplyForm({ staff, isSnc }: { staff: StaffOption[]; isSnc: boole
               disabled={!isContractor}
               required={isContractor}
               className={`${inputCls} disabled:bg-slate-100 disabled:text-slate-400`}
-              placeholder={isContractor ? "03-0000-0000（半角ハイフンあり）" : "属性が業務委託社員の場合のみ"}
+              placeholder={
+                isContractor ? "03-0000-0000（半角ハイフンあり）" : "属性が業務委託社員の場合のみ"
+              }
             />
           </div>
 
@@ -314,7 +326,9 @@ export function ApplyForm({ staff, isSnc }: { staff: StaffOption[]; isSnc: boole
         {checkState.checked &&
           (checkState.warnings && checkState.warnings.length > 0 ? (
             <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              <div className="mb-1 font-bold">簡易チェックの警告（{checkState.warnings.length}件）</div>
+              <div className="mb-1 font-bold">
+                簡易チェックの警告（{checkState.warnings.length}件）
+              </div>
               <ul className="list-inside list-disc space-y-0.5">
                 {checkState.warnings.map((w, i) => (
                   <li key={i}>{w}</li>

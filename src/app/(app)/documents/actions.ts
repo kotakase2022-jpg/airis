@@ -28,7 +28,8 @@ export async function uploadDocumentAction(
   const file = formData.get("file");
 
   if (!title) return { error: "タイトルを入力してください" };
-  if (!["all", "primary", "snc"].includes(visibility)) return { error: "公開範囲を選択してください" };
+  if (!["all", "primary", "snc"].includes(visibility))
+    return { error: "公開範囲を選択してください" };
   if (!(file instanceof File) || file.size === 0) return { error: "ファイルを選択してください" };
 
   const stored = await storeFile(file, user.id);

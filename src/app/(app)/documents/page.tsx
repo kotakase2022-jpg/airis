@@ -108,9 +108,7 @@ export default async function DocumentsPage({
       orderBy: { category: "asc" },
     }),
   ]);
-  const categories = categoryRows
-    .map((c) => c.category)
-    .filter((c): c is string => !!c);
+  const categories = categoryRows.map((c) => c.category).filter((c): c is string => !!c);
 
   const qs = (p: number) => {
     const params = new URLSearchParams();
@@ -221,7 +219,8 @@ export default async function DocumentsPage({
                     <td className={tdCls}>
                       {/* TODO: ダウンロードの監査ログ記録は /files/[id] ルート側で対応（§7.12） */}
                       <a href={`/files/${d.fileId}`} className="text-blue-600 hover:underline">
-                        <Paperclip className="mr-1 inline h-3 w-3" />{d.fileName}
+                        <Paperclip className="mr-1 inline h-3 w-3" />
+                        {d.fileName}
                       </a>
                     </td>
                     <td className={`${tdCls} whitespace-nowrap`}>{fmtJst(d.createdAt)}</td>

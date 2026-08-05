@@ -34,7 +34,10 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
     if (isOwnRequest) return true;
     if (user.isDummy) return false;
     // ①②（閲覧権限）と③（最終承認権限 §5.1「承」）は承認判断のため全件参照可
-    if (can(user.role, "airis-account", "view") || can(user.role, "airis-account", "approve_final")) {
+    if (
+      can(user.role, "airis-account", "view") ||
+      can(user.role, "airis-account", "approve_final")
+    ) {
       return true;
     }
     // ⑦（1次承認権限 §6.1-3）は自店スコープ内の申請のみ。agencyId=NULL（SNC内部申請）は不可
@@ -112,7 +115,8 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
     // §5.2: ドキュメントページは①②③⑤⑥⑦⑧⑨（④はダミー）。⑩は×
     if (user.role === "R10") return false;
     if (doc.visibility === "snc") return ["R1", "R2", "R3", "R5", "R6"].includes(user.role);
-    if (doc.visibility === "primary") return ["R1", "R2", "R3", "R5", "R6", "R7"].includes(user.role);
+    if (doc.visibility === "primary")
+      return ["R1", "R2", "R3", "R5", "R6", "R7"].includes(user.role);
     return true; // all
   }
 

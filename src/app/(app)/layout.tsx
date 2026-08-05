@@ -26,7 +26,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <div className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-600 text-lg font-bold text-white">
               A
             </div>
-            <div className="text-sm font-bold leading-tight text-slate-800">
+            <div className="text-sm leading-tight font-bold text-slate-800">
               販売代理店支援
               <br />
               ポータル
@@ -55,9 +55,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {/* ヘッダ左: 現在ページのアイコン+太字タイトル */}
           <HeaderTitle items={menu.map(({ key, label, href }) => ({ key, label, href }))} />
           <div className="ml-auto flex items-center gap-3">
-            {user.agencyName && (
-              <span className="text-xs text-slate-500">{user.agencyName}</span>
-            )}
+            {user.agencyName && <span className="text-xs text-slate-500">{user.agencyName}</span>}
             <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">
               {ROLE_LABELS[user.role]} モード
             </span>
@@ -73,7 +71,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             >
               <Bell className="h-4 w-4" />
               {unread > 0 && (
-                <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold text-white">
                   {unread}
                 </span>
               )}

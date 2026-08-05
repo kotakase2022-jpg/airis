@@ -2,13 +2,7 @@ import Link from "next/link";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { requirePage, agencyScope } from "@/lib/auth";
-import {
-  REQUESTABLE_ROLES,
-  REQUEST_STATUS_LABELS,
-  ROLE_LABELS,
-  ROLE_NUM,
-  Role,
-} from "@/lib/roles";
+import { REQUESTABLE_ROLES, REQUEST_STATUS_LABELS, ROLE_LABELS, ROLE_NUM, Role } from "@/lib/roles";
 import { can, canApproveFirst } from "@/lib/permissions";
 import { formatHistory, requiresAgency } from "@/lib/util";
 import {
@@ -129,8 +123,12 @@ export default async function AccountRequestsPage({
     const agencyWhere: Prisma.AgencyWhereInput =
       scope === null ? { isDummy: false } : { id: { in: scope } };
     const list = await prisma.agency.findMany({ where: agencyWhere, orderBy: { code: "asc" } });
-    tier1 = list.filter((a) => a.tier === 1).map((a) => ({ value: a.id, label: `${a.name}（${a.code}）` }));
-    tier2 = list.filter((a) => a.tier === 2).map((a) => ({ value: a.id, label: `${a.name}（${a.code}）` }));
+    tier1 = list
+      .filter((a) => a.tier === 1)
+      .map((a) => ({ value: a.id, label: `${a.name}（${a.code}）` }));
+    tier2 = list
+      .filter((a) => a.tier === 2)
+      .map((a) => ({ value: a.id, label: `${a.name}（${a.code}）` }));
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -153,9 +151,7 @@ export default async function AccountRequestsPage({
         <StatCard value={inactiveAccounts} label="停止・削除" tone="gray" />
       </div>
 
-      {!user.dummy && (
-        <RequestForm roles={requestableRoles} tier1={tier1} tier2={tier2} />
-      )}
+      {!user.dummy && <RequestForm roles={requestableRoles} tier1={tier1} tier2={tier2} />}
 
       <Card>
         <div className="mb-3 flex items-center justify-between">
@@ -166,7 +162,11 @@ export default async function AccountRequestsPage({
         </div>
 
         {/* 検索・絞り込み（問題一覧No.19: 氏名/メール/申請ID/発行ID・ロール・状態） */}
-        <form method="get" action="/account-requests" className="mb-4 flex flex-wrap items-end gap-3">
+        <form
+          method="get"
+          action="/account-requests"
+          className="mb-4 flex flex-wrap items-end gap-3"
+        >
           <div className="w-64">
             <label className={labelCls}>検索（氏名・メール・申請ID・発行ID）</label>
             <input name="q" defaultValue={q} placeholder="キーワード" className={inputCls} />
@@ -202,7 +202,13 @@ export default async function AccountRequestsPage({
         </form>
 
         {requests.length === 0 ? (
-          <EmptyState message={q || roleFilter || statusFilter ? "条件に一致する申請がありません" : "申請はまだありません"} />
+          <EmptyState
+            message={
+              q || roleFilter || statusFilter
+                ? "条件に一致する申請がありません"
+                : "申請はまだありません"
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[960px] border-collapse">
@@ -240,7 +246,9 @@ export default async function AccountRequestsPage({
                       canFirstApprove);
                   return (
                     <tr key={r.id}>
-                      <td className={`${tdCls} whitespace-nowrap font-mono text-xs`}>{r.requestId}</td>
+                      <td className={`${tdCls} font-mono text-xs whitespace-nowrap`}>
+                        {r.requestId}
+                      </td>
                       <td className={tdCls}>
                         <div className="font-medium text-slate-800">
                           {ROLE_LABELS[r.role as Role] ?? r.role}・{r.name}
@@ -257,7 +265,9 @@ export default async function AccountRequestsPage({
                           <>
                             <div className="text-sm">{agency.name}</div>
                             {/* §7.2「所属（一次: コード・二次: コード）」: 二次店は親の一次店も併記する */}
-                            {agency.tier === 2 && agency.parentId && agencyMap.get(agency.parentId) ? (
+                            {agency.tier === 2 &&
+                            agency.parentId &&
+                            agencyMap.get(agency.parentId) ? (
                               <>
                                 <div className="text-xs text-slate-500">
                                   一次: {agencyMap.get(agency.parentId)!.name}（
@@ -288,7 +298,7 @@ export default async function AccountRequestsPage({
                           <a
                             href={`/files/${r.evidenceFileId}`}
                             target="_blank"
-                            className="whitespace-nowrap text-xs text-blue-600 hover:underline"
+                            className="text-xs whitespace-nowrap text-blue-600 hover:underline"
                           >
                             証跡を確認
                           </a>

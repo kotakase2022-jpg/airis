@@ -20,15 +20,44 @@ import {
   thCls,
 } from "@/components/ui";
 import { today } from "@/lib/util";
-import { AccountEditButton, AccountRowActions } from "./row-actions";
+import { ADMIN_IP_ALLOWLIST_KEY, SETTING_DEFINITIONS, getSettingWithSource } from "@/lib/settings";
+import {
+  ERASURE_ACTIONS,
+  PII_ENTITY_KEY_HINTS,
+  PII_ENTITY_LABELS,
+  toErasureReports,
+  type PiiEntityType,
+} from "@/lib/erasure";
+import {
+  canAnonymizePii,
+  canDeleteAccount,
+  canEraseTenantData,
+  canManageVendorFlag,
+  canResetCredentials,
+  canSuspendAccount,
+  canUpdateAccount,
+  canUpdateSettings,
+} from "./authz";
+import { AccountEditButton, AccountRowActions, VendorFlagCell } from "./row-actions";
+import {
+  ErasureHistoryTable,
+  PiiErasureForm,
+  SecuritySettingForm,
+  TenantErasureForm,
+  type SettingView,
+} from "./security-settings";
 
 const PAGE_SIZE = 50;
 
+// 設定値の出どころ表示（§10.1 DB → 環境変数 → 既定値）
+const SETTING_SOURCE_LABELS: Record<string, string> = {
+  db: "設定テーブルの値",
+  env: "環境変数の値",
+  default: "未設定（既定値）",
+};
+
 function jst(d: Date, len = 10): string {
-  return new Date(d.getTime() + 9 * 3600 * 1000)
-    .toISOString()
-    .slice(0, len)
-    .replace("T", " ");
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, len).replace("T", " ");
 }
 
 type AuditRow = {
@@ -55,11 +84,46 @@ type AccessRow = {
 function dummyAuditRows(): AuditRow[] {
   const d = today();
   return [
-    { id: "d1", at: `${d} 09:12`, actor: "airis_snc_adm_001", action: "login", target: "", result: "success" },
-    { id: "d2", at: `${d} 09:15`, actor: "airis_snc_adm_001", action: "account_suspend", target: "airis_2990002_001", result: "success" },
-    { id: "d3", at: `${d} 09:20`, actor: "airis_snc_ops_0001", action: "final_approve", target: "REQ-990013", result: "success" },
-    { id: "d4", at: `${d} 10:02`, actor: "airis_1990001_001", action: "login", target: "", result: "failure" },
-    { id: "d5", at: `${d} 10:41`, actor: "airis_snc_adm_001", action: "csv_export", target: "accounts_inventory", result: "success" },
+    {
+      id: "d1",
+      at: `${d} 09:12`,
+      actor: "airis_snc_adm_001",
+      action: "login",
+      target: "",
+      result: "success",
+    },
+    {
+      id: "d2",
+      at: `${d} 09:15`,
+      actor: "airis_snc_adm_001",
+      action: "account_suspend",
+      target: "airis_2990002_001",
+      result: "success",
+    },
+    {
+      id: "d3",
+      at: `${d} 09:20`,
+      actor: "airis_snc_ops_0001",
+      action: "final_approve",
+      target: "REQ-990013",
+      result: "success",
+    },
+    {
+      id: "d4",
+      at: `${d} 10:02`,
+      actor: "airis_1990001_001",
+      action: "login",
+      target: "",
+      result: "failure",
+    },
+    {
+      id: "d5",
+      at: `${d} 10:41`,
+      actor: "airis_snc_adm_001",
+      action: "csv_export",
+      target: "accounts_inventory",
+      result: "success",
+    },
   ];
 }
 
@@ -68,9 +132,33 @@ function dummyAccessRows(): AccessRow[] {
   const d = today();
   const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)";
   return [
-    { id: "a1", at: `${d} 09:12`, loginId: "airis_snc_adm_001", result: "success", ip: "203.0.113.10", userAgent: ua, reason: "" },
-    { id: "a2", at: `${d} 10:02`, loginId: "airis_1990001_001", result: "failure", ip: "203.0.113.44", userAgent: ua, reason: "bad_password" },
-    { id: "a3", at: `${d} 10:03`, loginId: "airis_1990001_001", result: "denied", ip: "203.0.113.44", userAgent: ua, reason: "rate_limit" },
+    {
+      id: "a1",
+      at: `${d} 09:12`,
+      loginId: "airis_snc_adm_001",
+      result: "success",
+      ip: "203.0.113.10",
+      userAgent: ua,
+      reason: "",
+    },
+    {
+      id: "a2",
+      at: `${d} 10:02`,
+      loginId: "airis_1990001_001",
+      result: "failure",
+      ip: "203.0.113.44",
+      userAgent: ua,
+      reason: "bad_password",
+    },
+    {
+      id: "a3",
+      at: `${d} 10:03`,
+      loginId: "airis_1990001_001",
+      result: "denied",
+      ip: "203.0.113.44",
+      userAgent: ua,
+      reason: "rate_limit",
+    },
   ];
 }
 
@@ -126,6 +214,55 @@ export default async function AdminPage({
       : prisma.accessLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
 
+  // セキュリティ設定・削除機能・削除完了レポート（§10.1 / §10.3）。
+  // ④ダミー表示（§3.5）では実データ・実設定を一切表示しない。
+  const [ipSetting, agencies, erasureLogs, vendorAccounts] = await Promise.all([
+    user.dummy ? Promise.resolve(null) : getSettingWithSource(ADMIN_IP_ALLOWLIST_KEY),
+    user.dummy
+      ? Promise.resolve([])
+      : prisma.agency.findMany({
+          where: { isDummy: false },
+          orderBy: [{ tier: "asc" }, { code: "asc" }],
+          select: { id: true, code: true, name: true, tier: true },
+        }),
+    user.dummy
+      ? Promise.resolve([])
+      : prisma.auditLog.findMany({
+          where: {
+            action: { in: [ERASURE_ACTIONS.agency, ERASURE_ACTIONS.pii] },
+            result: "success",
+          },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+          select: { id: true, actor: true, action: true, target: true, createdAt: true },
+        }),
+    // 監査ログのactor表示でベンダー操作を区別する（§10.1 / SEC要件①）
+    user.dummy
+      ? Promise.resolve([])
+      : prisma.account.findMany({ where: { isVendor: true }, select: { loginId: true } }),
+  ]);
+
+  const settingView: SettingView | null = ipSetting
+    ? {
+        key: ADMIN_IP_ALLOWLIST_KEY,
+        label: SETTING_DEFINITIONS[ADMIN_IP_ALLOWLIST_KEY].label,
+        description: SETTING_DEFINITIONS[ADMIN_IP_ALLOWLIST_KEY].description,
+        value: ipSetting.value,
+        sourceLabel: SETTING_SOURCE_LABELS[ipSetting.source] ?? ipSetting.source,
+        updatedBy: ipSetting.updatedBy,
+        envVar: SETTING_DEFINITIONS[ADMIN_IP_ALLOWLIST_KEY].envVar,
+      }
+    : null;
+
+  const erasureReports = toErasureReports(erasureLogs);
+  const vendorLoginIds = new Set(vendorAccounts.map((a) => a.loginId));
+
+  const piiEntityOptions = (Object.keys(PII_ENTITY_LABELS) as PiiEntityType[]).map((k) => ({
+    value: k,
+    label: PII_ENTITY_LABELS[k],
+    hint: PII_ENTITY_KEY_HINTS[k],
+  }));
+
   const countOf = (s: string) => grouped.find((g) => g.status === s)?._count._all ?? 0;
   const totalAll = grouped.reduce((n, g) => n + g._count._all, 0);
 
@@ -180,7 +317,11 @@ export default async function AdminPage({
         <StatCard value={totalAll} label="表示対象" tone="blue" />
         <StatCard value={countOf("pending")} label="承認待ち" tone="orange" />
         <StatCard value={countOf("active")} label="登録済み" tone="green" />
-        <StatCard value={countOf("suspended") + countOf("deleted")} label="停止・削除" tone="gray" />
+        <StatCard
+          value={countOf("suspended") + countOf("deleted")}
+          label="停止・削除"
+          tone="gray"
+        />
       </div>
 
       {/* アカウント一覧 */}
@@ -233,7 +374,7 @@ export default async function AdminPage({
           <EmptyState message="条件に一致するアカウントがありません。" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[900px]">
+            <table className="w-full min-w-[1020px]">
               <thead>
                 <tr>
                   <th className={thCls}>ログインID</th>
@@ -241,6 +382,8 @@ export default async function AdminPage({
                   <th className={thCls}>氏名・メール</th>
                   <th className={thCls}>所属代理店</th>
                   <th className={thCls}>ステータス</th>
+                  {/* ベンダー区分（サスラボ社保守区分 §10.1 / SEC要件①） */}
+                  <th className={thCls}>ベンダー区分</th>
                   <th className={thCls}>最終PW変更日</th>
                   <th className={thCls}>操作</th>
                 </tr>
@@ -250,7 +393,7 @@ export default async function AdminPage({
                   <tr key={a.id}>
                     <td className={`${tdCls} font-mono text-xs`}>{a.loginId}</td>
                     <td className={tdCls}>
-                      <span className="whitespace-nowrap text-xs">
+                      <span className="text-xs whitespace-nowrap">
                         {ROLE_NUM[a.role as Role] ?? ""} {ROLE_LABELS[a.role as Role] ?? a.role}
                       </span>
                     </td>
@@ -271,7 +414,18 @@ export default async function AdminPage({
                     <td className={tdCls}>
                       <StatusBadge label={ACCOUNT_STATUS_LABELS[a.status] ?? a.status} />
                     </td>
-                    <td className={`${tdCls} whitespace-nowrap text-xs`}>
+                    <td className={tdCls}>
+                      {user.dummy ? (
+                        <span className="text-xs text-slate-400">—</span>
+                      ) : (
+                        <VendorFlagCell
+                          id={a.id}
+                          isVendor={a.isVendor}
+                          canManage={canManageVendorFlag(user.role)}
+                        />
+                      )}
+                    </td>
+                    <td className={`${tdCls} text-xs whitespace-nowrap`}>
                       {jst(a.passwordUpdatedAt)}
                     </td>
                     <td className={tdCls}>
@@ -279,22 +433,29 @@ export default async function AdminPage({
                         <span className="text-xs text-slate-400">—</span>
                       ) : (
                         <div className="space-y-1.5">
+                          {/* ③は閲覧+リセット代行のみ（§4.2 / 発注者指示 2026-08-05）。
+                              停止・削除・ロール変更は①②のみ（§5.1「変」「停」「削」） */}
                           <AccountRowActions
                             id={a.id}
                             status={a.status}
                             isSelf={a.id === user.id}
                             mfaEnabled={a.mfaEnabled}
+                            canSuspend={canSuspendAccount(user.role)}
+                            canDelete={canDeleteAccount(user.role)}
+                            canReset={canResetCredentials(user.role)}
                           />
-                          {a.status !== "deleted" && a.role !== "R9" && (
-                            <AccountEditButton
-                              id={a.id}
-                              name={a.name}
-                              email={a.email ?? ""}
-                              role={a.role}
-                              hasAgency={!!a.agencyId}
-                              isSelf={a.id === user.id}
-                            />
-                          )}
+                          {a.status !== "deleted" &&
+                            a.role !== "R9" &&
+                            canUpdateAccount(user.role) && (
+                              <AccountEditButton
+                                id={a.id}
+                                name={a.name}
+                                email={a.email ?? ""}
+                                role={a.role}
+                                hasAgency={!!a.agencyId}
+                                isSelf={a.id === user.id}
+                              />
+                            )}
                         </div>
                       )}
                     </td>
@@ -324,6 +485,45 @@ export default async function AdminPage({
           </div>
         </div>
       </Card>
+
+      {/* セキュリティ設定（§10.1「管理系画面へのIP許可リスト制御を設定可能にする」）。
+          設定変更自体が監査ログの対象（§3.3「設定変更」） */}
+      {settingView && (
+        <>
+          <SectionTitle>セキュリティ設定</SectionTitle>
+          <Card className="mb-6">
+            <SecuritySettingForm setting={settingView} canUpdate={canUpdateSettings(user.role)} />
+          </Card>
+
+          {/* 解約・削除要件（§10.3 / SEC要件②#31）。削除の意味は §3.4（論理削除・匿名化） */}
+          <SectionTitle>テナント（代理店）単位のデータ一括削除</SectionTitle>
+          <Card className="mb-6">
+            <TenantErasureForm agencies={agencies} canExecute={canEraseTenantData(user.role)} />
+          </Card>
+
+          <SectionTitle>個人情報のオンデマンド削除（匿名化）</SectionTitle>
+          <Card className="mb-6">
+            <PiiErasureForm
+              entityOptions={piiEntityOptions}
+              canExecute={canAnonymizePii(user.role)}
+            />
+          </Card>
+
+          {/* 削除完了レポート（対象件数・データ種別・実行日時・実行者。削除証明用 SEC要件②#31） */}
+          <SectionTitle
+            right={
+              <a href="/admin/csv?type=erasure" className={btnOutline}>
+                削除完了レポートCSV出力
+              </a>
+            }
+          >
+            削除完了レポート（直近20件）
+          </SectionTitle>
+          <Card className="mb-6">
+            <ErasureHistoryTable reports={erasureReports} />
+          </Card>
+        </>
+      )}
 
       {/* アクセスログ簡易ビューア（§3.3 / 要件1-6: ログイン日時・IP・User-Agent） */}
       <SectionTitle
@@ -358,7 +558,7 @@ export default async function AdminPage({
               <tbody>
                 {accessRows.map((l) => (
                   <tr key={l.id}>
-                    <td className={`${tdCls} whitespace-nowrap text-xs`}>{l.at}</td>
+                    <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
                     <td className={`${tdCls} font-mono text-xs`}>{l.loginId}</td>
                     <td className={tdCls}>
                       <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
@@ -406,8 +606,15 @@ export default async function AdminPage({
               <tbody>
                 {auditRows.map((l) => (
                   <tr key={l.id}>
-                    <td className={`${tdCls} whitespace-nowrap text-xs`}>{l.at}</td>
-                    <td className={`${tdCls} font-mono text-xs`}>{l.actor}</td>
+                    <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
+                    {/* ベンダー（サスラボ社保守）操作の区別（§10.1 / SEC要件①）:
+                        実行者がベンダー区分のアカウント、または target に vendor=true を含む場合に表示 */}
+                    <td className={`${tdCls} font-mono text-xs`}>
+                      {l.actor}
+                      {(vendorLoginIds.has(l.actor) || l.target.includes("vendor=true")) && (
+                        <span className="ml-1 font-sans text-amber-600">（ベンダー）</span>
+                      )}
+                    </td>
                     <td className={`${tdCls} text-xs`}>{l.action}</td>
                     <td className={`${tdCls} font-mono text-xs`}>{l.target || "—"}</td>
                     <td className={tdCls}>

@@ -9,7 +9,7 @@
  *  - スコープ外の販売員ID・未登録の販売員IDは行エラー（§3.1）
  */
 import { test, expect, type Page } from "@playwright/test";
-import { login, db, collectConsoleErrors, criticalErrors } from "./helpers";
+import { fieldAgentScope, login, db, collectConsoleErrors, criticalErrors } from "./helpers";
 
 const RUN = Date.now().toString(36);
 const P = `QA16${RUN}`;
@@ -277,7 +277,9 @@ test("t03 エラー行レポート: 不正行があると「n行目: 理由」�
   await expect(page.getByText(/取込エラー（\d+件・全件登録されていません）/)).toBeVisible({
     timeout: 20_000,
   });
-  await expect(report.filter({ hasText: "3行目" })).toContainText("仮登録または本登録ではありません");
+  await expect(report.filter({ hasText: "3行目" })).toContainText(
+    "仮登録または本登録ではありません"
+  );
   await expect(report.filter({ hasText: "4行目" })).toContainText(
     "存在しないか、操作可能な代理店の範囲外です"
   );
@@ -336,9 +338,9 @@ test("t04 誓約書PDF突合: 連番が欠けている行はエラー行にな�
   await expect(page.locator("li").filter({ hasText: "3行目" })).toContainText(
     `誓約書PDF「${pledgeNo}-002.pdf」が見つかりません`
   );
-  await expect(
-    page.locator("li").filter({ hasText: `${pledgeNo}-2.pdf` })
-  ).toContainText("CSVのどの行とも突合できません");
+  await expect(page.locator("li").filter({ hasText: `${pledgeNo}-2.pdf` })).toContainText(
+    "CSVのどの行とも突合できません"
+  );
 
   expect(await db().fieldAgentApplication.count({ where: { pledgeNo } })).toBe(0);
 
@@ -407,14 +409,18 @@ test("t05 スコープ: R8のCSVに親1次店・兄弟2次店の販売員IDが�
 // ============================================================
 // t06: 重複申請の行エラー（既存の有効な稼働申請 / CSV内重複）
 // ============================================================
-test("t06 重複: 既に有効な稼働申請がある販売員・CSV内で重複した販売員IDは行エラー", async ({ page }) => {
+test("t06 重複: 既に有効な稼働申請がある販売員・CSV内で重複した販売員IDは行エラー", async ({
+  page,
+}) => {
   test.setTimeout(90_000);
   const dup = await createStaff("210001");
   const twice = await createStaff("210001");
   const pledgeNo = `${P}DUP`;
+  const dupScope = await fieldAgentScope(dup.id);
   await db().fieldAgentApplication.create({
     data: {
       salesStaffId: dup.id,
+      ...dupScope, // 代理店スコープ列（§3.1）
       applicationType: "稼働",
       products: "auひかり",
       attribute: "社員/契約社員",

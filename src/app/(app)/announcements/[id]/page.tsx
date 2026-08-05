@@ -76,7 +76,7 @@ export default async function AnnouncementDetailPage({
           <span className="ml-auto text-xs text-slate-400">送信日時: {fmtJst(ann.sentAt)}</span>
         </div>
         <h2 className="mb-4 text-lg font-bold text-slate-800">{ann.title}</h2>
-        <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{ann.body}</p>
+        <p className="text-sm leading-6 whitespace-pre-wrap text-slate-700">{ann.body}</p>
 
         {attachments.length > 0 && (
           <div className="mt-6 border-t border-slate-100 pt-4">
@@ -84,11 +84,9 @@ export default async function AnnouncementDetailPage({
             <ul className="space-y-1">
               {attachments.map((f) => (
                 <li key={f.id}>
-                  <a
-                    href={`/files/${f.id}`}
-                    className="text-sm text-blue-600 hover:underline"
-                  >
-                    <Paperclip className="mr-1 inline h-3 w-3" />{f.name}
+                  <a href={`/files/${f.id}`} className="text-sm text-blue-600 hover:underline">
+                    <Paperclip className="mr-1 inline h-3 w-3" />
+                    {f.name}
                   </a>
                 </li>
               ))}

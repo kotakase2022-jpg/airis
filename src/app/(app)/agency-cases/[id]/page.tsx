@@ -3,7 +3,14 @@ import { notFound, redirect } from "next/navigation";
 import { requirePage, agencyScope } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { audit } from "@/lib/util";
-import { Card, EmptyState, PageHeader, SectionTitle, StatusBadge, btnOutline } from "@/components/ui";
+import {
+  Card,
+  EmptyState,
+  PageHeader,
+  SectionTitle,
+  StatusBadge,
+  btnOutline,
+} from "@/components/ui";
 import { DeadlineBadge, SeriesBadge, fmtDateTime, seriesLabel } from "@/components/cases/badges";
 import { CaseThread, parseMessageFiles } from "@/components/cases/thread";
 import { ReplyForm } from "@/components/cases/reply-form";

@@ -38,8 +38,7 @@ const ALLOWED: Record<string, string> = {
   // ---- (1) 権限判定ではない判定 ----
   "lib/auth.ts":
     "§3.1 データスコープの算出（agencyScope）。参照可能な代理店IDの決定であって機能権限の判定ではない",
-  "lib/session.ts":
-    "§3.1 RLSコンテキスト（app.bypass / app.scope）の算出。機能権限の判定ではない",
+  "lib/session.ts": "§3.1 RLSコンテキスト（app.bypass / app.scope）の算出。機能権限の判定ではない",
   "app/(auth)/actions.ts":
     "§4.2 パスワード最小桁数（管理者20桁/一般14桁）の判定。ADMIN_PW_ROLES は認証ポリシーの区分で機能権限ではない",
 
@@ -54,8 +53,6 @@ const ALLOWED: Record<string, string> = {
   "app/(app)/agencies/page.tsx": "§7.11 代理店マスタ（別担当）",
   "app/(app)/announcements/page.tsx": "§7.7 お知らせ（別担当）",
   "app/(app)/announcements/[id]/page.tsx": "§7.7 お知らせ（別担当）",
-  "app/(app)/field-agents/actions.ts": "§7.4 訪販員申請（別担当）",
-  "app/(app)/field-agents/page.tsx": "§7.4 訪販員申請（別担当）",
   "app/(app)/reports/actions.ts": "§7.5/§7.6 日報・稼働提出物（別担当）",
   "app/(app)/reports/page.tsx": "§7.5/§7.6 日報・稼働提出物（別担当）",
   "app/(app)/sales-staff/actions.ts": "§7.3 販売員ID（別担当）",
@@ -107,7 +104,8 @@ function scan(): Finding[] {
       if (/^\s*(?:\/\/|\*|\/\*)/.test(text)) return;
       for (const { name, re } of PATTERNS) {
         re.lastIndex = 0;
-        if (re.test(text)) findings.push({ file: rel, line: i + 1, pattern: name, text: text.trim() });
+        if (re.test(text))
+          findings.push({ file: rel, line: i + 1, pattern: name, text: text.trim() });
       }
     });
   }
@@ -119,9 +117,7 @@ describe("§3.2 権限判定は宣言的マップ（permissions.ts / roles.ts）
 
   it("src配下にハードコードされたロール配列による権限判定が残っていない（例外はALLOWEDに明記）", () => {
     const violations = findings.filter((f) => !(f.file in ALLOWED));
-    const report = violations
-      .map((v) => `${v.file}:${v.line} [${v.pattern}] ${v.text}`)
-      .join("\n");
+    const report = violations.map((v) => `${v.file}:${v.line} [${v.pattern}] ${v.text}`).join("\n");
     expect(
       violations,
       `ハードコードされたロール判定が見つかりました。permissions.ts の can()/canApproveFirst()/isDummyFeature() ` +
@@ -136,9 +132,7 @@ describe("§3.2 権限判定は宣言的マップ（permissions.ts / roles.ts）
   });
 
   it("ALLOWEDのエントリはすべて実在するファイルを指している（棚卸し）", () => {
-    const missing = Object.keys(ALLOWED).filter(
-      (rel) => !fs.existsSync(path.join(SRC_DIR, rel))
-    );
+    const missing = Object.keys(ALLOWED).filter((rel) => !fs.existsSync(path.join(SRC_DIR, rel)));
     expect(missing, `存在しないパスがALLOWEDに残っています: ${missing.join(", ")}`).toEqual([]);
   });
 

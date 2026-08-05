@@ -64,7 +64,8 @@ export default async function SalesStaffPage({
       ],
     });
   }
-  if (agencyFilter && (!scope || scope.includes(agencyFilter))) and.push({ agencyId: agencyFilter });
+  if (agencyFilter && (!scope || scope.includes(agencyFilter)))
+    and.push({ agencyId: agencyFilter });
   if (statusFilter && statusFilter in STAFF_STATUS_LABELS) and.push({ status: statusFilter });
   const where: Prisma.SalesStaffWhereInput = { AND: and };
 
@@ -113,18 +114,23 @@ export default async function SalesStaffPage({
 
       <InfoBanner>
         {scope === null ? (
-          <>全代理店の販売員IDを申請・承認・管理できます。GiGaCC連携用CSVは本登録の販売員のみ出力されます。</>
+          <>
+            全代理店の販売員IDを申請・承認・管理できます。GiGaCC連携用CSVは本登録の販売員のみ出力されます。
+          </>
         ) : (
           <>
-            操作可能な代理店:{" "}
-            {agencies.map((a) => `${a.name}（${a.code}）`).join("、") || "なし"}
+            操作可能な代理店: {agencies.map((a) => `${a.name}（${a.code}）`).join("、") || "なし"}
           </>
         )}
       </InfoBanner>
 
       <div className="mb-4 grid grid-cols-4 gap-3">
         <StatCard value={totalAll} label="販売員ID総数" tone="blue" />
-        <StatCard value={cnt("registered") + cnt("provisional")} label="本登録・仮登録" tone="green" />
+        <StatCard
+          value={cnt("registered") + cnt("provisional")}
+          label="本登録・仮登録"
+          tone="green"
+        />
         <StatCard value={cnt("applying")} label="申請中" tone="orange" />
         <StatCard value={cnt("suspended") + cnt("deleted")} label="停止・削除" tone="gray" />
       </div>
@@ -132,13 +138,15 @@ export default async function SalesStaffPage({
       {canApply && (
         <Card className="mb-4">
           <details>
-            <summary className="cursor-pointer text-sm font-bold text-blue-700">＋ 販売員ID申請</summary>
+            <summary className="cursor-pointer text-sm font-bold text-blue-700">
+              ＋ 販売員ID申請
+            </summary>
             <div className="mt-4">
               <ApplyForm
                 agencies={agencies
                   .filter((a) => a.status === "active")
                   .map(({ id, code, name, tier }) => ({ id, code, name, tier }))}
-                fixedAgencyId={user.role === "R8" ? user.agencyId ?? undefined : undefined}
+                fixedAgencyId={user.role === "R8" ? (user.agencyId ?? undefined) : undefined}
               />
             </div>
           </details>
@@ -227,7 +235,9 @@ export default async function SalesStaffPage({
                     <tr key={s.id}>
                       <td className={tdCls}>
                         {s.salesId ? (
-                          <span className="font-mono font-semibold text-slate-800">{s.salesId}</span>
+                          <span className="font-mono font-semibold text-slate-800">
+                            {s.salesId}
+                          </span>
                         ) : (
                           <span className="text-slate-400">未採番</span>
                         )}
@@ -247,9 +257,10 @@ export default async function SalesStaffPage({
                       </td>
                       <td className={tdCls}>
                         <StatusBadge label={label} />
-                        {s.firstApproved && (s.status === "applying" || s.status === "provisional") && (
-                          <div className="mt-1 text-[11px] text-slate-500">1次承認済み</div>
-                        )}
+                        {s.firstApproved &&
+                          (s.status === "applying" || s.status === "provisional") && (
+                            <div className="mt-1 text-[11px] text-slate-500">1次承認済み</div>
+                          )}
                         {history && (
                           <div className="mt-1 max-w-56 text-[11px] leading-relaxed text-slate-400">
                             {history}

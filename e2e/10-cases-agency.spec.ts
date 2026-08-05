@@ -1,11 +1,5 @@
 import { test, expect } from "@playwright/test";
-import {
-  ACCOUNTS,
-  collectConsoleErrors,
-  criticalErrors,
-  db,
-  login,
-} from "./helpers";
+import { ACCOUNTS, collectConsoleErrors, criticalErrors, db, login } from "./helpers";
 
 // ============================================================
 // 担当: 窓口3画面+通知（§7.10 代理店向け窓口ビュー, §3.7 通知）
@@ -16,9 +10,7 @@ const RUN = `QA6A${Date.now().toString(36)}`; // 実行ごとの一意トーク�
 let seq = 0;
 
 function jstDate(offsetDays = 0): string {
-  return new Date(Date.now() + offsetDays * 86400000 + 9 * 3600 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  return new Date(Date.now() + offsetDays * 86400000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 async function mkCase(opts: {
@@ -52,7 +44,9 @@ async function mkCase(opts: {
 }
 
 test.describe("§7.10 代理店向け窓口ビュー（R7）", () => {
-  test("R7で/agency-cases: HLとCSCが同一画面に混在し種別バッジで区別・自店案件のみ", async ({ page }) => {
+  test("R7で/agency-cases: HLとCSCが同一画面に混在し種別バッジで区別・自店案件のみ", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     const hlTitle = `${RUN}-mix ホットライン側の案件`;
     const cscTitle = `${RUN}-mix 消費者センター側の案件`;
@@ -116,7 +110,9 @@ test.describe("§7.10 代理店向け窓口ビュー（R7）", () => {
     expect(resp!.status()).toBe(404);
   });
 
-  test("R7詳細: 返信フォームあり／新規起票ボタン・ファイル添付UI・ステータス変更UIなし", async ({ page }) => {
+  test("R7詳細: 返信フォームあり／新規起票ボタン・ファイル添付UI・ステータス変更UIなし", async ({
+    page,
+  }) => {
     const c = await mkCase({ title: `${RUN}-ui 制約確認用の案件` });
 
     await login(page, "R7");
@@ -142,7 +138,9 @@ test.describe("§7.10 代理店向け窓口ビュー（R7）", () => {
     await expect(page.getByRole("button", { name: "緊急アラート" })).toHaveCount(0);
   });
 
-  test("R7返信→DBにCaseMessage(senderSide=agency)→R5(HL担当)とR3にNotification", async ({ page }) => {
+  test("R7返信→DBにCaseMessage(senderSide=agency)→R5(HL担当)とR3にNotification", async ({
+    page,
+  }) => {
     const c = await mkCase({ title: `${RUN}-reply 代理店返信テスト案件` });
     const replyText = `${RUN} 代理店からの返信です。対応済みです。`;
 
@@ -174,7 +172,10 @@ test.describe("§7.10 代理店向け窓口ビュー（R7）", () => {
     expect(r3Notif).not.toBeNull();
   });
 
-  test("R7が詳細を開くとCaseRead記録→SNC側一覧が「代理店未読」→「代理店既読」に変わる", async ({ page, browser }) => {
+  test("R7が詳細を開くとCaseRead記録→SNC側一覧が「代理店未読」→「代理店既読」に変わる", async ({
+    page,
+    browser,
+  }) => {
     const c = await mkCase({ title: `${RUN}-read 既読管理テスト案件` });
     const q = encodeURIComponent(`${RUN}-read`);
 
@@ -208,7 +209,9 @@ test.describe("§7.10 代理店向け窓口ビュー（R7）", () => {
 });
 
 test.describe("§7.10 稼働終了代理店（R10）", () => {
-  test("R10ログイン: メニューはダッシュボードと窓口案件のみ・窓口案件の閲覧/返信可能", async ({ page }) => {
+  test("R10ログイン: メニューはダッシュボードと窓口案件のみ・窓口案件の閲覧/返信可能", async ({
+    page,
+  }) => {
     const own = await mkCase({
       agencyCode: "190001",
       title: `${RUN}-r10 稼働終了店宛の案件`,
@@ -221,7 +224,9 @@ test.describe("§7.10 稼働終了代理店（R10）", () => {
     // サイドメニューはダッシュボード+窓口案件の2項目のみ（§11.1: ⑩）
     const navLinks = page.locator("aside nav a");
     await expect(navLinks).toHaveCount(2);
-    await expect(page.locator("aside nav").getByRole("link", { name: "ダッシュボード" })).toBeVisible();
+    await expect(
+      page.locator("aside nav").getByRole("link", { name: "ダッシュボード" })
+    ).toBeVisible();
     await expect(page.locator("aside nav").getByRole("link", { name: "窓口案件" })).toBeVisible();
 
     // 窓口以外のページへ直接アクセス → /dashboardへ
@@ -258,8 +263,7 @@ test.describe("§7.10 稼働終了代理店（R10）", () => {
 
     await login(page, "R10");
     const resp = await page.goto(`/agency-cases/${seedCase!.id}`);
-    const blocked =
-      /\/agency-cases$/.test(new URL(page.url()).pathname) || resp!.status() === 404;
+    const blocked = /\/agency-cases$/.test(new URL(page.url()).pathname) || resp!.status() === 404;
     expect(blocked).toBe(true);
     await expect(page.getByText("HLC-1000000000001")).toHaveCount(0);
 

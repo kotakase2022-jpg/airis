@@ -100,7 +100,9 @@ export function RequestForm({
                 キャンセル
               </button>
               {state?.error && (
-                <p className="rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600">{state.error}</p>
+                <p className="rounded-lg bg-red-50 px-3 py-1.5 text-xs text-red-600">
+                  {state.error}
+                </p>
               )}
               {state?.ok && (
                 <p className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700">

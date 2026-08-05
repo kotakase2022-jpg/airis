@@ -70,9 +70,7 @@ test.afterAll(async () => {
   await db().$disconnect();
 });
 
-test("テンプレDLボタン6個が表示され /templates/template1..6.xlsx が200で返る", async ({
-  page,
-}) => {
+test("テンプレDLボタン6個が表示され /templates/template1..6.xlsx が200で返る", async ({ page }) => {
   const errors = collectConsoleErrors(page);
   await login(page, "R8");
   await page.goto("/reports?tab=submissions");

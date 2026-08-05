@@ -1,11 +1,5 @@
 import { test, expect } from "@playwright/test";
-import {
-  ACCOUNTS,
-  collectConsoleErrors,
-  criticalErrors,
-  db,
-  login,
-} from "./helpers";
+import { ACCOUNTS, collectConsoleErrors, criticalErrors, db, login } from "./helpers";
 
 // ============================================================
 // 担当: 窓口3画面+通知（§7.8〜§7.10, §3.7）SNC側
@@ -17,9 +11,7 @@ let seq = 0;
 
 // JSTの日付（YYYY-MM-DD）を offsetDays ずらして返す（アプリの todayJst と同一ロジック）
 function jstDate(offsetDays = 0): string {
-  return new Date(Date.now() + offsetDays * 86400000 + 9 * 3600 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  return new Date(Date.now() + offsetDays * 86400000 + 9 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 // テストデータ用の案件をDBに直接作成（オーナー接続）
@@ -54,7 +46,9 @@ async function mkCase(opts: {
 }
 
 test.describe("§7.8 ホットライン窓口（SNC側）", () => {
-  test("R5で/hotline: 一覧表示・通知チャネルバッジ・新規依頼ボタン・コンソールエラー0", async ({ page }) => {
+  test("R5で/hotline: 一覧表示・通知チャネルバッジ・新規依頼ボタン・コンソールエラー0", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     await login(page, "R5");
     await page.goto("/hotline");
@@ -104,7 +98,9 @@ test.describe("§7.8 ホットライン窓口（SNC側）", () => {
     await expect(page.getByText(titleB)).toBeVisible();
 
     // ステータスフィルタ: 完了のみ
-    await page.goto(`/hotline?q=${encodeURIComponent(`${RUN}-flt`)}&status=${encodeURIComponent("完了")}`);
+    await page.goto(
+      `/hotline?q=${encodeURIComponent(`${RUN}-flt`)}&status=${encodeURIComponent("完了")}`
+    );
     await expect(page.getByText(titleB)).toBeVisible();
     await expect(page.getByText(titleA)).toHaveCount(0);
 
@@ -146,7 +142,9 @@ test.describe("§7.8 ホットライン窓口（SNC側）", () => {
     await expect(page.getByText("HLC-1000000000001")).toHaveCount(0);
   });
 
-  test("R5新規依頼: テンプレ「音声提出依頼」→タイトル自動生成・本文雛形→起票→DB Case + R7へNotification", async ({ page }) => {
+  test("R5新規依頼: テンプレ「音声提出依頼」→タイトル自動生成・本文雛形→起票→DB Case + R7へNotification", async ({
+    page,
+  }) => {
     const errors = collectConsoleErrors(page);
     const isp = `${RUN}-new1`;
     const expectedTitle = `音声提出依頼／東都ネットワーク販売株式会社／${isp}`;
@@ -296,7 +294,9 @@ test.describe("§7.8 ホットライン窓口（SNC側）", () => {
     expect(notif!.link).toBe(`/agency-cases/${c.id}`);
   });
 
-  test("R5返信の添付は既定20MBまで受け付ける（§3.8。5MBの添付が保存されること）", async ({ page }) => {
+  test("R5返信の添付は既定20MBまで受け付ける（§3.8。5MBの添付が保存されること）", async ({
+    page,
+  }) => {
     // 仕様§3.8: アップロード上限は既定20MB（環境変数で変更可）。
     // 既知の不一致: アプリはUI表記・コードとも4MB上限、さらにNext server actionsの
     // 既定bodySizeLimit(1MB)未調整のため約1MB超は「エラー表示なし」で暗黙に失敗する。

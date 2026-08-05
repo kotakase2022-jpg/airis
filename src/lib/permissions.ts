@@ -51,13 +51,16 @@ export const FEATURE_LABELS: Record<FeatureKey, string> = {
 export const PERMISSIONS: Record<FeatureKey, Partial<Record<Operation, readonly Role[]>>> = {
   // Airisアカウント | 申/承/変/停/閲/削 | 申/承/変/停/閲/削 | 承/申 | 申 | 申 | 申 | 申/一承 | 申 | × | ×
   // 停止・削除は①②のみ（§6.1-5）。⑦のみ「一承」を持つ（⑧の申請を1次承認する §6.1-3）。
+  // 「閲」は発注者指示（2026-08-05「③の管理画面を〇」）により③を追加。
+  // ③は管理画面の閲覧と、§4.2 が定めるリセット代行（approve_final で判定）までを行う。
+  // 変更・停止・削除は原表どおり①②のみ。
   "airis-account": {
     apply: ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"],
     approve_first: ["R7"],
     approve_final: ["R1", "R2", "R3"],
     update: ["R1", "R2"],
     suspend: ["R1", "R2"],
-    view: ["R1", "R2"],
+    view: ["R1", "R2", "R3"],
     delete: ["R1", "R2"],
   },
 
