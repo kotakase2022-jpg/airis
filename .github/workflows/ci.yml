@@ -86,7 +86,7 @@ jobs:
       # Dockerイメージ（開発用DB）: Trivy でOS/ライブラリ脆弱性をスキャン。
       # ベースイメージ由来の未修正分でCIを落とさないため exit-code=0（結果はログで確認する）
       - name: Trivy image scan (postgres:16)
-        uses: aquasecurity/trivy-action@0.30.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: postgres:16
           severity: HIGH,CRITICAL
