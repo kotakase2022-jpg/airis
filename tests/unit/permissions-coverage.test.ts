@@ -86,6 +86,37 @@ const PERMISSION_DRIVEN_FILES = [
 const DECLARATIVE_CALL =
   /\b(?:can|canApproveFirst|isDummyFeature|canAccess|isDummyView|canViewFeatureInScope|canManageDocuments)\s*\(/;
 
+/**
+ * 共有モジュールから **import した** `can*` ラッパ経由の判定も宣言的とみなす。
+ *
+ * 例: `src/app/(app)/admin/actions.ts` は `can()` を直接呼ばず、
+ * `authz.ts` の `canAdminAccountOp()` / `canUpdateAccount()` を呼ぶ
+ * （UI層と同じ導出を使い、判定の二重表現による乖離を防ぐため。QA loop5）。
+ * これは §3.2 を満たすが、`can(` の直呼びしか見ない検査では「宣言的でない」と誤判定される。
+ *
+ * **import されたものに限る**のが要点。ファイル内でローカルに定義した `canFoo()` を
+ * 認めると、ロール配列の直書きを関数で包んだだけのものが通ってしまう。
+ */
+function usesImportedAuthzHelper(source: string): boolean {
+  const imported = new Set<string>();
+  for (const m of source.matchAll(/import\s*\{([^}]*)\}\s*from\s*["'][^"']+["']/g)) {
+    for (const raw of m[1].split(",")) {
+      const name = raw
+        .trim()
+        .replace(/^type\s+/, "")
+        .split(/\s+as\s+/)[0]
+        .trim();
+      if (/^can[A-Z]/.test(name)) imported.add(name);
+    }
+  }
+  // import した名前が実際に呼び出されていること（import しただけは不可）
+  return [...imported].some((name) => new RegExp("\\b" + name + "\\s*\\(").test(source));
+}
+
+function isDeclarative(source: string): boolean {
+  return DECLARATIVE_CALL.test(source) || usesImportedAuthzHelper(source);
+}
+
 type Finding = { file: string; line: number; pattern: string; text: string };
 
 function listSourceFiles(dir: string, acc: string[] = []): string[] {
@@ -150,8 +181,8 @@ describe("§3.2 権限判定は宣言的マップ（permissions.ts / roles.ts）
       expect(fs.existsSync(abs), `${rel} が見つかりません`).toBe(true);
       const source = fs.readFileSync(abs, "utf8");
       expect(
-        DECLARATIVE_CALL.test(source),
-        `${rel} が can()/canAccess() 等の宣言的な権限判定を使っていません`
+        isDeclarative(source),
+        `${rel} が can()/canAccess() 等の宣言的な権限判定（または import した can* ラッパ）を使っていません`
       ).toBe(true);
       expect(
         findings.filter((f) => f.file === rel),
@@ -159,4 +190,29 @@ describe("§3.2 権限判定は宣言的マップ（permissions.ts / roles.ts）
       ).toEqual([]);
     }
   );
+});
+
+describe("宣言的判定の検出そのものが機能していること（緩めすぎ防止）", () => {
+  it("can() 直呼びを宣言的と認める", () => {
+    expect(isDeclarative(`if (!can(role, "airis-account", "update")) return;`)).toBe(true);
+  });
+
+  it("import した can* ラッパ経由を宣言的と認める", () => {
+    const src = `import { canUpdateAccount } from "./authz";\nif (!canUpdateAccount(user.role)) return;`;
+    expect(isDeclarative(src)).toBe(true);
+  });
+
+  it("**ローカル定義**の can* は宣言的と認めない（ロール配列の直書きを関数で包んだだけ）", () => {
+    const src = `function canFoo(r: string) { return ["R1", "R2"].includes(r); }\nif (!canFoo(user.role)) return;`;
+    expect(isDeclarative(src), "ローカル関数で包めば通ってしまう抜け穴があります").toBe(false);
+  });
+
+  it("import しただけで呼んでいないものは認めない", () => {
+    const src = `import { canUpdateAccount } from "./authz";\nif (user.role === "R1") return;`;
+    expect(isDeclarative(src)).toBe(false);
+  });
+
+  it("権限判定が全く無いコードは認めない", () => {
+    expect(isDeclarative(`export async function f() { return 1; }`)).toBe(false);
+  });
 });

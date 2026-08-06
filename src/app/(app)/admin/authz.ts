@@ -4,8 +4,39 @@
 // 双方から同じ関数を呼ぶことで、ボタンの出し分けと再検証を一致させる。
 
 import { REQUESTABLE_ROLES, type Role } from "@/lib/roles";
-import { can } from "@/lib/permissions";
+import { can, type Operation } from "@/lib/permissions";
 import { canResetCredentialsFor } from "../account-requests/approval-rules";
+
+/**
+ * 管理画面のアカウント操作（`accountAction` の `op`）と §5.1 の操作権限の対応表。
+ *
+ * **UI層とAPI層が同じ導出を使うための単一の情報源**（§3.2）。
+ * 以前は UI が `canSuspendAccount()` 等のラッパ、API層（actions.ts）が
+ * `can(role, "airis-account", ADMIN_OP_PERMISSION[op])` と**同じ規則を二重に表現**しており、
+ * 片方だけ変更すると気付かずに UI とサーバの判定が食い違う状態だった
+ * （値は一致していたので不具合には至っていないが、QA loop5 で乖離リスクとして検出）。
+ * 現在は下のラッパもこの表から導出し、`tests/unit/admin-authz-layers.test.ts` が
+ * UI とサーバの判定一致・表と switch の網羅を機械検査する。
+ *
+ * `actions.ts` は `"use server"` のため定数を export できない。宣言の置き場はこのモジュール。
+ */
+export const ADMIN_OP_PERMISSION: Record<string, Operation> = {
+  suspend: "suspend", // 停
+  resume: "suspend", // 停止の解除は「停」権限の範囲
+  delete: "delete", // 削（§3.4 論理削除）
+  restore: "delete", // 論理削除の復旧は「削」権限の範囲（§3.4 / 要件1-5）
+  // リセット代行は §4.2「MFAリセット・パスワードリセットは管理者代行フローを用意（②③が実行）」。
+  // ②③が共通で持つ操作は「承」（approve_final = ①②③）なのでこれで判定する。
+  // 「変」（update = ①②）で判定すると③が実行できず §4.2 を満たせない。
+  reset_password: "approve_final",
+  mfa_reset: "approve_final",
+};
+
+/** `accountAction` の op 単位の実行可否（未知の op は fail-closed で false） */
+export function canAdminAccountOp(role: Role, op: string): boolean {
+  const required = ADMIN_OP_PERMISSION[op];
+  return required ? can(role, "airis-account", required) : false;
+}
 
 /**
  * 「①（サスラボ社システム管理アカウント）だけができる操作」の判定。
@@ -81,7 +112,7 @@ export function canAnonymizePii(role: Role): boolean {
  * ボタンの出し分けには対象ロールも渡す `canResetCredentialsOn()` を使うこと。
  */
 export function canResetCredentials(role: Role): boolean {
-  return can(role, "airis-account", "approve_final");
+  return canAdminAccountOp(role, "reset_password");
 }
 
 /**
@@ -93,14 +124,14 @@ export function canResetCredentialsOn(role: Role, targetRole: string): boolean {
   return canResetCredentials(role) && canResetCredentialsFor(role, targetRole);
 }
 
-/** アカウントの停止・再開の可否（§5.1「停」= ①②） */
+/** アカウントの停止・再開の可否（§5.1「停」= ①②）。判定は ADMIN_OP_PERMISSION から導出する */
 export function canSuspendAccount(role: Role): boolean {
-  return can(role, "airis-account", "suspend");
+  return canAdminAccountOp(role, "suspend");
 }
 
-/** アカウントの削除・復旧の可否（§5.1「削」= ①②） */
+/** アカウントの削除・復旧の可否（§5.1「削」= ①②）。判定は ADMIN_OP_PERMISSION から導出する */
 export function canDeleteAccount(role: Role): boolean {
-  return can(role, "airis-account", "delete");
+  return canAdminAccountOp(role, "delete");
 }
 
 /** アカウント情報・ロールの変更可否（§5.1「変」= ①②） */

@@ -4,7 +4,6 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { requirePage, hashedForAccount } from "@/lib/auth";
 import { REQUESTABLE_ROLES, ROLE_LABELS, Role } from "@/lib/roles";
-import { can, type Operation } from "@/lib/permissions";
 import { audit, requiresAgency } from "@/lib/util";
 import { recordStatusHistory, type StatusEvent } from "@/lib/status";
 import { generateTempPassword } from "@/lib/temp-password";
@@ -25,9 +24,12 @@ import {
   type PiiEntityType,
 } from "@/lib/erasure";
 import {
+  ADMIN_OP_PERMISSION,
+  canAdminAccountOp,
   canAnonymizePii,
   canEraseTenantData,
   canManageVendorFlag,
+  canUpdateAccount,
   canUpdateSettings,
 } from "./authz";
 // 資格情報リセットの職務分離は最終承認と同じ規則を使う（規則の情報源を1つに保つ §3.2）
@@ -85,17 +87,6 @@ function track(
 
 // 管理画面の操作 → §5.1「Airisアカウント」列の操作の対応（§3.2 宣言的マップ経由で判定する）。
 // §5.1 では 変/停/閲/削 はいずれも①②のみ。§6.1-5「Airisアカウントの停止・削除は①②のみ」。
-const ADMIN_OP_PERMISSION: Record<string, Operation> = {
-  suspend: "suspend", // 停
-  resume: "suspend", // 停止の解除は「停」権限の範囲
-  delete: "delete", // 削（§3.4 論理削除）
-  restore: "delete", // 論理削除の復旧は「削」権限の範囲（§3.4 / 要件1-5）
-  // リセット代行は §4.2「MFAリセット・パスワードリセットは管理者代行フローを用意（②③が実行）」。
-  // ②③が共通で持つ操作は「承」（approve_final = ①②③）なのでこれで判定する。
-  // 「変」（update = ①②）で判定すると③が実行できず §4.2 を満たせない。
-  reset_password: "approve_final",
-  mfa_reset: "approve_final",
-};
 
 // 一時パスワード生成（大文字・小文字・数字を必ず含む。紛らわしい文字は除外）
 
@@ -118,9 +109,9 @@ export async function accountAction(
 
   // §5.1「Airisアカウント」の操作権限（変/停/削=①②）をAPI層でも判定する（§3.2 多層防御）。
   // 管理画面自体は §5.2 で①②のみ（requirePageで担保）だが、操作単位でも宣言的マップに照会する。
-  const requiredOp = ADMIN_OP_PERMISSION[op];
-  if (!requiredOp) return { error: "不明な操作です" };
-  if (!can(user.role, "airis-account", requiredOp)) {
+  // 判定は authz.ts の ADMIN_OP_PERMISSION から導出する（UI層と同じ導出＝乖離しない §3.2）
+  if (!(op in ADMIN_OP_PERMISSION)) return { error: "不明な操作です" };
+  if (!canAdminAccountOp(user.role, op)) {
     await audit(user.loginId, `account_${op}`, `role=${user.role}`, "denied");
     return { error: "この操作の権限がありません" };
   }
@@ -261,7 +252,7 @@ export async function updateAccountAction(
     return { error: "閲覧専用アカウントのため操作できません" };
   }
   // §5.1「Airisアカウント / 変」= ①②（権限変更は要件1-1でSNC課長以上）
-  if (!can(user.role, "airis-account", "update")) {
+  if (!canUpdateAccount(user.role)) {
     await audit(user.loginId, "account_update", `role=${user.role}`, "denied");
     return { error: "アカウント変更の権限がありません" };
   }

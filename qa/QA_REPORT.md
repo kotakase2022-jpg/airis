@@ -462,3 +462,37 @@ WHERE table_name = 'AccountRequest' AND column_name = 'anonymizedAt';
 仕様に定義済みの契機へ連動させたが、未発行の申請には連動先が無く、
 勝手に「却下から1年」等の規則を作らない判断とした。
 → **発注者に保持期間の確定を依頼**（確定後はバッチ条件1本の追加で対応可能）。
+
+## loop5 追加: 認可の「宣言と実行」の全数突合（BUG-L18）
+
+BUG-L14 / BUG-L17 と同じ「宣言はあるが効いていない」型を他の宣言についても網羅的に探した。
+
+### 実施した突合
+
+| 対象 | 方法 | 結果 |
+|---|---|---|
+| `@pii` 注釈 ↔ `PII_FIELDS` ↔ 匿名化の実行経路 | schema.prisma / pii.ts / src全走査 | 4モデル（Account / AccountRequest / SalesStaff / FieldAgentApplication）が一致。**AccountRequest だけ実行経路が0本** → BUG-L17 として修正 |
+| 認可関数（`can*`）17個の呼び出し有無 | src 全走査 | `canResetCredentials` のみ外部参照0だったが、同一ファイル内の `canResetCredentialsOn` から使われており**欠陥ではない**（私の走査が定義ファイルを除外していたための偽陽性） |
+| §3.2 UI層とAPI層の両方で認可しているか | 認可関数ごとに使用ファイルを UI(.tsx) / API(actions.ts・route.ts) に分類 | **認可の抜けは無し**。6つの server action すべてがサーバ側で検証していることを全数確認。ただし4規則が二重表現 → BUG-L18 として導出を一本化 |
+| `ADMIN_OP_PERMISSION` ↔ `accountAction` の switch | 新規テストで相互網羅を検査 | 一致（表6件・case6件） |
+
+### 是正内容
+
+- `ADMIN_OP_PERMISSION` を `admin/authz.ts` へ移して単一の情報源にし、
+  `canAdminAccountOp()`（未知opは fail-closed）を追加。UI ラッパもこの表から導出。
+- `actions.ts` は `can()` 直呼びをやめて同じラッパを通す。
+- `tests/unit/admin-authz-layers.test.ts`（12件）で UI/API の判定一致・§5.1 原表との一致・
+  表とswitchの相互網羅・未知opの fail-closed・職務分離のAND条件を機械検査。
+- `tests/unit/permissions-coverage.test.ts` の「宣言的判定」の認定を精密化
+  （import した `can*` は可、ローカル定義は不可。抜け穴防止の自己検査5件つき）。
+
+### 実測値（loop5 最終）
+
+| 項目 | 値 |
+|---|---|
+| 単体テスト | **559 passed / 0 failed**（29ファイル） |
+| E2E（既定構成） | **431 passed / 0 failed / 2 skipped** |
+| E2E（TRUST_PROXY=true 構成） | **9 passed / 0 failed**（既定構成で skip される2件を実測） |
+| 本番検証E2E | **19 passed / 0 failed**（デプロイ済みの `0efe002` に対して） |
+| lint / format / tsc | 0 error / **0 warning** / 0 error |
+| CI（`0efe002`） | e2e **success** / security-scan **success** / quality はGitHub側のランナー割り当て失敗（`The job was not acquired by Runner of type hosted`）で3回連続未実行。**コード起因ではない**。quality 相当（lint / format / tsc / 単体 / build）はローカルで全通過を実測 |

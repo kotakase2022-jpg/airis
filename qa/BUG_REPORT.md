@@ -529,3 +529,50 @@ CIの seed ステップにこの指定が無かったため、全シードアカ
   で把握できる。
 - **発注者判断を仰ぐ事項**: 却下・保留申請の保持期間（例「却下から1年で匿名化」）を
   仕様として確定していただきたい。確定後は同じヘルパにバッチ条件を1本追加すれば対応できる。
+
+## BUG-L18（中）: 管理画面の認可規則がUI層とAPI層で二重に表現されていた（乖離リスク）
+
+- **検出**: QA loop5（「定義されているが呼ばれていない認可関数」を全数走査し、
+  続けて §3.2「認可はUI層とAPI層の両方で行う」の使用層を突合したとき）
+- **要求**: docs/SPEC.md §3.2 / AGENTS.md「**認可をUI層とAPI層の両方で行う**
+  （ボタンを隠すだけになっていない）」「権限判定は宣言的マップ経由で、ロール配列を直書きしない」
+- **症状**: 管理画面のアカウント操作の権限判定が、
+  - UI層（`src/app/(app)/admin/page.tsx`）: `canSuspendAccount()` / `canDeleteAccount()` /
+    `canResetCredentialsOn()` / `canUpdateAccount()` のラッパ
+  - API層（`src/app/(app)/admin/actions.ts`）: ローカル定義の `ADMIN_OP_PERMISSION` を引いて
+    `can(user.role, "airis-account", requiredOp)`
+
+  という **同じ規則の二重表現**になっていた。
+- **確認した事実（重要）**: 値は一致しており、**認可の抜けは無かった**。
+  6つの server action（`accountAction` / `updateAccountAction` / `updateVendorFlagAction` /
+  `updateSecuritySettingAction` / `eraseAgencyAction` / `anonymizePiiAction`）すべてが
+  サーバ側でも認可を検証していることを全数確認した（「ボタンを隠すだけ」の箇所は無い）。
+- **リスク**: 片方だけ変更しても誰も気付かない構造だった。
+  - UI側だけ緩める → ボタンは出るがサーバが拒否（機能不全）
+  - API側だけ緩める → ボタンは隠れているのに直接リクエストで通る（**権限昇格**）
+
+  `canResetCredentials` は `approve_final`（①②③）、`ADMIN_OP_PERMISSION.reset_password` も
+  `approve_final` で一致していたが、これは偶然一致していたに過ぎない。
+- **対処**: 導出元を1つにした。
+  - `ADMIN_OP_PERMISSION` を `admin/authz.ts`（認可宣言の置き場）へ移動して export
+    （`actions.ts` は `"use server"` のため定数を export できない）。
+  - `canAdminAccountOp(role, op)` を追加し、**未知の op は fail-closed で false**。
+  - `canSuspendAccount` / `canDeleteAccount` / `canResetCredentials` をこの表から導出。
+  - `actions.ts` は `canAdminAccountOp()` / `canUpdateAccount()` を呼ぶ形に変更
+    （UI層と同じ導出を通る）。
+- **再発防止**: `tests/unit/admin-authz-layers.test.ts`（12件）を追加。
+  - ロール10種すべてで UI ラッパと op 判定が一致すること
+  - §5.1 の原表どおり「停・削は①②」「リセット代行は①②③」であること
+  - **表と `accountAction` の switch が相互に網羅**されていること
+    （表に無いのに case がある＝権限判定を経ずに処理される、を検出）
+  - 未知の op（`""` / `__proto__` 等）が fail-closed であること
+  - 職務分離が操作権限に AND で上乗せされていること／API層でも再検証していること
+- **副次的な是正**: `tests/unit/permissions-coverage.test.ts` は `can(` の直呼びしか
+  「宣言的」と認めていなかったため、上の変更で `actions.ts` が誤って違反扱いになった。
+  **import した `can*` ラッパ経由も宣言的と認める**よう精密化した。
+  ただし**ローカル定義の `can*` は認めない**（ロール配列の直書きを関数で包んだだけのものを
+  通さないため）。この緩和が抜け穴になっていないことを自己検査5件で固定した。
+- **検証**: 単体 559 passed / 0 failed、E2E 431 passed / 0 failed、lint 0 warning、tsc 0 error。
+  権限に関わる変更のため E2E 全件（`e2e/04-admin.spec.ts` の停止・削除・リセット代行・
+  ロール変更、`e2e/20-permissions-unified.spec.ts`、`e2e/29-erasure.spec.ts` を含む）で
+  挙動が変わっていないことを実機で確認した。
