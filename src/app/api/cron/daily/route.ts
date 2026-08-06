@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import { notify, notifyRole, audit, today } from "@/lib/util";
 import { anonymizeData } from "@/lib/pii";
+import { anonymizeAccountRequestsFor } from "@/lib/erasure";
 import { sendMail, mailConfigured } from "@/lib/mail";
 import { UNKNOWN_IP } from "@/lib/client-ip";
 
@@ -226,7 +227,7 @@ export async function GET(req: NextRequest) {
   const summary = {
     overdueCases: 0,
     remindedAccounts: 0,
-    anonymized: { accounts: 0, salesStaff: 0, fieldApplications: 0 },
+    anonymized: { accounts: 0, accountRequests: 0, salesStaff: 0, fieldApplications: 0 },
     abuseSignals: {
       total: 0,
       concurrentSessions: 0,
@@ -291,12 +292,29 @@ export async function GET(req: NextRequest) {
     const now = new Date();
 
     // Airisアカウント（loginIdは監査追跡のため残す。ログインはstatus=deletedで不可）
-    const accounts = await db.account.updateMany({
+    // 発行元のアカウント申請にも氏名・メールが残るため、対象の loginId を先に取得して連動させる。
+    const dueAccounts = await db.account.findMany({
       where: { status: "deleted", deletedAt: { lt: cutoff }, anonymizedAt: null },
-      // 匿名化対象は src/lib/pii.ts の単一定義（schema.prisma の /// @pii 注釈と一致）
-      data: { ...anonymizeData("Account"), anonymizedAt: now },
+      select: { id: true, loginId: true },
     });
-    summary.anonymized.accounts = accounts.count;
+    if (dueAccounts.length > 0) {
+      await db.account.updateMany({
+        where: { id: { in: dueAccounts.map((a) => a.id) } },
+        // 匿名化対象は src/lib/pii.ts の単一定義（schema.prisma の /// @pii 注釈と一致）
+        data: { ...anonymizeData("Account"), anonymizedAt: now },
+      });
+    }
+    summary.anonymized.accounts = dueAccounts.length;
+
+    // Airisアカウント申請（§8「@pii列は匿名化バッチの対象にする」）。
+    // AccountRequest.name/email は @pii だが匿名化経路が一つも無く恒久保持されていた
+    // （QA loop5 で検出）。申請自体には保持期間の定義が無いため、発行先アカウントの
+    // 1年経過という**仕様に定義済みの契機**へ連動させる（src/lib/erasure.ts に集約）。
+    let anonymizedRequests = 0;
+    for (const a of dueAccounts) {
+      anonymizedRequests += await anonymizeAccountRequestsFor(db, a.loginId, now);
+    }
+    summary.anonymized.accountRequests = anonymizedRequests;
 
     // 販売員（数値実績は分析用に残す）
     const staff = await db.salesStaff.updateMany({

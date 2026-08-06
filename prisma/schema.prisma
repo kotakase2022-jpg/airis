@@ -100,6 +100,12 @@ model AccountRequest {
   createdBy     String?
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+  // 匿名化の実施日時（§8「@pii列は匿名化バッチの対象にする」）。
+  // この列が無かったため name/email は @pii と宣言されながら匿名化経路が一つも無く、
+  // 申請レコードの個人情報が恒久保持されていた（QA loop5 で検出）。
+  // 申請は「削除済」状態を持たないため deletedAt は設けず、
+  // 発行済みアカウント（issuedLoginId）の匿名化に連動させる。
+  anonymizedAt  DateTime?
 }
 
 // 販売員（販売員ID）

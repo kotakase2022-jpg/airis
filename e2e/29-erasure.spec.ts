@@ -430,3 +430,67 @@ test("③は個人情報の匿名化を実行できない（権限不足）", as
   await expect(page.getByText("実行できるのは①②です", { exact: false })).toBeVisible();
   expect(PW_ADMIN).toBeTruthy();
 });
+
+// ===== §8 アカウント申請の個人情報も匿名化されること（QA loop5 で欠落を検出）=====
+
+test("②がアカウントを匿名化すると、発行元のアカウント申請の氏名・メールも匿名化される", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  // AccountRequest.name / email は @pii だが匿名化経路が一つも無く恒久保持されていた。
+  // 発行先アカウントの匿名化に連動することを実機で確認する。
+  const agency = await db().agency.findFirstOrThrow({ where: { code: "110001" } });
+  const loginId = `airis_1110001_9${RUN.slice(-2)}`;
+  const account = await db().account.create({
+    data: {
+      loginId,
+      role: "R7",
+      name: `申請連動テスト${RUN}`,
+      email: `${loginId}@example.com`,
+      agencyId: agency.id,
+      status: "active",
+      passwordHash: bcrypt.hashSync(PW_GENERAL, 4),
+      mustChangePassword: false,
+    },
+  });
+  const req = await db().accountRequest.create({
+    data: {
+      requestId: `QAREQ${RUN}`,
+      role: "R7",
+      name: `申請者本名${RUN}`,
+      email: `applicant-${RUN}@example.com`,
+      agencyId: agency.id,
+      status: "approved",
+      issuedLoginId: loginId,
+      history: [{ event: "approved", at: "2026-08-06", by: "qa5" }],
+    },
+  });
+
+  await login(page, "R2");
+  await page.goto("/admin");
+  await page.locator("select[name='entityType']").selectOption("account");
+  await page.fill("input[name='targetKey']", loginId);
+  await page.fill("input[name='anonymizeReason']", `申請連動の確認（QA5 ${RUN}）`);
+  page.on("dialog", (d) => d.accept());
+  await page.getByRole("button", { name: "個人情報を匿名化する" }).click();
+
+  const report = page.getByTestId("erasure-report");
+  await expect(report).toBeVisible({ timeout: 30_000 });
+  // 削除完了レポートに申請の件数が出る（削除証明として何を消したか分かること）
+  await expect(report).toContainText("Airisアカウント申請");
+  await expect(report).toContainText("削除件数合計: 2件");
+
+  const afterReq = await db().accountRequest.findUniqueOrThrow({ where: { id: req.id } });
+  expect(afterReq.name, "申請の氏名が匿名化されていない（個人情報が残る）").toBe(ANON);
+  expect(afterReq.name).not.toContain(RUN);
+  expect(afterReq.email, "申請のメールが匿名化されていない").toBe(ANON);
+  expect(afterReq.anonymizedAt, "anonymizedAt が記録されていない").not.toBeNull();
+  // 申請ID・ロール・状態は分析用に残る（誰の申請だったかは消え、件数統計は保てる）
+  expect(afterReq.requestId).toBe(`QAREQ${RUN}`);
+  expect(afterReq.status).toBe("approved");
+
+  await db().statusHistory.deleteMany({ where: { entityId: account.id } });
+  await db().accountRequest.delete({ where: { id: req.id } });
+  await db().auditLog.deleteMany({ where: { actor: loginId } });
+  await db().account.delete({ where: { id: account.id } });
+});

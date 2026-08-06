@@ -90,3 +90,53 @@ describe("PII注釈と匿名化定義の一致（§3.4 / §8）", () => {
     }
   });
 });
+
+// 「定義はあるが誰も呼んでいない」を検出する（§8「@pii列は匿名化バッチの対象にする」）。
+//
+// 経緯（QA loop5 で検出）:
+//   `PII_FIELDS.AccountRequest` は定義され、`schema.prisma` の name/email にも
+//   `/// @pii 個人情報（削除後1年で匿名化バッチの対象 §3.4/§8）` が付いていたのに、
+//   **`anonymizeData("AccountRequest")` の呼び出しがどこにも無かった**。
+//   テナント一括削除・日次匿名化バッチ・オンデマンド匿名化のいずれの対象でもなく、
+//   申請レコードの氏名・メールが恒久保持されていた。
+//   注釈と定義の一致（上の describe）だけでは**実行経路の有無**を検出できない。
+describe("匿名化定義に実行経路があること（宣言と実装の乖離検出）", () => {
+  const SRC = path.join(fileURLToPath(new URL("../../", import.meta.url)), "src");
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) walk(full, out);
+      else if (/\.tsx?$/.test(e.name)) out.push(full);
+    }
+    return out;
+  }
+
+  // 定義元（pii.ts 自身）を除いた実装コード。コメントは経路ではないので除去して数える。
+  const bodies = walk(SRC)
+    .filter((f) => !f.endsWith(path.join("lib", "pii.ts")))
+    .map((f) =>
+      fs
+        .readFileSync(f, "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/\/\/.*$/gm, "")
+    );
+
+  it("PII_FIELDS の全モデルに anonymizeData の呼び出しが存在する", () => {
+    const missing = Object.keys(PII_FIELDS).filter(
+      (model) => !bodies.some((b) => b.includes(`anonymizeData("${model}")`))
+    );
+    expect(
+      missing,
+      `匿名化定義があるのに実行経路が無いモデルです（個人情報が恒久保持されます）: ${missing.join(", ")}`
+    ).toEqual([]);
+  });
+
+  it("検出器そのものが機能している（存在しないモデル名は検出される）", () => {
+    // 上のテストが常に空配列を返す（＝死んでいる）ことを防ぐ自己検査。
+    expect(bodies.length, "src配下のファイルを読めていない").toBeGreaterThan(20);
+    expect(bodies.some((b) => b.includes('anonymizeData("NoSuchModel")'))).toBe(false);
+    // 実在する呼び出しは拾えること
+    expect(bodies.some((b) => b.includes('anonymizeData("Account")'))).toBe(true);
+  });
+});

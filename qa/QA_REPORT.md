@@ -404,3 +404,61 @@ SELECT "loginId", role, "isVendor" FROM "Account" WHERE "isVendor" = true;
 したがって SEC-10.1-14 の判定は「コード・ローカル実機では PASS、**本番反映は未完了**」であり、
 本番リリース可否の判断材料として残す。上記SQL適用後は再シードでも維持される
 （シードの `update` に含めたため）。
+
+## loop5 追加: アカウント申請の個人情報が恒久保持されていた（BUG-L17）
+
+`AccountRequest.name` / `.email` は `/// @pii` 注釈・`PII_FIELDS` 定義・コメントの
+**3箇所で「匿名化対象」と宣言されていた**のに、`anonymizeData("AccountRequest")` の
+呼び出しが実装に1本も無く、テナント一括削除・日次バッチ・オンデマンド匿名化の
+いずれの対象でもなかった（§8 違反）。BUG-L14 と同じ「宣言はあるが効いていない」型。
+
+是正:
+
+| 変更 | 内容 |
+|---|---|
+| マイグレーション | `AccountRequest.anonymizedAt` を追加（`20260806155846_account_request_anonymized_at`） |
+| `src/lib/erasure.ts` | `anonymizeAccountRequestsFor()` を追加し、発行先アカウントの匿名化に連動（オンデマンド・日次バッチの両経路）。RLS 対象テーブルのためクライアントを引数で受け取る |
+| 日次バッチ | `updateMany` から `findMany`+`updateMany` に変更し、対象 loginId を取得して申請の匿名化へ連動。集計に `anonymized.accountRequests` を追加 |
+| テナント一括削除 | 削除完了レポートに未匿名化申請の件数を「保持（分析用）／1年経過後に匿名化」として記載 |
+| `tests/unit/pii.test.ts` | **`PII_FIELDS` の全モデルに `anonymizeData` の呼び出しが存在すること**を検査（再発防止。注釈と定義の一致だけでは実行経路の有無を検出できなかった） |
+
+実測: 単体 **542 passed / 0 failed**、E2E **431 passed / 0 failed / 2 skipped**、
+lint 0 warning、tsc 0 error。
+
+### ⚠️ この変更は本番マイグレーションが前提（デプロイ順序の注意）
+
+Vercel のビルドは `next build` のみで **`prisma migrate deploy` を実行しない**。
+また GitHub 連携により **main への push が本番デプロイを自動起動する**
+（直近13分の本番デプロイ3件のうち2件が push 由来であることを実測で確認）。
+したがってマイグレーション未適用のまま push すると、本番で
+
+- 日次バッチ（`/api/cron/daily`、毎日 0:00 UTC）の匿名化処理
+- 管理画面のテナント一括削除・アカウントのオンデマンド匿名化
+
+が `AccountRequest.anonymizedAt` 列不存在で失敗する。
+本番DBへの書き込みは実行環境の制約により私からは実行できないため、
+**発注者側で先にマイグレーションを適用**していただく必要がある:
+
+```bash
+ALLOW_REMOTE_DB=1 DATABASE_URL="<Neonの非プールURL>" npx prisma migrate deploy
+```
+
+適用確認:
+
+```sql
+SELECT column_name FROM information_schema.columns
+WHERE table_name = 'AccountRequest' AND column_name = 'anonymizedAt';
+-- 期待: 1行返る
+```
+
+この順序を守れない場合は、当該コミットを push しない（＝本番へ出さない）のが安全。
+本ループのコード変更はローカルで検証済みだが、**この一点により「本番反映は未完了」**である。
+
+### 仕様判断不能として記録
+
+**発行に至らなかった申請（却下・保留の `AccountRequest`）の保持期間が仕様に無い。**
+§3.4 が保持期間を定義しているのは Airisアカウント・販売員ID・訪販員申請の3種で、
+アカウント申請は列挙されていない。発行済み申請は「発行先アカウントの1年経過」という
+仕様に定義済みの契機へ連動させたが、未発行の申請には連動先が無く、
+勝手に「却下から1年」等の規則を作らない判断とした。
+→ **発注者に保持期間の確定を依頼**（確定後はバッチ条件1本の追加で対応可能）。

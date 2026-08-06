@@ -15,6 +15,7 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  anonymizeAccountRequestsFor,
   ERASURE_ACTIONS,
   ERASURE_CSV_HEADERS,
   ERASURE_KIND_LABELS,
@@ -24,6 +25,7 @@ import {
   toErasureReports,
   type ErasureReport,
 } from "@/lib/erasure";
+import { anonymizeData } from "@/lib/pii";
 
 const BASE: ErasureReport = {
   kind: "agency",
@@ -199,5 +201,58 @@ describe("削除完了レポートCSV（§10.3 削除証明用の出力）", () 
 
   it("レポートが0件でも空配列を返す（CSV生成が落ちない）", () => {
     expect(erasureCsvRows([])).toEqual([]);
+  });
+});
+
+describe("アカウント申請の匿名化（§8 @pii列は匿名化バッチの対象。QA loop5 で欠落を検出）", () => {
+  // 呼び出し側のクライアントを受け取る設計なので、偽クライアントで発行クエリを固定できる。
+  // 共有 prisma を内部で使うと、セッションの無い日次バッチでは RLS の fail-closed により
+  // 1件も更新されず「呼んでいるのに何も起きない」状態になる。その回帰も兼ねる。
+  function fakeClient(count: number) {
+    const calls: unknown[] = [];
+    return {
+      calls,
+      client: {
+        accountRequest: {
+          updateMany: async (args: unknown) => {
+            calls.push(args);
+            return { count };
+          },
+        },
+      },
+    };
+  }
+
+  const NOW = new Date("2026-08-07T00:00:00Z");
+
+  it("発行先ログインIDと未匿名化の申請だけを対象にする", async () => {
+    const f = fakeClient(2);
+    const n = await anonymizeAccountRequestsFor(f.client, "airis_2210001_001", NOW);
+    expect(n).toBe(2);
+    expect(f.calls).toHaveLength(1);
+    const args = f.calls[0] as { where: Record<string, unknown>; data: Record<string, unknown> };
+    expect(args.where.issuedLoginId).toBe("airis_2210001_001");
+    // 二重処理を防ぐ（すでに匿名化済みの行は触らない）
+    expect(args.where.anonymizedAt).toBeNull();
+    expect(args.data.anonymizedAt).toEqual(NOW);
+  });
+
+  it("匿名化する列が src/lib/pii.ts の AccountRequest 定義と一致する", async () => {
+    const f = fakeClient(1);
+    await anonymizeAccountRequestsFor(f.client, "x", NOW);
+    const data = (f.calls[0] as { data: Record<string, unknown> }).data;
+    // 定義の単一情報源から期待値を作る（テスト側に列名を二重管理しない）
+    for (const [col, to] of Object.entries(anonymizeData("AccountRequest"))) {
+      expect(data, `${col} が匿名化対象に含まれていない`).toHaveProperty(col);
+      expect(data[col]).toBe(to);
+    }
+    // 氏名・メールが元の値のまま残らないこと（email は必須カラムなのでセンチネル文字列）
+    expect(data.name).toBe("（匿名化済み）");
+    expect(data.email).toBe("（匿名化済み）");
+  });
+
+  it("対象が無ければ0件を返す（例外にしない）", async () => {
+    const f = fakeClient(0);
+    expect(await anonymizeAccountRequestsFor(f.client, "no-such-login", NOW)).toBe(0);
   });
 });

@@ -220,6 +220,19 @@ export async function eraseAgencyData(input: EraseAgencyInput): Promise<ErasureR
   }
   items.push({ dataType: "Airisアカウント", count: accounts.length, treatment: "論理削除" });
 
+  // 1-b) アカウント申請（氏名・メールは @pii）。
+  // アカウント本体は §3.4 に従い論理削除＋1年保持なので、ここでは匿名化しない。
+  // 申請の個人情報は、発行先アカウントが1年経過で匿名化される時点に連動して匿名化される
+  // （日次バッチ → anonymizeAccountRequestsFor）。削除証明として件数だけ記載する。
+  const pendingRequests = await prisma.accountRequest.count({
+    where: { agencyId: { in: agencyIds }, anonymizedAt: null },
+  });
+  items.push({
+    dataType: "Airisアカウント申請（1年経過後に匿名化）",
+    count: pendingRequests,
+    treatment: "保持（分析用）",
+  });
+
   // 2) 販売員ID
   const staff = await prisma.salesStaff.findMany({
     where: { agencyId: { in: agencyIds }, status: { not: "deleted" } },
@@ -305,6 +318,53 @@ export async function eraseAgencyData(input: EraseAgencyInput): Promise<ErasureR
 
 // ===== 個人情報のオンデマンド削除（匿名化。SEC-026 / §10.3 / §3.4） =====
 
+/**
+ * 発行済みアカウントに紐づくアカウント申請（AccountRequest）の個人情報を匿名化する。
+ *
+ * 背景（QA loop5 で検出した §8 違反）:
+ *   `AccountRequest.name` / `.email` は `/// @pii` 付きで `src/lib/pii.ts` の `PII_FIELDS`
+ *   にも定義されているのに、`anonymizeData("AccountRequest")` の呼び出しが**どこにも無く**、
+ *   テナント一括削除・日次匿名化バッチ・オンデマンド匿名化のいずれの対象でもなかった。
+ *   結果として申請レコードの氏名・メールが恒久保持されていた。
+ *   §8「個人情報カラムは @pii を明示し匿名化バッチの対象にする」に反する。
+ *
+ * 連動の根拠: 申請そのものには保持期間の定義が無い（§3.4 が列挙するのは
+ *   Airisアカウント・販売員ID・訪販員申請の3種）。そこで**発行されたアカウント側の
+ *   契機（1年経過バッチ／オンデマンド削除／テナント削除）に連動**させる。
+ *   `issuedLoginId` が発行先ログインIDなので、これで対象を特定できる。
+ *   ※未発行のまま却下・保留の申請は連動先が無く、保持期間も仕様に定義が無い。
+ *     これは「仕様判断不能」として qa/QA_REPORT.md に記録し、発注者判断を仰ぐ。
+ *
+ * `AccountRequest` は FORCE ROW LEVEL SECURITY 対象（prisma/rls.sql）なので、
+ * **呼び出し側のクライアントをそのまま受け取る**。共有 `prisma` を内部で使うと、
+ * セッションの無い日次バッチではスコープ未設定で1件も更新されず（fail-closed）、
+ * 「呼んでいるのに何も起きない」という今回と同型の欠陥になる。
+ *
+ * @returns 匿名化した申請の件数（削除完了レポートに出す）
+ */
+// 必要な操作だけを要求する構造型。delegate 全体（Pick<PrismaClient, ...>）を要求すると
+// $extends したクライアントと型が合わない（findUnique 等の総称シグネチャが異なる）。
+type AccountRequestAnonymizer = {
+  accountRequest: {
+    updateMany(args: {
+      where: { issuedLoginId: string; anonymizedAt: null };
+      data: Record<string, string | null | Date>;
+    }): Promise<{ count: number }>;
+  };
+};
+
+export async function anonymizeAccountRequestsFor(
+  client: AccountRequestAnonymizer,
+  issuedLoginId: string,
+  now: Date
+): Promise<number> {
+  const res = await client.accountRequest.updateMany({
+    where: { issuedLoginId, anonymizedAt: null },
+    data: { ...anonymizeData("AccountRequest"), anonymizedAt: now },
+  });
+  return res.count;
+}
+
 export type PiiEntityType = "account" | "sales_staff" | "field_agent";
 
 export const PII_ENTITY_LABELS: Record<PiiEntityType, string> = {
@@ -341,6 +401,8 @@ export async function anonymizeEntity(input: AnonymizeInput): Promise<ErasureRes
   const now = new Date();
   let targetLabel = "";
   let dataType = "";
+  // 主対象に連動して匿名化した副次データ（削除完了レポートへ件数を出すため）
+  const extraItems: ErasureItem[] = [];
 
   if (entityType === "account") {
     const account = await prisma.account.findFirst({
@@ -371,6 +433,16 @@ export async function anonymizeEntity(input: AnonymizeInput): Promise<ErasureRes
       reason,
       actor.loginId
     );
+    // 発行元のアカウント申請にも氏名・メールが残る（AccountRequest.name/email は @pii）。
+    // ここを消さないと「個人情報を削除した」と言えない（§10.3 個人情報削除機能 / §8）。
+    const reqCount = await anonymizeAccountRequestsFor(prisma, account.loginId, now);
+    if (reqCount > 0) {
+      extraItems.push({
+        dataType: "Airisアカウント申請（氏名・メール）",
+        count: reqCount,
+        treatment: "匿名化",
+      });
+    }
     targetLabel = account.loginId;
     dataType = "Airisアカウント（氏名・メール）";
   } else if (entityType === "sales_staff") {
@@ -447,8 +519,8 @@ export async function anonymizeEntity(input: AnonymizeInput): Promise<ErasureRes
     executedBy: actor.loginId,
     vendor: actor.isVendor,
     executedAt: nowJst(),
-    items: [{ dataType, count: 1, treatment: "匿名化" }],
-    total: 1,
+    items: [{ dataType, count: 1, treatment: "匿名化" }, ...extraItems],
+    total: 1 + extraItems.reduce((s, i) => s + i.count, 0),
   };
   report.auditId = (await recordErasureAudit(report)) ?? undefined;
   return { ok: true, report };
