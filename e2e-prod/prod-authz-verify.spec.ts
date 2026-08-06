@@ -79,6 +79,50 @@ test("本番: 当月KPIが稼働日報タブの初期表示に出る（§7.5 一
   expect(text, "ペースメーカーが率表示になっていない").toMatch(/%/);
 });
 
+test("本番: ③は監査ログ/アクセスログ/棚卸CSVに到達できない（発注者指示 2026-08-06）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await login(page, R3_LOGIN, PW_ADMIN);
+
+  // API層: /admin/csv の4type すべてが403
+  for (const type of ["inventory", "audit", "access", "erasure"]) {
+    const res = await page.request.get(`/admin/csv?type=${type}`, { maxRedirects: 0 });
+    const body = await res.text();
+    console.log(`[prod] ③ GET /admin/csv?type=${type} -> ${res.status()}`);
+    expect(res.status(), `本番で③が /admin/csv?type=${type} に到達できる`).toBe(403);
+    expect(body, `本番で type=${type} のCSV本文が返っている`).not.toContain("ログインID");
+  }
+
+  // UI層: 管理画面にログのセクションもCSV出力リンクも出ない
+  await page.goto("/admin");
+  const bodyText = await page.locator("body").innerText();
+  expect(bodyText, "本番で③にアクセスログのセクションが見えている").not.toContain(
+    "アクセスログ（直近"
+  );
+  expect(bodyText, "本番で③に監査ログのセクションが見えている").not.toContain("監査ログ（直近");
+  const links = await page.locator('a[href^="/admin/csv"]').count();
+  console.log(`[prod] ③に見える /admin/csv リンク数: ${links}`);
+  expect(links, "本番で③にCSV出力リンクが見えている").toBe(0);
+
+  // ③に必要な業務（アカウント一覧の参照）は従来どおりできる
+  await expect(
+    page.locator("tbody tr").first(),
+    "本番で③がアカウント一覧を見られない"
+  ).toBeVisible();
+});
+
+test("本番: ②は監査記録に従来どおり到達できる（制限が③に限定されている）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await login(page, "airis_snc_adm_001", PW_ADMIN);
+  for (const type of ["inventory", "audit", "access"]) {
+    const res = await page.request.get(`/admin/csv?type=${type}`);
+    console.log(`[prod] 対照 ② GET /admin/csv?type=${type} -> ${res.status()}`);
+    expect(res.status(), `本番で②が /admin/csv?type=${type} を取得できない`).toBe(200);
+    expect((await res.text()).length).toBeGreaterThan(50);
+  }
+});
+
 test("本番: CSV出力系のRoute Handlerは未認証で到達できない", async ({ page }) => {
   for (const path of ["/reports/csv?template=visit", "/hotline/csv", "/consumer-center/csv"]) {
     const res = await page.request.get(path, { maxRedirects: 0 });
