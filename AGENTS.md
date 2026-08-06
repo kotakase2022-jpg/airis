@@ -37,8 +37,18 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 npm install
 docker run -d --name airis-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=airis -p 5433:5432 postgres:16
 npm run migrate          # Prisma Migrate（スキーマ変更は必ずこれ。db push は使わない）
-npm run seed             # デモデータ投入（ログイン情報がコンソールに出る）
+npm run rls              # RLSポリシー適用 + アプリロール airis_app の作成（**必須**）
+SEED_DEMO=1 npm run seed # デモデータ投入（ログイン情報がコンソールに出る）
 npm run dev
+
+# 上の3ステップは順番も含めて必須。理由:
+#   - npm run rls: アプリは NOBYPASSRLS の airis_app で接続する（§3.1 多層防御）。
+#     このロールが無いと APP_DATABASE_URL の接続が失敗し、**ログインを伴う全機能が動かない**。
+#     以前この作成が手作業任せでコード化されておらず、CIのE2Eが一度も完走していなかった
+#     （qa/BUG_REPORT.md BUG-L13）。
+#   - SEED_DEMO=1: 付けないと初回パスワード変更フラグ（§9-1）がONになり、
+#     ログイン後 /password で止まる。開発・検証専用の指定で、本番シードでは付けない。
+#   - seed の upsert は既存行を更新しないため、フラグを変えたいときは再シード前にDBを作り直すこと。
 
 # 検証（PRを出す前に全部通す）
 npm run lint             # ESLint
