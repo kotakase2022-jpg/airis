@@ -60,6 +60,11 @@ describe("§10.4 特権操作のアラート判定", () => {
     "setting_change",
     // ベンダー区分（サスラボ社保守）の付与・解除は保守権限の実質的な付与（§10.1 / SEC要件①）
     "account_vendor_change",
+    // テナント一括削除・個人情報匿名化は最も破壊的な操作（§10.3）。
+    // QA loop4 まで erasure.ts が util.audit() を経由せず直に auditLog.create を呼んでいたため、
+    // 構造化ログにも特権アラートにも載っていなかった（独立監査で検出・是正済み）。
+    "erasure_agency_bulk",
+    "erasure_pii_anonymize",
   ])("%s は特権操作としてアラート対象", (action) => {
     expect(isPrivilegedAction(action)).toBe(true);
     expect(classifyAlert(action)).toBe("privileged_operation");

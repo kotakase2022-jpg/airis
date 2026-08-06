@@ -15,10 +15,12 @@ const R3_LOGIN = "airis_snc_ops_0001";
 let _db: PrismaClient | null = null;
 function db(): PrismaClient {
   if (!_db) {
-    const url = fs
-      .readFileSync(".env.local", "utf8")
-      .match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m)![1];
-    _db = new PrismaClient({ datasourceUrl: url });
+    // 本番の接続情報は .env.deploy から読む（prod-smoke.spec.ts と同じ方針。BUG-OPS01 の再発防止）
+    const raw = fs.readFileSync(".env.deploy", "utf8");
+    const m = raw.match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m);
+    if (!m)
+      throw new Error(".env.deploy に DATABASE_URL_UNPOOLED がありません（本番接続情報の置き場）");
+    _db = new PrismaClient({ datasourceUrl: m[1] });
   }
   return _db;
 }

@@ -15,10 +15,14 @@ const PW_GENERAL = "Airis-Demo-2026!";
 let _db: PrismaClient | null = null;
 function db(): PrismaClient {
   if (!_db) {
-    const url = fs
-      .readFileSync(".env.local", "utf8")
-      .match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m)![1];
-    _db = new PrismaClient({ datasourceUrl: url });
+    // 本番の接続情報は .env.deploy から読む（Next.js が読み込まないファイル）。
+    // .env.local に本番URLを置くと Next.js がそれを優先し、ローカルの
+    // `npm run dev` / `npm run seed` / 日次バッチが本番DBへ書き込む（BUG-OPS01 の再発防止）。
+    const raw = fs.readFileSync(".env.deploy", "utf8");
+    const m = raw.match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m);
+    if (!m)
+      throw new Error(".env.deploy に DATABASE_URL_UNPOOLED がありません（本番接続情報の置き場）");
+    _db = new PrismaClient({ datasourceUrl: m[1] });
   }
   return _db;
 }

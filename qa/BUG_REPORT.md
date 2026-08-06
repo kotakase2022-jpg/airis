@@ -126,8 +126,24 @@
 - **再現手順**: ローカルで `next start` → `/api/cron/daily` を実行
 - **実際の結果**: `.env.local` の `DATABASE_URL_UNPOOLED`（本番Neon）にフォールバックし、**本番DBのデータを更新**。QA中に本番へテスト痕跡（匿名化済み販売員1件）が混入した
 - **影響**: 開発・テスト作業が本番データを破壊しうる
-- **対処**: QA環境は全DB系環境変数を明示指定する起動スクリプト（`qa/start-test-server.sh`）に隔離。混入データは除去済み
-- **推奨（未実施・運用課題）**: `.env.local` から本番URLを削除し、本番接続は Vercel 環境変数のみに限定する。ローカル用は `.env` に集約する
+- **対処（一次・loop1）**: QA環境は全DB系環境変数を明示指定する起動スクリプトに隔離。混入データは除去済み
+- **恒久対処（loop4 で実施。それまで「推奨・未実施」のまま残っていた）**:
+  1. `.env.local` から本番URLを削除し、**ローカル（localhost:5433）専用**にした。
+     ファイル冒頭に「本番URLを置いてはいけない」理由をコメントで明記。
+  2. 本番の接続情報は **`.env.deploy`** へ分離した。このファイル名は Next.js の
+     環境ファイル規約（`.env` / `.env.local` / `.env.<NODE_ENV>` / `.env.<NODE_ENV>.local`）に
+     該当しないため **Next.js から自動読み込みされない**。`.gitignore` の `.env*` で追跡対象外。
+     本番スモーク（`e2e-prod/*.spec.ts`）だけが明示的にこのファイルを読む。
+  3. **ガードスクリプト `scripts/assert-local-db.cjs` を追加**し、破壊的な npm script
+     （`seed` / `rls` / `migrate` / `migrate:deploy`）の前段に噛ませた。
+     DB系環境変数7種のいずれかが localhost 以外を指していたら**非ゼロ終了して処理を止める**。
+     本番へ意図的に実行する場合のみ `ALLOW_REMOTE_DB=1` を明示する
+     （例: `ALLOW_REMOTE_DB=1 npm run migrate:deploy`）。
+  4. 回帰テスト `tests/unit/assert-local-db.test.ts`（16件）で、
+     ローカル通過・本番中断・7変数すべての検出・混在時は安全側・`ALLOW_REMOTE_DB` が
+     `1` 以外なら不許可・パース不能な接続文字列でも検出、を固定した。
+- **残る運用課題**: Vercel 側の環境変数管理（本番接続は Vercel の環境変数のみに限定する運用）は
+  発注者側の設定作業。手順は [docs/OPERATIONS.md](../docs/OPERATIONS.md) §1 に記載。
 
 ---
 

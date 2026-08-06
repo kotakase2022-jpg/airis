@@ -72,7 +72,7 @@ export async function audit(
   target?: string,
   result = "success",
   ip?: string
-) {
+): Promise<string | null> {
   const ts = new Date().toISOString();
   // DB書き込みが失敗しても痕跡が残るよう、構造化ログを先に出す（§10.4）
   try {
@@ -80,14 +80,20 @@ export async function audit(
   } catch {
     // ログ整形の失敗は業務を止めない
   }
+  // 作成した監査ログのIDを返す（削除完了レポート §10.3 が「どの実行分か」を特定するのに使う）。
+  // これを返さないと呼び出し側が prisma.auditLog.create を直に呼ぶことになり、
+  // 構造化ログ（§10.4）と特権操作アラート（src/lib/alert.ts）を迂回してしまう。
+  let id: string | null = null;
   try {
-    await prisma.auditLog.create({ data: { actor, action, target, result, ip } });
+    const row = await prisma.auditLog.create({ data: { actor, action, target, result, ip } });
+    id = row.id;
   } catch {
     // 監査ログ失敗は業務を止めない
   }
   // 認証失敗急増・特権操作・エクスポート操作のアラート（§10.4）。
   // 判定を audit() 側に寄せることで呼び出し側の改修を不要にしている（src/lib/alert.ts）。
   await alertForAuditEvent({ actor, action, target, result, ip });
+  return id;
 }
 
 function mailBody(body?: string, link?: string): string {

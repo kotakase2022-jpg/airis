@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "./prisma";
 import { anonymizeData } from "./pii";
-import { nowJst } from "./util";
+import { audit, nowJst } from "./util";
 
 // 解約・削除要件（§10.3 / SEC要件②#31）:
 //   - テナント（代理店）単位のデータ一括削除機能
@@ -117,20 +117,20 @@ export function parseErasureReport(actor: string, target: string | null): Erasur
 }
 
 // 削除操作の監査記録（§3.3 / SEC-028）。監査ログはappend-onlyのため作成のみ（§10.4）。
+//
+// **必ず util.audit() を経由する**こと。prisma.auditLog.create を直に呼ぶと、
+//   - §10.4 が要求する構造化ログ（JSON）が出力されない
+//   - src/lib/alert.ts の特権操作アラートが発火しない
+// という抜けが生じる。テナント一括削除と個人情報匿名化は**最も破壊的な操作**であり、
+// これがSIEM側から欠落するのは重大（QA loop4 の独立監査で検出）。
+// audit() は作成した監査ログのIDを返すので、削除完了レポートの特定にもそのまま使える。
 async function recordErasureAudit(report: ErasureReport): Promise<string | null> {
-  try {
-    const row = await prisma.auditLog.create({
-      data: {
-        actor: report.executedBy,
-        action: ERASURE_ACTIONS[report.kind],
-        target: serializeErasureReport(report),
-        result: "success",
-      },
-    });
-    return row.id;
-  } catch {
-    return null; // 監査ログ失敗は業務を止めない（util.audit と同じ方針）
-  }
+  return audit(
+    report.executedBy,
+    ERASURE_ACTIONS[report.kind],
+    serializeErasureReport(report),
+    "success"
+  );
 }
 
 /** 状態履歴（§4.1）へ論理削除・匿名化イベントを記録する */

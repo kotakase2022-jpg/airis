@@ -65,6 +65,12 @@ export const PRIVILEGED_ACTIONS: readonly string[] = [
   "setting_change",
   // ベンダー区分（サスラボ社保守）の付与・解除（§10.1。保守権限の実質的な付与になる）
   "account_vendor_change",
+  // テナント単位のデータ一括削除・個人情報の匿名化（§10.3）。
+  // 影響範囲が代理店配下の全業務データに及ぶ最も破壊的な操作であり、必ずアラート対象にする。
+  // 値は src/lib/erasure.ts の ERASURE_ACTIONS と一致させること
+  // （tests/unit/audit-alert.test.ts が両者の一致を検証している）。
+  "erasure_agency_bulk",
+  "erasure_pii_anonymize",
 ];
 // ※ `account_update`（氏名・メールの変更 §5.1「変」）は特権操作に含めない。
 //   権限昇格に当たるロール変更は別 action（`account_role_change`）として記録され、
