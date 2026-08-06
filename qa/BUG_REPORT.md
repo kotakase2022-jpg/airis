@@ -576,3 +576,50 @@ CIの seed ステップにこの指定が無かったため、全シードアカ
   権限に関わる変更のため E2E 全件（`e2e/04-admin.spec.ts` の停止・削除・リセット代行・
   ロール変更、`e2e/20-permissions-unified.spec.ts`、`e2e/29-erasure.spec.ts` を含む）で
   挙動が変わっていないことを実機で確認した。
+
+## BUG-L19（重大）: 日次匿名化バッチがRLSコンテキストを張らず、保護テーブルがサイレントに0件になる
+
+- **検出**: QA loop5（監査計画の C2。BUG-L17 の修正で同じバッチ経路を使ったため実測で確認した）
+- **要求**: docs/SPEC.md §3.1（アプリ層 + RLS の多層防御）/ §3.4（1年経過後の匿名化）/ §8
+- **症状**: `src/app/api/cron/daily/route.ts` の `batchClient()` が
+  `new PrismaClient({ datasourceUrl: DATABASE_URL_UNPOOLED ?? DATABASE_URL })` **だけ**で、
+  `app.bypass` も `set_config` も張っていなかった。
+  `prisma/rls.sql` は9テーブルに `FORCE ROW LEVEL SECURITY` を付けているため、
+  **接続ロールが `BYPASSRLS` を持たない環境では例外を出さずに0件**になる。
+  同リポジトリの `prisma/seed.ts` は同じURLに `options=-c%20app.bypass%3Don` を付けており、
+  `src/lib/util.ts` の `withScopedTransaction()` は `set_config` を張っている。
+  **バッチだけが対処されておらず、コメント（`route.ts:16-17`）だけが
+  「オーナー接続（BYPASSRLS）」という反対の前提を書いていた。**
+- **実測（ローカルDB / airis_app = NOBYPASSRLS）**:
+
+  | 接続 | `accountRequest.updateMany` の count |
+  |---|---|
+  | `app.bypass` 無し（修正前と同形） | **0**（例外なし＝サイレント失敗） |
+  | `app.bypass=on`（修正後） | 1 |
+
+  `pg_roles` も実測: `postgres` は `rolbypassrls=true`、`airis_app` は `false`。
+- **影響**: `Account` は非保護テーブル（`rls.sql:220-222`）なので匿名化され、
+  保護テーブル（`SalesStaff` / `FieldAgentApplication` / `AccountRequest`）だけが取り残される。
+  **「一部だけ匿名化される」という最も気づきにくい壊れ方**で、
+  `summary.anonymized` は 0 を返すため「対象なし」と区別できない。
+  §3.4 の1年経過後匿名化が本番で機能していない可能性がある（本番の接続ロールが
+  `BYPASSRLS` を持つかどうかに依存する。本番DBの確認は実行環境の制約により未実施＝未確認項目）。
+  ローカル・CIは `postgres`（BYPASSRLS）で接続するため**永久に再現しない**（BUG-L13 と同型）。
+- **対処**: `batchClient()` を `prisma/seed.ts` と同形にした
+  （非プールURL優先 ＋ `options=-c%20app.bypass%3Don`）。
+  Neonのプール接続では接続オプションが通らないため非プールを優先する理由もコメントに明記し、
+  反対の前提を書いていた `route.ts:16-17` のコメントを訂正した。
+- **検証（実機）**: `DATABASE_URL_UNPOOLED` を **airis_app（NOBYPASSRLS）** に向けたサーバを
+  ポート3102で起動し、1年以上前に削除したデータ（Account / SalesStaff / AccountRequest 各1件）を
+  用意して `/api/cron/daily` を実行。
+  レスポンスは `{"accounts":1,"accountRequests":1,"salesStaff":1,"fieldApplications":0}`、
+  DB実体も3テーブルすべて `（匿名化済み）` ＋ `anonymizedAt` 記録済みを確認した。
+  **修正前の条件（NOBYPASSRLS）で実際に効くことを確認した検証である。**
+- **再発防止**:
+  1. `tests/unit/batch-db-bypass.test.ts`（8件）: `new PrismaClient(` を書いている全箇所を走査し、
+     **行レベル操作を行うものは必ず `app.bypass` か `set_config` を伴う**ことを検査。
+     免除は許可リストではなく**行アクセスの有無から導出**する（後から行アクセスを足しても
+     免除されたままになるのを防ぐ）。`scripts/apply-rls.ts` は DDL のみなので免除側に入る。
+     `rls.sql` の FORCE 対象にバッチが触る3モデルが含まれることも突合する。
+  2. `e2e/25-cron-reminder.spec.ts` に匿名化の動作テストを追加（保護・非保護の両テーブルが
+     実際に匿名化されること、件数がサマリで観測できること、再実行で二重処理されないこと）。

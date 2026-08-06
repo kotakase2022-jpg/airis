@@ -496,3 +496,69 @@ BUG-L14 / BUG-L17 と同じ「宣言はあるが効いていない」型を他�
 | 本番検証E2E | **19 passed / 0 failed**（デプロイ済みの `0efe002` に対して） |
 | lint / format / tsc | 0 error / **0 warning** / 0 error |
 | CI（`0efe002`） | e2e **success** / security-scan **success** / quality はGitHub側のランナー割り当て失敗（`The job was not acquired by Runner of type hosted`）で3回連続未実行。**コード起因ではない**。quality 相当（lint / format / tsc / 単体 / build）はローカルで全通過を実測 |
+
+## loop5 追加: 日次匿名化バッチのサイレント失敗（BUG-L19 / 計画の C2）
+
+BUG-L17 の修正で同じバッチ経路を使ったため実測したところ、**より根の深い欠陥**が出た。
+`batchClient()` が `app.bypass` を張っておらず、`FORCE ROW LEVEL SECURITY` の保護テーブルに
+対して**接続ロールが BYPASSRLS を持たない環境では例外なしで0件**になる状態だった。
+
+### 実測（ローカルDB / airis_app = NOBYPASSRLS）
+
+| 接続 | `accountRequest.updateMany` の count |
+|---|---|
+| `app.bypass` 無し（修正前と同形） | **0**（例外なし＝サイレント失敗） |
+| `app.bypass=on`（修正後） | 1 |
+
+`pg_roles` も実測: `postgres` は `rolbypassrls=true` / `airis_app` は `false`。
+
+`Account` は非保護テーブルなので匿名化され、保護テーブルだけ取り残される＝
+**「一部だけ匿名化される」という最も気づきにくい壊れ方**。
+`summary.anonymized` は 0 を返すので「対象なし」と区別できない。
+ローカル・CIは `postgres`（BYPASSRLS）で接続するため永久に再現しない（BUG-L13 と同型）。
+
+### 修正の実機検証（修正前の条件で効くことを確認）
+
+`DATABASE_URL_UNPOOLED` を **airis_app（NOBYPASSRLS）** に向けたサーバをポート3102で起動し、
+1年以上前に削除したデータ（Account / SalesStaff / AccountRequest 各1件）を用意して
+`/api/cron/daily` を実行:
+
+```
+{"anonymized":{"accounts":1,"accountRequests":1,"salesStaff":1,"fieldApplications":0}}
+```
+
+DB実体も3テーブルすべて `（匿名化済み）` ＋ `anonymizedAt` 記録済みを確認した。
+
+### 再発防止
+
+- `tests/unit/batch-db-bypass.test.ts`（8件）: `new PrismaClient(` の全箇所を走査し、
+  **行レベル操作を行うものは必ず `app.bypass` か `set_config` を伴う**ことを検査。
+  免除は許可リストではなく**行アクセスの有無から導出**する。
+- `e2e/25-cron-reminder.spec.ts` に匿名化の動作テストを追加（保護・非保護の両テーブル、
+  サマリでの件数観測、再実行の冪等性）。
+
+### 未確認項目（本番）
+
+**本番の接続ロール（Neon の `neondb_owner`）が `BYPASSRLS` を持つかを確認できていない。**
+持たない場合、修正前の本番では §3.4 の1年経過後匿名化が保護テーブルに対して
+機能していなかったことになる。本番DBへの接続は実行環境の制約により実施できないため、
+以下の確認を発注者にお願いする（読み取りのみ）:
+
+```sql
+SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname = current_user;
+```
+
+`rolbypassrls = false` だった場合、修正前に匿名化されずに残っている行がある。
+`anonymizedAt IS NULL AND "deletedAt" < now() - interval '365 days'` の件数で把握でき、
+修正版をデプロイすれば次回バッチで解消される（冪等）。
+
+### loop5 の最終実測値
+
+| 項目 | 値 |
+|---|---|
+| 単体テスト | **567 passed / 0 failed**（30ファイル） |
+| E2E（既定構成） | **432 passed / 0 failed / 2 skipped** |
+| E2E（TRUST_PROXY=true 構成） | **9 passed / 0 failed** |
+| 本番検証E2E | 19 passed / 0 failed（デプロイ済みの `0efe002` に対して） |
+| lint / format / tsc | 0 error / 0 warning / 0 error |
+| **CI（`0efe002`）** | **quality / e2e / security-scan すべて success（全緑）** |

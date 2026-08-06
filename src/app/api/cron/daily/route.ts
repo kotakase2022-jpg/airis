@@ -14,8 +14,8 @@ import { UNKNOWN_IP } from "@/lib/client-ip";
 //     - 準リアルタイム窓（直近1時間）: 並行ログイン / 直近成功IPと異なるIPからの成功
 //
 // 認証: Authorization: Bearer ${CRON_SECRET}（Vercel Cronが自動付与）
-// DB: バッチはセッションが無くRLSでfail-closedになるため、
-//     オーナー接続（BYPASSRLS・非プール）の専用クライアントを使用する。
+// DB: バッチはセッションが無くRLSでfail-closedになるため、専用クライアントを使用する。
+//     **接続URLに app.bypass=on を必ず付ける**（prisma/seed.ts と同形）。理由は batchClient() 参照。
 
 export const maxDuration = 60;
 
@@ -52,10 +52,28 @@ type AbuseSignal = { kind: AbuseKind; actor: string; detail: string };
 // ログイン成功イベント（アクセスログ §3.3 / 監査ログの login 成功を同一の型に正規化する）
 type LoginSuccess = { actor: string; ip: string; at: Date };
 
+/**
+ * 日次バッチ専用のDBクライアント。
+ *
+ * **接続オプションで `app.bypass=on` を立てる**（`prisma/seed.ts` と同形）。
+ * これが無いと、`prisma/rls.sql` で `FORCE ROW LEVEL SECURITY` を付けた9テーブル
+ * （SalesStaff / FieldAgentApplication / AccountRequest / Case ほか）に対して、
+ * 接続ロールが `BYPASSRLS` を持たない環境では **例外を出さずに0件**になる。
+ *
+ * QA loop5 で実測して確認した挙動（ローカルの airis_app = NOBYPASSRLS で再現）:
+ *   app.bypass 無し → `accountRequest.updateMany(...)` の count = 0（エラーなし）
+ *   app.bypass=on   → count = 1
+ * `Account` は非保護テーブルなので匿名化され、保護テーブルだけが取り残される
+ * ＝**一部だけ匿名化される**という最も気づきにくい壊れ方になる。
+ * ローカル・CIは `postgres`（BYPASSRLS）で接続するため永久に再現しない（BUG-L13 と同型）。
+ *
+ * 非プール接続（`DATABASE_URL_UNPOOLED`）を優先するのは、Neonのプール接続では
+ * 接続オプション（`options=-c ...`）が通らないため（seed.ts と同じ理由）。
+ */
 function batchClient() {
-  return new PrismaClient({
-    datasourceUrl: process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL,
-  });
+  const base = process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL ?? "";
+  const url = base + (base.includes("?") ? "&" : "?") + "options=-c%20app.bypass%3Don";
+  return new PrismaClient({ datasourceUrl: url });
 }
 
 // 不審シグナルの検知（§3.3 / 要件1-9）。

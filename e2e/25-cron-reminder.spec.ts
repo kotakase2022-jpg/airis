@@ -196,3 +196,112 @@ test("再実行しても督促対象の判定は同じ（期限・ステータ�
   // 同じ条件なので対象件数は一致する（通知は毎回送られる=督促の仕様）
   expect(Number(second.body.overdueCases)).toBe(Number(first.body.overdueCases));
 });
+
+// ===== 2) 削除後1年経過データの匿名化（§3.4 / §8）=====
+//
+// 経緯（QA loop5 で実測により検出。計画上の C2）:
+//   `batchClient()` が `app.bypass` を張っていなかったため、`prisma/rls.sql` で
+//   FORCE ROW LEVEL SECURITY を付けた保護テーブル（SalesStaff / AccountRequest 等）に対し、
+//   **接続ロールが BYPASSRLS を持たない環境では例外を出さずに0件**になっていた。
+//   ローカルの airis_app（NOBYPASSRLS）で 0件 / app.bypass=on で 1件 になることを実測確認済み。
+//   Account は非保護テーブルなので匿名化され、保護テーブルだけ取り残される＝
+//   「一部だけ匿名化される」という最も気づきにくい壊れ方だった。
+//
+// ここでは匿名化そのものの動作（保護・非保護の両テーブルが匿名化されること）を検証する。
+// NOBYPASSRLS 接続での再現は `DATABASE_URL_UNPOOLED` を airis_app に向けたサーバが必要なため、
+// この spec は既定のサーバ構成で「匿名化が動くこと」を担保する。
+// 手順は qa/QA_REPORT.md（loop5）に記載。
+test("削除から1年経過したデータが匿名化される（保護テーブル・非保護テーブルの両方）", async () => {
+  test.setTimeout(120_000);
+  const ANON = "（匿名化済み）";
+  const OLD = new Date(Date.now() - 400 * 24 * 3600 * 1000);
+  const agency = await db().agency.findFirstOrThrow({ where: { code: "110001" } });
+  const loginId = `airis_1110001_x${RUN.slice(-3)}`;
+
+  // 非保護テーブル（Account）
+  const account = await db().account.create({
+    data: {
+      loginId,
+      role: "R7",
+      name: `${P} 氏名`,
+      email: `${P}@example.com`.toLowerCase(),
+      agencyId: agency.id,
+      status: "deleted",
+      deletedAt: OLD,
+      passwordHash: "x",
+      mustChangePassword: false,
+    },
+  });
+  // 保護テーブル（SalesStaff: FORCE ROW LEVEL SECURITY）
+  const staff = await db().salesStaff.create({
+    data: {
+      salesId: `Q25S${RUN.slice(-4)}`,
+      lastName: `${P}姓`,
+      firstName: "太郎",
+      birthDate: "1990-05-05",
+      phone: "090-9999-8888",
+      agencyId: agency.id,
+      status: "deleted",
+      deletedAt: OLD,
+      firstApproved: true,
+      history: [],
+    },
+  });
+  // 保護テーブル（AccountRequest: FORCE ROW LEVEL SECURITY）。発行先アカウントに連動する
+  const req = await db().accountRequest.create({
+    data: {
+      requestId: `Q25R${RUN.slice(-4)}`,
+      role: "R7",
+      name: `${P} 申請者`,
+      email: `${P}-req@example.com`.toLowerCase(),
+      agencyId: agency.id,
+      status: "approved",
+      issuedLoginId: loginId,
+      history: [],
+    },
+  });
+
+  try {
+    const { status, body } = await runCron();
+    expect(status).toBe(200);
+    const anonymized = body.anonymized as Record<string, number>;
+    // サマリで件数が観測できること（0件と「対象なし」を区別するため）
+    expect(
+      anonymized.accounts,
+      `Account が匿名化されていない: ${JSON.stringify(anonymized)}`
+    ).toBeGreaterThan(0);
+    expect(
+      anonymized.salesStaff,
+      `保護テーブル SalesStaff が匿名化されていない（RLSでサイレント0件の疑い）: ${JSON.stringify(anonymized)}`
+    ).toBeGreaterThan(0);
+    expect(
+      anonymized.accountRequests,
+      `保護テーブル AccountRequest が匿名化されていない: ${JSON.stringify(anonymized)}`
+    ).toBeGreaterThan(0);
+
+    // DB実体で確認（件数だけ合っていて中身が消えていない、を防ぐ）
+    const a = await db().account.findUniqueOrThrow({ where: { id: account.id } });
+    expect(a.name).toBe(ANON);
+    expect(a.anonymizedAt).not.toBeNull();
+
+    const s = await db().salesStaff.findUniqueOrThrow({ where: { id: staff.id } });
+    expect(s.lastName, "販売員の氏名が残っている").toBe(ANON);
+    expect(s.phone, "販売員の電話番号が残っている").not.toBe("090-9999-8888");
+    expect(s.anonymizedAt).not.toBeNull();
+
+    const r = await db().accountRequest.findUniqueOrThrow({ where: { id: req.id } });
+    expect(r.name, "申請の氏名が残っている").toBe(ANON);
+    expect(r.email, "申請のメールが残っている").toBe(ANON);
+    expect(r.anonymizedAt).not.toBeNull();
+
+    // 冪等性: 再実行しても二重処理されない（anonymizedAt IS NULL で絞っている）
+    const second = await runCron();
+    const again = second.body.anonymized as Record<string, number>;
+    expect(again.accountRequests, "匿名化済みを再度処理している").toBe(0);
+  } finally {
+    await db().statusHistory.deleteMany({ where: { entityId: { in: [account.id, staff.id] } } });
+    await db().accountRequest.deleteMany({ where: { id: req.id } });
+    await db().salesStaff.deleteMany({ where: { id: staff.id } });
+    await db().account.deleteMany({ where: { id: account.id } });
+  }
+});
