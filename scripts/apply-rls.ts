@@ -70,12 +70,22 @@ export function splitStatements(sql: string): string[] {
 }
 
 async function main() {
-  const sql = fs.readFileSync(path.join(__dirname, "..", "prisma", "rls.sql"), "utf8");
+  const raw = fs.readFileSync(path.join(__dirname, "..", "prisma", "rls.sql"), "utf8");
+  // アプリロール（airis_app）のパスワードを rls.sql のプレースホルダへ埋め込む（§3.1）。
+  // セッション変数（SET LOCAL）は接続プールをまたぐと失われるため文字列置換にしている。
+  // 未指定なら開発既定（airis_app_test）。**本番では必ず APP_DB_PASSWORD を指定すること**。
+  const appPassword = process.env.APP_DB_PASSWORD ?? "airis_app_test";
+  const sql = raw.replaceAll("__APP_DB_PASSWORD__", appPassword.replace(/'/g, "''"));
   const statements = splitStatements(sql);
   for (const stmt of statements) {
     await prisma.$executeRawUnsafe(stmt);
   }
   console.log(`Applied ${statements.length} RLS statements.`);
+  console.log(
+    `アプリロール airis_app を作成/更新しました（パスワードは ${
+      process.env.APP_DB_PASSWORD ? "APP_DB_PASSWORD" : "開発既定 airis_app_test"
+    }）。APP_DATABASE_URL はこのロールで接続します。`
+  );
 }
 
 main()

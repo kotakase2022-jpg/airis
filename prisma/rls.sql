@@ -168,6 +168,39 @@ CREATE POLICY rls_scope ON "AccountRequest" FOR ALL
     )
   );
 
+-- ===== アプリロール airis_app（APP_DATABASE_URL）の作成と権限付与 =====
+-- §3.1 の多層防御は「アプリが NOBYPASSRLS のロールで接続する」ことが前提。
+-- このロールを作る処理がリポジトリのどこにも無く、開発者が手作業で作った環境でだけ動いていた。
+-- そのためCIでは APP_DATABASE_URL の接続が失敗し、**ログインを伴う全E2Eが落ちていた**
+-- （CIのE2Eは一度も完走していなかった。QA loop4 で検出）。
+-- ここで冪等に作成し、どの環境でも同じ手順（migrate → rls → seed）で再現できるようにする。
+--
+-- パスワードは APP_DB_PASSWORD（未指定なら開発既定 airis_app_test）。
+-- **本番では必ず APP_DB_PASSWORD を指定すること**（既定値のまま運用しない）。
+-- __APP_DB_PASSWORD__ は scripts/apply-rls.ts が実行前に APP_DB_PASSWORD の値へ置換する
+-- （セッション変数だと接続プールをまたいで失われるため、確実な文字列置換にしている）。
+DO $role$
+DECLARE
+  pw text := '__APP_DB_PASSWORD__';
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'airis_app') THEN
+    EXECUTE format('CREATE ROLE airis_app LOGIN PASSWORD %L', pw);
+  ELSE
+    EXECUTE format('ALTER ROLE airis_app LOGIN PASSWORD %L', pw);
+  END IF;
+  -- RLSを迂回させない（§3.1）。スーパーユーザ・テーブル所有者はRLSをバイパスするため、
+  -- アプリはこの専用ロールで接続する必要がある。
+  EXECUTE 'ALTER ROLE airis_app NOBYPASSRLS';
+  -- 業務テーブルへの基本権限。列追加・テーブル追加に追従するようスキーマ単位で付与する。
+  EXECUTE 'GRANT USAGE ON SCHEMA public TO airis_app';
+  EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO airis_app';
+  EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO airis_app';
+  -- 以後 migrate で追加されるテーブルにも自動で付与する
+  EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO airis_app';
+  EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO airis_app';
+END
+$role$;
+
 -- ===== AuditLog（append-only の多層防御 §10.4 / SEC要件②#35,36） =====
 -- 監査ログはアプリケーションから更新・削除できない設計とする。
 -- アプリロール（airis_app = APP_DATABASE_URL）には INSERT / SELECT のみを残し、
