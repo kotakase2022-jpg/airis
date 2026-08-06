@@ -396,3 +396,74 @@ CIの seed ステップにこの指定が無かったため、全シードアカ
   **`update` に主要フィールドを含めるか、再シード前に truncate する手順を用意する**のが望ましい。
   今回はCI側の指定追加で症状を止めたが、ローカルDBのドリフト自体は構造的に残る。
 - CIでE2Eが完走した実績を1本残すこと（本修正のrunで確認する）。
+
+---
+
+## BUG-L14（重大）: サスラボ社保守アカウントにベンダー区分がシードで付与されていない
+
+- **検出**: QA loop5（`e2e/29-erasure.spec.ts` を新規作成し、実機で①のベンダー区分を確認したとき）
+- **要求**: docs/SPEC.md L433「1人1ID（共有アカウント禁止）。サスラボ社の保守アカウントも
+  個人単位で発行し、同じ監査ログ基盤で記録（**ベンダー区分属性を持たせる**）」/ SEC要件①
+- **症状**: `prisma/seed.ts` に `isVendor` の指定が**1箇所も無く**、①`airis_slb_sys_001`
+  （サスラボ 管理者＝保守ベンダー本人）の `isVendor` が `false` のままだった。
+  `grep -in "vendor" prisma/seed.ts` → ヒット0件で確認。
+- **影響**:
+  - `src/app/(app)/admin/actions.ts` の `withVendorMark()` は実行者の `isVendor` を見るため、
+    保守ベンダーの特権操作でも監査ログの `target` に `vendor=true` が付かない。
+  - 削除完了レポート（`src/lib/erasure.ts` `ErasureReport.vendor`）の「ベンダー操作」欄が常に false。
+  - 結果として **本番でもベンダー操作の区別が成立していなかった**。
+    docs/SEC_CHECKLIST.md の SEC-10.1-14 は備考に「シードにも保守アカウントを含む」と
+    書いていたが、これは**事実と異なる記載**だった。
+- **欠陥の型**: 「宣言はあるが実際には効いていない」。カラム（`Account.isVendor`）・UI
+  （`VendorFlagCell`）・監査への反映（`withVendorMark`）・権限（`canManageVendorFlag`）は
+  すべて実装済みで、**誰も値を設定していなかった**という一点だけで機能全体が死んでいた。
+  loop3 の `@pii` 注釈のみで匿名化経路なし、loop4 の `airis_app` ロール未作成と同型。
+- **対処**: `prisma/seed.ts` のアカウント定義に `isVendor` を追加し、①に `true` を設定。
+  さらに `upsert` の `update` に `{ isVendor }` を含め、**既存DB（本番を含む）でも再シードで
+  是正される**ようにした（他のフィールドはパスワード等を上書きしないため `update` に含めない）。
+- **検証**: ローカルDBへ再シード → `isVendor=true` のアカウントが `airis_slb_sys_001` のみ
+  であることをDBで確認 → `e2e/29-erasure.spec.ts` 11件全通過。
+  テナント一括削除の監査ログ `target` に `vendor=true` が入ることを実機で確認した。
+
+## BUG-L15（軽微）: 不可逆操作のフォームで送信後に対象種別が既定値へ戻る
+
+- **検出**: QA loop5（匿名化の重複操作テストを書いたとき）
+- **症状**: `/admin` の「個人情報のオンデマンド削除（匿名化）」で対象種別に「販売員ID」を
+  選んで実行すると、実行後にセレクトが既定値「Airisアカウント」へ戻る
+  （`src/app/(app)/admin/security-settings.tsx` `PiiErasureForm` の `useState` 初期値）。
+- **影響**: 連続して同じ種別を処理する運用で、種別を再指定し忘れると
+  「対象のアカウントが見つかりません」という無関係なエラーになる。
+  セレクトの表示自体は戻った値を示すため、誤った対象を匿名化する事故には直結しない。
+- **判定**: 軽微（未修正）。不可逆操作のフォームとしては望ましくないため残存リスクに記載する。
+  `e2e/29-erasure.spec.ts` はこの挙動を `toHaveValue("account")` で**固定して記録**しており、
+  仕様として直す判断が出たときにテストが落ちて気付ける状態にしてある。
+
+## BUG-L16（重大・QA成果物の完全性）: 存在しないテスト・存在しないテストケースを検証証跡として記載していた
+
+- **検出**: QA loop5（検出テスト `tests/unit/doc-references.test.ts` を作成して自分の成果物を検査）
+- **症状**: 2種類あった。
+  1. **ファイルが存在しない**: `qa/REQUIREMENTS_TRACEABILITY.csv` の SEC-025 / SEC-027、
+     `docs/SEC_CHECKLIST.md` の SEC-10.1-15 / SEC-10.1-16 / SEC-10.3-10 / SEC-10.3-12 が
+     `tests/unit/erasure.test.ts` / `settings.test.ts` / `alert.test.ts` を証跡として挙げていたが、
+     **3ファイルとも存在しなかった**。また OWN-005 が挙げる
+     `src/app/(app)/sales-staff/apply-form.tsx` も存在しなかった（実体は `client.tsx:83`）。
+  2. **ファイルは存在するがテストが無い**（より発見が困難）: SEC-10.1-14 / SEC-10.3-10 /
+     SEC-10.3-12 は `e2e/04-admin.spec.ts` の「テナント削除→配下データが参照不可」
+     「削除実行後にレポートが表示」「ベンダー区分の付与→監査ログに vendor=true」を挙げていたが、
+     04-admin.spec.ts に該当テストは無い。`e2e/` 全体を `erase|匿名化|一括削除|vendor` で
+     検索して**ヒット0件**であり、削除・匿名化・ベンダー区分の動作テストは存在しなかった。
+- **影響**: これらの要件の PASS 判定の根拠が虚偽だった。§10.3（削除・匿名化）は
+  リリース条件であり、証跡ゼロの状態を「実装済み」と報告していた。
+- **対処**:
+  1. `tests/unit/erasure.test.ts`（19件）・`tests/unit/settings.test.ts`（15件）を新規作成。
+     `alert.test.ts` は実在する `tests/unit/audit-alert.test.ts` の誤記なので記載を訂正
+     （`setting_change` を含むことを確認済み）。`apply-form.tsx` は `client.tsx:83` に訂正。
+  2. `e2e/29-erasure.spec.ts`（11件）を新規作成し、削除・匿名化・ベンダー区分を実機で検証。
+     SEC_CHECKLIST の証跡欄を実在するテストへ差し替えた。
+  3. 再発防止として `tests/unit/doc-references.test.ts` を追加。成果物・設計文書が挙げる
+     テストファイル・実装ファイルの**実在**を機械的に検査する。
+- **この検出テスト自身のバグ（偽陽性12件）**: 最初の実装は拡張子の正規表現を
+  `\.(?:ts|tsx|sql|prisma)` と書いていたため、`foo.tsx` が `.ts` までで打ち切られ、
+  正しい記載を「存在しない `.ts`」として12件誤検出した。交替順を `tsx|ts` にし、
+  末尾に `(?![\w.])` を付け、`.tsx` を自己検査サンプルに追加して回帰テスト化した。
+  **検出器を信じる前に検出器を検証すること**（BUG-L09 と同じ教訓）。

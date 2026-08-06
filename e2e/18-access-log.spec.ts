@@ -227,7 +227,11 @@ test.describe("AccessLogの記録", () => {
 test.describe("X-Forwarded-For 偽装対策", () => {
   // これらは TRUST_PROXY=true で起動したサーバー（プロキシ配下想定）に対する検証。
   // 既定構成（TRUST_PROXY未設定）ではXFFを一切信頼しないため、
-  // npm run test:e2e:trust-proxy で別途実行する。
+  // TRUST_PROXY=true で別ポート（例 3101）にサーバを起動し、
+  //   QA_BASE_URL=http://localhost:3101 npm run test:e2e:proxy
+  // で別途実行する（スクリプトが QA_TRUST_PROXY=true を付ける）。
+  // ※以前ここには存在しない `npm run test:e2e:trust-proxy` と書いてあり、
+  //   指示どおり実行しても常に skip されるため、この2件は長く未検証だった（QA loop5 で検出）。
   test.skip(process.env.QA_TRUST_PROXY !== "true", "TRUST_PROXY=true のサーバーが必要");
 
   test("x-forwarded-for は末尾hopが採用される（先頭の偽装値は無視される）", async ({ page }) => {

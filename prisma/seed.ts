@@ -165,29 +165,44 @@ async function main() {
   });
 
   // ---- 10ロールのアカウント ----
-  const accounts: [string, string, string, string | null, string][] = [
-    // [loginId, role, name, agencyId, password]
-    ["airis_slb_sys_001", "R1", "サスラボ 管理者", null, PASSWORDS.admin],
-    ["airis_snc_adm_001", "R2", "SNC 課長", null, PASSWORDS.admin],
-    ["airis_snc_ops_0001", "R3", "SNC 運用担当", null, PASSWORDS.admin],
-    ["airis_snc_vew_001", "R4", "SNC 閲覧ユーザー", null, PASSWORDS.general],
-    ["airis_snc_spt1_001", "R5", "ホットライン 窓口担当", null, PASSWORDS.general],
-    ["airis_snc_spt2_001", "R6", "消費者センター 窓口担当", null, PASSWORDS.general],
-    ["airis_1110001_001", "R7", "東都NW 管理者", p1.id, PASSWORDS.admin],
-    ["airis_2210001_001", "R8", "セールスパートナー東京 管理者", s1.id, PASSWORDS.general],
+  // 第6要素は isVendor（サスラボ社保守アカウントのベンダー区分。§10.1 / SEC要件①）。
+  // ①サスラボ社システム管理は**保守ベンダーのアカウント**なので必ず true。
+  // これが false だと監査ログの `vendor=true` 付与（actions.ts withVendorMark）と
+  // 削除完了レポートの「ベンダー操作」欄が常に働かず、SEC要件①「ベンダー操作を区別して
+  // 記録する」が実運用で成立しない（QA loop5 で検出。列とUIはあるが誰も設定していなかった）。
+  const accounts: [string, string, string, string | null, string, boolean][] = [
+    // [loginId, role, name, agencyId, password, isVendor]
+    ["airis_slb_sys_001", "R1", "サスラボ 管理者", null, PASSWORDS.admin, true],
+    ["airis_snc_adm_001", "R2", "SNC 課長", null, PASSWORDS.admin, false],
+    ["airis_snc_ops_0001", "R3", "SNC 運用担当", null, PASSWORDS.admin, false],
+    ["airis_snc_vew_001", "R4", "SNC 閲覧ユーザー", null, PASSWORDS.general, false],
+    ["airis_snc_spt1_001", "R5", "ホットライン 窓口担当", null, PASSWORDS.general, false],
+    ["airis_snc_spt2_001", "R6", "消費者センター 窓口担当", null, PASSWORDS.general, false],
+    ["airis_1110001_001", "R7", "東都NW 管理者", p1.id, PASSWORDS.admin, false],
+    ["airis_2210001_001", "R8", "セールスパートナー東京 管理者", s1.id, PASSWORDS.general, false],
     // R9 は販売員IDとして下で作成
-    ["airis_1190001_001", "R7", "北海道テレコム 管理者（稼働終了→⑩）", p3.id, PASSWORDS.admin],
+    [
+      "airis_1190001_001",
+      "R7",
+      "北海道テレコム 管理者（稼働終了→⑩）",
+      p3.id,
+      PASSWORDS.admin,
+      false,
+    ],
   ];
-  for (const [loginId, role, name, agencyId, pw] of accounts) {
+  for (const [loginId, role, name, agencyId, pw, isVendor] of accounts) {
     await prisma.account.upsert({
       where: { loginId },
-      update: {},
+      // 既存行は原則更新しないが（パスワード等を上書きしないため）、ベンダー区分は
+      // 監査の正確性に直結する属性なので再シードで是正されるようにする。
+      update: { isVendor },
       create: {
         loginId,
         role,
         name,
         agencyId,
         status: "active",
+        isVendor,
         passwordHash: hash(pw),
         pepperVersion: PEPPER_VERSION,
         mustChangePassword: MUST_CHANGE_PASSWORD,

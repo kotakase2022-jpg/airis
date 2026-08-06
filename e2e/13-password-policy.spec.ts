@@ -40,6 +40,27 @@ function matchesPw(pw: string, hash: string): boolean {
   return bcrypt.compareSync(prehash(pw), hash) || bcrypt.compareSync(pw, hash);
 }
 
+// ランナーとサーバのペッパー設定が食い違っていないことを**先に**確かめる。
+// これが食い違うと matchesPw が常に false になり、「パスワード履歴が保存されない」等の
+// アプリ不具合に見える失敗が出る（原因はテスト環境。QA loop4・loop5 で2度踏んだ）。
+// DBの Account.pepperVersion は「ハッシュ生成時にペッパーが適用されたか」を示すので、
+// これとランナー側の有無を突合すれば取り違えを検出できる。黙って退化させない。
+test.beforeAll(async () => {
+  const seeded = await db().account.findFirst({
+    where: { loginId: "airis_slb_sys_001" },
+    select: { pepperVersion: true },
+  });
+  const serverUsesPepper = Boolean(seeded?.pepperVersion);
+  expect(
+    Boolean(PEPPER),
+    serverUsesPepper
+      ? "DBのハッシュはペッパー適用済み（pepperVersion あり）ですが、テストプロセスに PASSWORD_PEPPER_V1 がありません。" +
+          "サーバ起動時と同じ値を指定してください（playwright.config.ts のローカル既定は qa-test-pepper-v1）"
+      : "DBのハッシュはペッパー未適用ですが、テストプロセスには PASSWORD_PEPPER_V1 が設定されています。" +
+          "サーバ・シード・ランナーで設定を揃えてください"
+  ).toBe(serverUsesPepper);
+});
+
 // QA13専用アカウント作成（シード行を破壊しない）
 async function createAccount(
   loginId: string,

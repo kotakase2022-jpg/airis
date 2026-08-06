@@ -267,7 +267,12 @@ function ErasureResultBox({ state }: { state: ErasureActionState }) {
 
 function ErasureReportCard({ report }: { report: ErasureReport }) {
   return (
-    <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+    <div
+      // 削除証明の検証（e2e/29-erasure.spec.ts）でカード全体を一意に掴むための目印。
+      // 見出し文言で div を絞ると祖先も一致して不安定になるため testid を置く。
+      data-testid="erasure-report"
+      className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700"
+    >
       <div className="font-semibold text-slate-800">削除完了レポート（削除証明用）</div>
       <div className="mt-1 grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
         <div>

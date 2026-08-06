@@ -1,6 +1,6 @@
 // QA loop3 独立検収（観点: 回帰・例外処理・境界）
 // このファイルは検収作業用。検収完了後に削除する。
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { hashSync as argon2HashSync } from "@node-rs/argon2";
 import crypto from "crypto";
 import { ACCOUNTS, login, collectConsoleErrors, criticalErrors, db, type RoleKey } from "./helpers";

@@ -10,7 +10,7 @@
 //   AUTHZ-2  §5.2 ページアクセス: ③（SNC運用者）が管理画面と管理CSVに到達できる（発注者指示 OWN-014）
 //   AUTHZ-3  §4.2/§6.1-3 職務分離: ③は①②のMFA/パスワードをリセットできない（是正済み）
 import { test, expect } from "@playwright/test";
-import { ACCOUNTS, PW_GENERAL, db, login, completeMfaIfNeeded } from "./helpers";
+import { ACCOUNTS, PW_GENERAL, db, login } from "./helpers";
 
 const AUDIT_R1_LOGIN = "ZZZAUDIT_slb_sys_900";
 

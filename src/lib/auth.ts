@@ -5,7 +5,6 @@ import crypto from "crypto";
 import { prisma } from "./prisma";
 import { PageKey, Role, canAccess, isDummyView } from "./roles";
 import { effectiveRoleFor, resolveSession, SESSION_COOKIE, type CurrentUser } from "./session";
-import { UNKNOWN_IP, trustedIpFrom } from "./client-ip";
 import { passwordInputCandidates } from "./password-input";
 import {
   hashPasswordWithVersion,

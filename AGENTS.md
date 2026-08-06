@@ -58,6 +58,11 @@ npm run test:unit        # Vitest
 npm run build            # 本番ビルド
 npm run test:e2e         # Playwright（別ターミナルで port3100 のサーバーを起動しておく）
 
+# E2Eは2構成で回して初めて全件検証になる。既定構成だけでは
+# e2e/18-access-log.spec.ts の x-forwarded-for 関連2件が skip されたままになる。
+#   TRUST_PROXY=true ... npx next start -p 3101   # プロキシ配下想定のサーバ
+#   QA_BASE_URL=http://localhost:3101 npm run test:e2e:proxy
+
 # その他
 npm run migrate:status   # マイグレーション適用状況
 npm run migrate:deploy   # 本番へマイグレーション適用
