@@ -2,6 +2,9 @@ import "server-only";
 import { prisma } from "./prisma";
 import { agencyScope, type CurrentUser } from "./auth";
 import { can, canApproveFirst, announcementFeature, caseFeature } from "./permissions";
+// 証跡ファイルの参照可否は「その申請を最終承認できるか」で判定する（§6.1-3 の職務分離）。
+// 規則の情報源を最終承認・リセット代行と1つに保つ（§3.2）。
+import { canFinalApproveRequest } from "@/app/(app)/account-requests/approval-rules";
 
 // ファイルの認可（§3.1 / §3.8 / §10.5）。
 // fileId を参照するエンティティを特定し、そのエンティティの閲覧可否ルールを適用する。
@@ -19,11 +22,12 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
       : null;
 
   // 1) アカウント申請の証跡（§5.1 Airisアカウント）
-  //    SNC系（①②③=承認権限者）は全件、それ以外は「自分が作成した申請」または
-  //    スコープ内の代理店に紐づく申請のみ。agencyId=NULL（SNC内部申請）は SNC系と作成者本人のみ。
+  //    「自分が作成した申請」＋「その申請を承認できる立場の者」だけが参照できる。
+  //    agencyId=NULL（SNC内部申請）は SNC系と作成者本人のみ。
   const req = await prisma.accountRequest.findFirst({
     where: { evidenceFileId: fileId },
-    select: { agencyId: true, createdBy: true },
+    // role は職務分離（§6.1-3）の判定に必要
+    select: { agencyId: true, createdBy: true, role: true },
   });
   if (req) {
     // AccountRequest.createdBy は Account.id（cuid）で保存される（account-requests/actions.ts）
@@ -33,13 +37,12 @@ export async function canAccessFile(user: CurrentUser, fileId: string): Promise<
     // 他ロールの申請証跡は従来どおり見せない。
     if (isOwnRequest) return true;
     if (user.isDummy) return false;
-    // ①②（閲覧権限）と③（最終承認権限 §5.1「承」）は承認判断のため全件参照可
-    if (
-      can(user.role, "airis-account", "view") ||
-      can(user.role, "airis-account", "approve_final")
-    ) {
-      return true;
-    }
+    // 承認判断のために証跡を見るので、**その申請を最終承認できる者だけ**が参照できる。
+    // §6.1-3 / 要件1-1 により、SNC系（①〜⑥）宛の申請を最終承認できるのは①②のみで、
+    // ③は代理店系（⑦⑧⑩）に限定される。③が承認できない申請の証跡を見る業務上の必要はない。
+    // （発注者指示 2026-08-06。QA loop4 の独立監査で「③が①〜⑥宛申請の証跡まで取得できる」
+    //   ことを検出し、リセット代行と同じ職務分離の規則へ揃えた）
+    if (canFinalApproveRequest(user.role, req.role)) return true;
     // ⑦（1次承認権限 §6.1-3）は自店スコープ内の申請のみ。agencyId=NULL（SNC内部申請）は不可
     if (canApproveFirst(user.role, "airis-account")) return inScope(req.agencyId);
     return false;
