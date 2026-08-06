@@ -125,6 +125,45 @@ test("本番: ②は監査記録に従来どおり到達できる（制限が③
   }
 });
 
+test("本番: ③は自分が作成していないSNC系宛申請の証跡を取得できない（発注者指示 2026-08-06）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const d = db();
+  // 本番の実データから「SNC系（①〜⑥）宛 かつ ③が作成者ではない」申請の証跡を探す。
+  // **本番データは一切変更しない**（読み取りとファイル取得の可否確認のみ）。
+  const r3 = await d.account.findUnique({
+    where: { loginId: R3_LOGIN },
+    select: { id: true },
+  });
+  const target = await d.accountRequest.findFirst({
+    where: {
+      role: { in: ["R1", "R2", "R3", "R4", "R5", "R6"] },
+      evidenceFileId: { not: null },
+      ...(r3 ? { NOT: { createdBy: r3.id } } : {}),
+    },
+    select: { requestId: true, role: true, evidenceFileId: true },
+  });
+  if (!target) {
+    console.log("[prod] 対象の申請（SNC系宛・③以外が作成）が本番に無いためスキップ");
+    test.skip();
+    return;
+  }
+  console.log(`[prod] 対象: ${target.requestId}（宛先ロール=${target.role}）`);
+
+  await login(page, R3_LOGIN, PW_ADMIN);
+  const denied = await page.request.get(`/files/${target.evidenceFileId}`, { maxRedirects: 0 });
+  console.log(`[prod] ③ GET /files/<SNC系宛の証跡> -> ${denied.status()}`);
+  expect(denied.status(), "本番で③がSNC系宛申請の証跡を取得できる").toBe(403);
+
+  // 対照: ②は従来どおり取得できる（制限が③に限定されており過剰でない）
+  await page.context().clearCookies();
+  await login(page, "airis_snc_adm_001", PW_ADMIN);
+  const ok = await page.request.get(`/files/${target.evidenceFileId}`, { maxRedirects: 0 });
+  console.log(`[prod] 対照 ② GET /files/<同じ証跡> -> ${ok.status()}`);
+  expect(ok.status(), "本番で②が証跡を取得できない").toBe(200);
+});
+
 test("本番: CSV出力系のRoute Handlerは未認証で到達できない", async ({ page }) => {
   for (const path of ["/reports/csv?template=visit", "/hotline/csv", "/consumer-center/csv"]) {
     const res = await page.request.get(path, { maxRedirects: 0 });
