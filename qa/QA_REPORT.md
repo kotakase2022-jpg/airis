@@ -368,3 +368,39 @@ E2Eの skip は2構成を合わせるとゼロになる（どちらの構成で�
 「属性の保持」＋「同一基盤に実行者として記録」＋「特権操作には `vendor=true` が付く」
 （後者はテナント一括削除テストで実測）に改めた。テストを通すために緩めたのではなく、
 根拠を仕様へ戻した判断であり、その旨をテスト本文のコメントにも残している。
+
+## loop5 のデプロイ結果と、発注者の実行が必要な項目
+
+- **本番デプロイ完了**: `vercel --prod` → Production / Ready
+  （`airis-fyp9rgn2q-…` / 本番URL https://airis-nine.vercel.app は 200）
+- **本番検証E2E**: `npm run test:e2e:prod` → **19 passed / 0 failed**（実本番URLに対する実測）
+
+### ⚠️ BUG-L14 はコード修正済みだが、**本番データへの反映が未完了**
+
+本番DBの①`airis_slb_sys_001` は現在も `isVendor = false` であることを実測で確認した。
+`prisma/seed.ts` の修正（`update: { isVendor }`）は**シードを再実行して初めて効く**ため、
+デプロイだけでは反映されない。私からの本番DB書き込みは実行環境の制約で拒否されたため、
+**発注者側での実行が必要**。
+
+最小の反映（対象1行・1カラムのみ。可逆）:
+
+```sql
+UPDATE "Account" SET "isVendor" = true WHERE "loginId" = 'airis_slb_sys_001' AND role = 'R1';
+```
+
+反映確認:
+
+```sql
+SELECT "loginId", role, "isVendor" FROM "Account" WHERE "isVendor" = true;
+-- 期待: airis_slb_sys_001 / R1 / true の1行のみ
+```
+
+反映されるまでの本番の状態（正確に記載する）:
+
+- ①保守アカウントの操作は監査ログに残るが、`target` に `vendor=true` が付かない
+- 削除完了レポートの「ベンダー操作」欄が常に false
+- → SEC要件①「ベンダー操作を区別して記録」は**本番では未充足のまま**
+
+したがって SEC-10.1-14 の判定は「コード・ローカル実機では PASS、**本番反映は未完了**」であり、
+本番リリース可否の判断材料として残す。上記SQL適用後は再シードでも維持される
+（シードの `update` に含めたため）。
