@@ -241,3 +241,60 @@ API層（フォーム改ざんでの op 注入を拒否）・監査ログ（deni
   「注意事項」）を判別できなかったため、**原本とのSHA-256一致**を追加。
 - `e2e/25-cron-reminder.spec.ts`: 監査ログの列指定の誤りを正し、`result` と実行サマリの
   記録まで検証するよう追加。
+
+---
+
+# loop4 追補: CIが初めて全緑になった（2026-08-06）
+
+## 結果
+
+| ジョブ | 結果 | 所要 |
+|---|---|---|
+| quality（lint / format:check / tsc / 単体 / build） | **success** | 1分30秒 |
+| security-scan（npm audit / Trivy） | **success** | 40秒 |
+| e2e（実ブラウザ + 実DB + RLS） | **success — 419 passed / 0 failed / 2 skipped** | 13.0分 |
+
+run: https://github.com/kotakase2022-jpg/airis/actions/runs/31102988126
+
+初めて実行された脆弱性スキャンの結果:
+- `npm audit --audit-level=high` → **found 0 vulnerabilities**
+- Trivy（postgres:16 / HIGH,CRITICAL / ignore-unfixed）→ **0件**
+
+## それまでCIが赤だった理由（3つが重なっていた）
+
+いずれも「ローカルでだけ通っていた」ものであり、**QAの検証結果そのものを無効化していた**。
+
+| # | 原因 | ローカルで見えなかった理由 |
+|---|---|---|
+| 1 | `aquasecurity/trivy-action` のタグ誤り（`0.30.0` は存在しない。正しくは `v0.36.0`） | ローカルでは実行しないジョブ |
+| 2 | シードの初回パスワード変更フラグ（`SEED_DEMO=1` 未指定でログインが `/password` で停止） | `seed` の `upsert(update:{})` が既存行を更新せず、初期に作られた `false` の行が残り続けていた |
+| 3 | **アプリロール `airis_app` を作成する処理がリポジトリに存在しなかった** | 手作業で作ったロールがローカルDBにだけ存在した |
+| 4 | 3テストが使い捨てデータに依存（代理店の cuid 直書き / 手作業アカウント） | そのデータがローカルDBにだけ存在した |
+
+3番が真因で、これがある限り CI では `APP_DATABASE_URL` の接続が確立できず、
+**ログインを伴う全テストが 15.5 秒のタイムアウトで落ち続けていた**
+（ログイン不要のテストだけが通る、という観測と一致）。
+e2e ジョブが 30分・60分と連続で打ち切られていたのは症状であって原因ではなかった。
+
+## 是正
+
+- `prisma/rls.sql`: `airis_app` の作成・`NOBYPASSRLS`・スキーマ単位の権限付与・
+  `ALTER DEFAULT PRIVILEGES` を冪等に追加。パスワードは `APP_DB_PASSWORD`
+  （未指定なら開発既定）。**本番では必ず指定すること**。
+- `.github/workflows/ci.yml`: seed に `SEED_DEMO=1`、e2e の `timeout-minutes` を 60 へ。
+- `e2e/zz-qa3-regression.spec.ts`: 3テストを自己完結化（コードから解決／自前で作成し後片付け）。
+- `AGENTS.md`: 開発手順に抜けていた `npm run rls` を追加し、順序と理由を明記。
+
+## 検証方法
+
+推測ではなく、**ローカルでCI手順を完全再現**して確認した。
+`DROP ROLE airis_app` → 全テーブル削除 → `npm run rls`（ロール再作成を確認）→
+`SEED_DEMO=1 npm run seed` → `APP_DATABASE_URL` でサーバ起動 → E2E 419件 全通過。
+その後 CI でも同じ結果（419 passed）を得た。
+
+## 所見
+
+「ローカルで全緑」を根拠に品質を報告していたが、その緑は
+**手作業で作ったDBロールとドリフトしたシードフラグに依存した、再現不能な環境**の上に成立していた。
+環境構築手順がコード化されていない箇所は、テストが何件通っていても品質の根拠にならない。
+今後は「クリーンな環境で再現できること」を合格条件に含める。
