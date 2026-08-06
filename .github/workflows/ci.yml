@@ -29,7 +29,12 @@ jobs:
   # E2E（実DB + RLS + 実ブラウザ。§12 M8「E2E総仕上げ」）
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # E2Eは playwright.config.ts の workers:1（DB共有のため直列）で実行する。
+    # 実測: ローカル 9.2分 / GitHub Actions ランナー 28.6分（約3倍遅い）。
+    # 30分だと本体テストが完走前に打ち切られる（run 31084553029 で cancelled）ため60分に引き上げる。
+    # 将来テスト数が増えて再び逼迫したら、shard ごとに独立した postgres サービスを持たせた
+    # マトリクス分割（--shard=i/n）を検討する。DBを共有したままの並列化は不可。
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:16

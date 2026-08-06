@@ -590,6 +590,73 @@ test("分岐1: agencyId=NULLのSNC内部申請の証跡は⑦⑧が取得でき�
   expect(await own.text()).toBe(bodyOf("reqAgency"));
 });
 
+// 上の分岐1では③が「当該申請の作成者」だったため取得できていた。
+// ここでは **③が作成していない SNC系（①〜⑥）宛の申請** を対象に、
+// §6.1-3 の職務分離（③はSNC系を最終承認できない）が証跡ファイルにも及ぶことを検証する。
+// 発注者指示（2026-08-06）で是正した経路であり、これが開いていると
+// 「承認できない申請の上長承認証跡を読める」状態になる（QA loop4 の独立監査で検出）。
+test("分岐1-2: ③は自分が作成していないSNC系宛申請の証跡を取得できない（§6.1-3 職務分離）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const d = db();
+  const NAME = `${P} 他者作成のSNC系申請`;
+  const r2 = await d.account.findUniqueOrThrow({
+    where: { loginId: ACCOUNTS.R2.loginId },
+    select: { id: true },
+  });
+  // FileKey に無い一時ファイルなので storeFile() ヘルパは使わず直接作る（本テスト内で後片付け）
+  const marker = `${MARKER}-req-snc-other`;
+  const data = Buffer.from(marker, "utf8");
+  const file = await d.storedFile.create({
+    data: {
+      name: `${P}-reqSncByOther.pdf`,
+      mime: "application/pdf",
+      size: data.length,
+      data,
+      uploadedBy: ACCOUNTS.R2.loginId,
+    },
+  });
+  const req = await d.accountRequest.create({
+    data: {
+      requestId: `${P}-REQ-SNC-OTHER`,
+      role: "R5", // SNC系（①〜⑥）宛 → 最終承認できるのは①②のみ
+      name: NAME,
+      email: `${P}-snc-other@example.com`,
+      agencyId: null,
+      evidenceFileId: file.id,
+      status: "pending_final",
+      createdBy: r2.id, // **②が作成**（③は作成者ではない）
+      history: [{ event: "requested", at: "2026-08-01", by: ACCOUNTS.R2.loginId }],
+    },
+  });
+  try {
+    // ③は最終承認できない申請なので証跡も取得できない
+    await loginRole(page, "R3");
+    const denied = await page.request.get(`/files/${file.id}`);
+    expect(denied.status(), "③がSNC系宛申請の証跡を取得できてしまう").toBe(403);
+    expect(await denied.text(), "③に証跡の中身が返っている").not.toContain(MARKER);
+    await page.context().clearCookies();
+
+    // 対照: ①②は従来どおり取得できる（制限が③に限定されており過剰でないこと）
+    for (const role of ["R1", "R2"] as RoleKey[]) {
+      await loginRole(page, role);
+      const ok = await page.request.get(`/files/${file.id}`);
+      expect(ok.status(), `${role} がSNC系宛申請の証跡を取得できない`).toBe(200);
+      await page.context().clearCookies();
+    }
+
+    // 対照: 代理店系（⑦⑧⑩）宛の申請なら③も取得できる（§4.2 の承認業務は維持）
+    await loginRole(page, "R3");
+    const agencyReq = await page.request.get(`/files/${fileIds.reqAgency}`);
+    expect(agencyReq.status(), "③が代理店系宛申請の証跡を取得できない（業務が回らない）").toBe(200);
+  } finally {
+    await d.accountRequest.deleteMany({ where: { id: req.id } });
+    await d.storedFile.deleteMany({ where: { id: file.id } });
+    await d.auditLog.deleteMany({ where: { target: { contains: file.id } } });
+  }
+});
+
 test("分岐2: 誓約書PDFは⑨が自分の申請でも403 / ⑦は自店配下のみ200・他店⑦は403", async ({
   page,
 }) => {
