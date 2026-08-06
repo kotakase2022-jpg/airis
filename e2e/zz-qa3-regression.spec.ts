@@ -1,7 +1,26 @@
 // QA loop3 独立検収（観点: 回帰・例外処理・境界）
 // このファイルは検収作業用。検収完了後に削除する。
 import { test, expect, Page } from "@playwright/test";
+import { hashSync as argon2HashSync } from "@node-rs/argon2";
+import crypto from "crypto";
 import { ACCOUNTS, login, collectConsoleErrors, criticalErrors, db, type RoleKey } from "./helpers";
+
+// 使い捨てアカウントを作るためのパスワードハッシュ（アプリと同じ方式 §2 / §10.3）。
+// Argon2id（m=19MiB/t=2/p=1）+ HMAC-SHA256 の前段ハッシュ（鍵=ペッパー）。
+// ペッパー未設定の環境では素通し（src/lib/pepper.ts と同じ挙動）。
+function hashedForTest(pw: string): { passwordHash: string; pepperVersion: string | null } {
+  const pepper = process.env.PASSWORD_PEPPER_V1 ?? "";
+  const pre = pepper ? crypto.createHmac("sha256", pepper).update(pw, "utf8").digest("hex") : pw;
+  return {
+    passwordHash: argon2HashSync(pre, {
+      memoryCost: 19456,
+      timeCost: 2,
+      parallelism: 1,
+      outputLen: 32,
+    }),
+    pepperVersion: pepper ? "v1" : null,
+  };
+}
 
 const ALLOWED: Record<RoleKey, string[]> = {
   R1: [
@@ -342,8 +361,11 @@ test("[IDOR] R8 cannot delete another agency's daily report by swapping the form
   page,
 }) => {
   test.setTimeout(120_000);
+  // ⑧のスコープ外（親1次店110001）の日報を代理店コードから解決する。
+  // 以前は cuid を直書きしていたため、DBを作り直すと解決できず失敗していた（CIでは必ず失敗する）。
+  const parent = await db().agency.findFirstOrThrow({ where: { code: "110001" } });
   const foreign = await db().dailyReport.findFirstOrThrow({
-    where: { agencyId: "cmsg1t2e0000032iwy0p5ibsv" }, // 東都（R8の親1次店。R8のスコープ外）
+    where: { agencyId: parent.id },
     select: { id: true, date: true, type: true },
   });
   page.on("dialog", (d) => d.accept());
@@ -373,8 +395,18 @@ test("[IDOR] R8 cannot file a field-agent application for another agency's sales
   page,
 }) => {
   test.setTimeout(120_000);
+  // ⑧（210001所属）のスコープ外にある販売員を、代理店コードから解決する。
+  // 以前は cuid 直書きで、DBを作り直すと解決できず失敗していた（CIでは必ず失敗する）。
+  const r8 = await db().account.findFirstOrThrow({
+    where: { loginId: ACCOUNTS.R8.loginId },
+    select: { agencyId: true },
+  });
   const foreignStaff = await db().salesStaff.findFirstOrThrow({
-    where: { agencyId: "cmsg1t2e4000132iwq6kq191z", status: { in: ["provisional", "registered"] } },
+    where: {
+      status: { in: ["provisional", "registered"] },
+      agency: { isDummy: false, id: { not: r8.agencyId ?? undefined } },
+      // ⑧のスコープは自店のみなので、自店以外ならスコープ外
+    },
     select: { id: true, salesId: true },
   });
   const before = await db().fieldAgentApplication.count();
@@ -588,11 +620,22 @@ test("[SEC] ten failed logins lock the throwaway account for 30 minutes", async 
   test.setTimeout(300_000);
   const ID = "QAR_lock_001";
   const GOOD = "QAR-Lockout-Test-2026!xyz";
-  const acct = await db().account.findUnique({ where: { loginId: ID } });
-  expect(acct, "throwaway account QAR_lock_001 must exist").not.toBeNull();
-  await db().account.update({
-    where: { loginId: ID },
-    data: { failedAttempts: 0, lockedUntil: null },
+  // 使い捨てアカウントは **このテストが自分で作る**。
+  // 以前は事前に手作業で作った行に依存しており、DBが新規のCIでは必ず失敗していた
+  // （テストは自己完結でなければならない。シードアカウントは絶対に壊さない ← BUG-Q11 の再発防止）。
+  const agency = await db().agency.findFirstOrThrow({ where: { code: "210001" } });
+  await db().account.deleteMany({ where: { loginId: ID } });
+  const acct = await db().account.create({
+    data: {
+      loginId: ID,
+      role: "R8",
+      name: "QAR ロック検証用",
+      agencyId: agency.id,
+      status: "active",
+      // ログイン可能である必要があるため、アプリと同じ方式（Argon2id + 現行ペッパー）でハッシュする
+      ...hashedForTest(GOOD),
+      mustChangePassword: false,
+    },
   });
 
   // まず正しいパスワードで入れることを確認（ハッシュ・ペッパーの整合）
@@ -661,6 +704,12 @@ test("[SEC] ten failed logins lock the throwaway account for 30 minutes", async 
   const msg = await page.locator("body").innerText();
   console.log("locked message:", msg.match(/.{0,100}ロック.{0,60}/)?.[0] ?? "(none)");
   expect(msg).toMatch(/ロック|しばらく|時間/);
+
+  // 使い捨てアカウントの後片付け（次回実行に持ち越さない）
+  await db().accessLog.deleteMany({ where: { loginId: ID } });
+  await db().auditLog.deleteMany({ where: { actor: ID } });
+  await db().session.deleteMany({ where: { accountId: acct.id } });
+  await db().account.deleteMany({ where: { id: acct.id } });
 });
 
 // ===== 16. 絶対期限（24時間）を過ぎたセッションは失効する =====

@@ -62,7 +62,12 @@ jobs:
       - run: npm run rls
         env:
           RLS_DATABASE_URL: postgresql://postgres:postgres@localhost:5433/airis
-      - run: npm run seed
+      # SEED_DEMO=1 は「初回パスワード変更フラグ（§9-1）を立てない」指定（prisma/seed.ts:17-20）。
+      # これが無いと全シードアカウントが初回変更必須になり、E2Eのログインが /password で止まって
+      # 全ロールのログインテストが失敗する（CIのDBは毎回新規なので必ず再現する。
+      # ローカルは upsert で既存行が更新されず露見しなかった）。
+      # 開発・検証専用の指定であり、本番シードでは付けない。
+      - run: SEED_DEMO=1 npm run seed
       - run: npm run build
       - name: start app
         run: npx next start -p 3100 &
