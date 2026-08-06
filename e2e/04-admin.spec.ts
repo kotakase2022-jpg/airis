@@ -444,14 +444,17 @@ test.describe("CSV出力・監査ログ", () => {
     expect(log).not.toBeNull();
   });
 
-  // ③は発注者指示（2026-08-05）で管理画面〇のため200。権限外の検証は⑨（管理画面×）で行う
-  test("CSV権限: R3は200（管理画面〇）/ R9は403 / 未認証は401（異常系）", async ({
+  // ③は管理画面には入れる（発注者指示 2026-08-05）が、監査記録（棚卸CSV・監査ログ・
+  // アクセスログ）には到達不可（発注者指示 2026-08-06）。⑨は管理画面自体が×。
+  test("CSV権限: R3は403（監査記録は①②のみ）/ R9は403 / 未認証は401（異常系）", async ({
     page,
     browser,
   }) => {
     await login(page, "R3");
-    const r3res = await page.request.get("/admin/csv?type=inventory");
-    expect(r3res.status()).toBe(200);
+    for (const type of ["inventory", "audit", "access"]) {
+      const r3res = await page.request.get("/admin/csv?type=" + type);
+      expect(r3res.status(), `③が /admin/csv?type=${type} に到達できる`).toBe(403);
+    }
 
     await login(page, "R9");
     const res = await page.request.get("/admin/csv?type=inventory");

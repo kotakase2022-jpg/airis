@@ -37,6 +37,7 @@ import {
   canSuspendAccount,
   canUpdateAccount,
   canUpdateSettings,
+  canViewAuditRecords,
 } from "./authz";
 import { AccountEditButton, AccountRowActions, VendorFlagCell } from "./row-actions";
 import {
@@ -196,6 +197,10 @@ export default async function AdminPage({
   if (statusFilter) filters.push({ status: statusFilter });
   const where: Prisma.AccountWhereInput = { AND: filters };
 
+  // 監査記録（監査ログ・アクセスログ・棚卸CSV）の閲覧可否（①②のみ）。
+  // ③は管理画面に入れる（発注者指示 OWN-014）が、監査記録には到達させない（同 2026-08-06）。
+  const showAuditRecords = !user.dummy && canViewAuditRecords(user.role);
+
   const [grouped, totalCount, accounts, auditLogs, accessLogs] = await Promise.all([
     prisma.account.groupBy({ by: ["status"], _count: { _all: true }, where: scopeFilter }),
     prisma.account.count({ where }),
@@ -206,10 +211,12 @@ export default async function AdminPage({
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
     }),
-    user.dummy
+    // 監査ログ・アクセスログは①②のみ（§7.1 / §7.2。発注者指示 2026-08-06 で③は到達不可）。
+    // 画面で隠すだけでなく **取得もしない**（RSCペイロードに載せない）。
+    user.dummy || !showAuditRecords
       ? Promise.resolve([])
       : prisma.auditLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
-    user.dummy
+    user.dummy || !showAuditRecords
       ? Promise.resolve([])
       : prisma.accessLog.findMany({ orderBy: { createdAt: "desc" }, take: 100 }),
   ]);
@@ -327,7 +334,7 @@ export default async function AdminPage({
       {/* アカウント一覧 */}
       <SectionTitle
         right={
-          !user.dummy ? (
+          showAuditRecords ? (
             <a href="/admin/csv?type=inventory" className={btnOutline}>
               棚卸CSV出力
             </a>
@@ -511,12 +518,15 @@ export default async function AdminPage({
             />
           </Card>
 
-          {/* 削除完了レポート（対象件数・データ種別・実行日時・実行者。削除証明用 SEC要件②#31） */}
+          {/* 削除完了レポート（対象件数・データ種別・実行日時・実行者。削除証明用 SEC要件②#31）。
+              監査ログを情報源とする監査記録なので、CSV出力は①②のみ（発注者指示 2026-08-06）。 */}
           <SectionTitle
             right={
-              <a href="/admin/csv?type=erasure" className={btnOutline}>
-                削除完了レポートCSV出力
-              </a>
+              showAuditRecords ? (
+                <a href="/admin/csv?type=erasure" className={btnOutline}>
+                  削除完了レポートCSV出力
+                </a>
+              ) : undefined
             }
           >
             削除完了レポート（直近20件）
@@ -527,108 +537,119 @@ export default async function AdminPage({
         </>
       )}
 
-      {/* アクセスログ簡易ビューア（§3.3 / 要件1-6: ログイン日時・IP・User-Agent） */}
-      <SectionTitle
-        right={
-          !user.dummy ? (
-            <a href="/admin/csv?type=access" className={btnOutline}>
-              アクセスログCSV出力
-            </a>
-          ) : undefined
-        }
-      >
-        アクセスログ（直近100件）
-      </SectionTitle>
-      <Card className="mb-6">
-        {accessRows.length === 0 ? (
-          <EmptyState message="アクセスログはまだありません。" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px]">
-              <thead>
-                <tr>
-                  {/* 見出しは「アカウント」（アカウント一覧テーブルの「ログインID」列と
-                      DOM上で区別できるようにするため。CSVの列名は仕様どおり「ログインID」） */}
-                  <th className={thCls}>日時</th>
-                  <th className={thCls}>アカウント</th>
-                  <th className={thCls}>結果</th>
-                  <th className={thCls}>IP</th>
-                  <th className={thCls}>UserAgent</th>
-                  <th className={thCls}>理由</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accessRows.map((l) => (
-                  <tr key={l.id}>
-                    <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
-                    <td className={`${tdCls} font-mono text-xs`}>{l.loginId}</td>
-                    <td className={tdCls}>
-                      <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
-                    </td>
-                    <td className={`${tdCls} font-mono text-xs`}>{l.ip || "—"}</td>
-                    <td className={`${tdCls} max-w-[280px] truncate text-xs`} title={l.userAgent}>
-                      {l.userAgent || "—"}
-                    </td>
-                    <td className={`${tdCls} text-xs`}>{l.reason || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      {/* アクセスログ・監査ログの簡易ビューア（§3.3 / 要件1-6）。
+          §7.1「管理画面（①②のみ）」/ §7.2「①②のみ」に従い、③には表示しない
+          （発注者指示 2026-08-06「監査ログ全件・アクセスログ全件・棚卸CSVには到達不可」）。
+          ④のダミー表示（§3.5）は架空データのため従来どおり表示する。 */}
+      {(showAuditRecords || user.dummy) && (
+        <>
+          {/* アクセスログ簡易ビューア（§3.3 / 要件1-6: ログイン日時・IP・User-Agent） */}
+          <SectionTitle
+            right={
+              showAuditRecords ? (
+                <a href="/admin/csv?type=access" className={btnOutline}>
+                  アクセスログCSV出力
+                </a>
+              ) : undefined
+            }
+          >
+            アクセスログ（直近100件）
+          </SectionTitle>
+          <Card className="mb-6">
+            {accessRows.length === 0 ? (
+              <EmptyState message="アクセスログはまだありません。" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[820px]">
+                  <thead>
+                    <tr>
+                      {/* 見出しは「アカウント」（アカウント一覧テーブルの「ログインID」列と
+                        DOM上で区別できるようにするため。CSVの列名は仕様どおり「ログインID」） */}
+                      <th className={thCls}>日時</th>
+                      <th className={thCls}>アカウント</th>
+                      <th className={thCls}>結果</th>
+                      <th className={thCls}>IP</th>
+                      <th className={thCls}>UserAgent</th>
+                      <th className={thCls}>理由</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {accessRows.map((l) => (
+                      <tr key={l.id}>
+                        <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
+                        <td className={`${tdCls} font-mono text-xs`}>{l.loginId}</td>
+                        <td className={tdCls}>
+                          <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
+                        </td>
+                        <td className={`${tdCls} font-mono text-xs`}>{l.ip || "—"}</td>
+                        <td
+                          className={`${tdCls} max-w-[280px] truncate text-xs`}
+                          title={l.userAgent}
+                        >
+                          {l.userAgent || "—"}
+                        </td>
+                        <td className={`${tdCls} text-xs`}>{l.reason || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
 
-      {/* 監査ログ簡易ビューア */}
-      <SectionTitle
-        right={
-          !user.dummy ? (
-            <a href="/admin/csv?type=audit" className={btnOutline}>
-              監査ログCSV出力
-            </a>
-          ) : undefined
-        }
-      >
-        監査ログ（直近100件）
-      </SectionTitle>
-      <Card>
-        {auditRows.length === 0 ? (
-          <EmptyState message="監査ログはまだありません。" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px]">
-              <thead>
-                <tr>
-                  <th className={thCls}>日時</th>
-                  <th className={thCls}>actor</th>
-                  <th className={thCls}>action</th>
-                  <th className={thCls}>target</th>
-                  <th className={thCls}>result</th>
-                </tr>
-              </thead>
-              <tbody>
-                {auditRows.map((l) => (
-                  <tr key={l.id}>
-                    <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
-                    {/* ベンダー（サスラボ社保守）操作の区別（§10.1 / SEC要件①）:
-                        実行者がベンダー区分のアカウント、または target に vendor=true を含む場合に表示 */}
-                    <td className={`${tdCls} font-mono text-xs`}>
-                      {l.actor}
-                      {(vendorLoginIds.has(l.actor) || l.target.includes("vendor=true")) && (
-                        <span className="ml-1 font-sans text-amber-600">（ベンダー）</span>
-                      )}
-                    </td>
-                    <td className={`${tdCls} text-xs`}>{l.action}</td>
-                    <td className={`${tdCls} font-mono text-xs`}>{l.target || "—"}</td>
-                    <td className={tdCls}>
-                      <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+          {/* 監査ログ簡易ビューア */}
+          <SectionTitle
+            right={
+              showAuditRecords ? (
+                <a href="/admin/csv?type=audit" className={btnOutline}>
+                  監査ログCSV出力
+                </a>
+              ) : undefined
+            }
+          >
+            監査ログ（直近100件）
+          </SectionTitle>
+          <Card>
+            {auditRows.length === 0 ? (
+              <EmptyState message="監査ログはまだありません。" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[720px]">
+                  <thead>
+                    <tr>
+                      <th className={thCls}>日時</th>
+                      <th className={thCls}>actor</th>
+                      <th className={thCls}>action</th>
+                      <th className={thCls}>target</th>
+                      <th className={thCls}>result</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditRows.map((l) => (
+                      <tr key={l.id}>
+                        <td className={`${tdCls} text-xs whitespace-nowrap`}>{l.at}</td>
+                        {/* ベンダー（サスラボ社保守）操作の区別（§10.1 / SEC要件①）:
+                          実行者がベンダー区分のアカウント、または target に vendor=true を含む場合に表示 */}
+                        <td className={`${tdCls} font-mono text-xs`}>
+                          {l.actor}
+                          {(vendorLoginIds.has(l.actor) || l.target.includes("vendor=true")) && (
+                            <span className="ml-1 font-sans text-amber-600">（ベンダー）</span>
+                          )}
+                        </td>
+                        <td className={`${tdCls} text-xs`}>{l.action}</td>
+                        <td className={`${tdCls} font-mono text-xs`}>{l.target || "—"}</td>
+                        <td className={tdCls}>
+                          <Badge tone={l.result === "success" ? "green" : "red"}>{l.result}</Badge>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Card>
+        </>
+      )}
     </div>
   );
 }

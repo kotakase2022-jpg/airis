@@ -87,31 +87,47 @@ test("AUTHZ-1: 1次店を稼働終了にすると配下2次店の⑧が⑩に解
 });
 
 // ---------------------------------------------------------------------------
-// AUTHZ-2: §5.2「Airisアカウント管理」= ①②のみ / §7.2「①②のみ。④はダミー」
-// roles.ts の MENU は admin に R3 を含めており（src/lib/roles.ts:124）、
-// permissions.ts の airis-account.view にも R3 が入っている（:63）ため、
-// ③が全アカウント一覧・監査ログ・アクセスログ・棚卸CSVに到達できる。
+// AUTHZ-2: ③の管理画面アクセスは〇（発注者指示 2026-08-05 / OWN-014）だが、
+//          監査記録には到達不可（発注者指示 2026-08-06）。
+//          §7.1「管理画面（①②のみ）: 直近の監査イベント」/ §7.2「棚卸CSV、アクセスログCSV」
 // ---------------------------------------------------------------------------
-test("AUTHZ-2: ③が管理画面と管理CSV（監査ログ/アクセスログ/棚卸）に到達できる（§5.2 / §7.2）", async ({
+test("AUTHZ-2: ③は管理画面に入れるが、監査ログ/アクセスログ/棚卸CSVには到達できない（§7.1 / §7.2）", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   await login(page, "R3");
   await page.goto("/admin");
-  await expect(page).toHaveURL(/\/admin/); // §5.2 では ③=× のはず
+  await expect(page).toHaveURL(/\/admin/); // 発注者指示 OWN-014 により③は入れる
   await expect(
     page.getByRole("heading", { name: /管理画面|アカウント管理/ }).first()
   ).toBeVisible();
 
+  // 1) CSV出力の3種はいずれも403（API層）
+  for (const type of ["audit", "access", "inventory"]) {
+    const res = await page.request.get(`/admin/csv?type=${type}`, { maxRedirects: 0 });
+    const body = await res.text();
+    console.log(`[AUTHZ-2] R3 GET /admin/csv?type=${type} -> ${res.status()} len=${body.length}`);
+    expect(res.status(), `③が /admin/csv?type=${type} に到達できる`).toBe(403);
+  }
+
+  // 2) 画面にもログのセクション・CSV出力ボタンが出ない（UI層）
+  const bodyText = await page.locator("body").innerText();
+  expect(bodyText, "③にアクセスログのセクションが見えている").not.toContain("アクセスログ（直近");
+  expect(bodyText, "③に監査ログのセクションが見えている").not.toContain("監査ログ（直近");
+  const links = await page.locator('a[href^="/admin/csv"]').count();
+  console.log(`[AUTHZ-2] ③に見える /admin/csv リンク数: ${links}`);
+  expect(links, "③にCSV出力リンクが見えている").toBe(0);
+
+  // 3) ③に必要な業務（アカウント一覧の参照）は従来どおりできる
+  await expect(page.locator("tbody tr").first(), "③がアカウント一覧を見られない").toBeVisible();
+
+  // 4) 対照: ②は3種すべて取得できる（制限が③に限定されており過剰でないこと）
+  await login(page, "R2");
   for (const type of ["audit", "access", "inventory"]) {
     const res = await page.request.get(`/admin/csv?type=${type}`);
-    const body = await res.text();
-    console.log(
-      `[AUTHZ-2] GET /admin/csv?type=${type} -> ${res.status()} len=${body.length} head=${JSON.stringify(
-        body.slice(0, 60)
-      )}`
-    );
-    expect(res.status()).toBe(200);
-    expect(body.length).toBeGreaterThan(50);
+    console.log(`[AUTHZ-2] 対照 R2 GET /admin/csv?type=${type} -> ${res.status()}`);
+    expect(res.status(), `②が /admin/csv?type=${type} を取得できない`).toBe(200);
+    expect((await res.text()).length).toBeGreaterThan(50);
   }
 });
 

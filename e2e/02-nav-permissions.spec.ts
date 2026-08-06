@@ -281,9 +281,22 @@ test.describe("CSVルートのアクセス制御", () => {
     expect(body).toContain("airis_slb_sys_001");
   });
 
-  // ③は発注者指示（2026-08-05）で管理画面〇のため棚卸CSVも取得できる（§5.1「閲」にR3を追加）
-  test("R3: /admin/csv?type=inventory → 200（管理画面〇。実データのCSV）", async ({ page }) => {
+  // ③は管理画面には入れる（発注者指示 2026-08-05）が、監査記録（棚卸CSV・監査ログ・
+  // アクセスログ・削除完了レポート）には到達不可（発注者指示 2026-08-06 / §7.1・§7.2）。
+  test("R3: /admin/csv の全typeが403（監査記録は①②のみ。CSV本文が返らない）", async ({ page }) => {
     await login(page, "R3");
+    for (const type of ["inventory", "audit", "access", "erasure"]) {
+      const r = await page.request.get("/admin/csv?type=" + type, { maxRedirects: 0 });
+      expect(r.status(), `③が /admin/csv?type=${type} に到達できる`).toBe(403);
+      const body = await r.text();
+      expect(body, `type=${type} でCSV本文が返っている`).not.toContain("ログインID");
+      expect(body).not.toContain("airis_slb_sys_001");
+    }
+  });
+
+  // 対照: ②は従来どおり取得できる（制限が③に限定されており過剰でないこと）
+  test("R2: /admin/csv?type=inventory → 200（実データのCSV。制限は③のみ）", async ({ page }) => {
+    await login(page, "R2");
     const r = await page.request.get("/admin/csv?type=inventory", { maxRedirects: 0 });
     expect(r.status()).toBe(200);
     expect(r.headers()["content-type"] ?? "").toContain("csv");

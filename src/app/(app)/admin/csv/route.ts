@@ -2,8 +2,8 @@ import { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/auth";
 import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, Role, canAccess } from "@/lib/roles";
-import { can } from "@/lib/permissions";
 import { csvResponse, toCsv } from "@/lib/csv";
+import { canViewAuditRecords } from "../authz";
 import { audit, today } from "@/lib/util";
 import { isAdminIpAllowedFromSettings } from "@/lib/settings";
 import {
@@ -23,11 +23,17 @@ export async function GET(req: NextRequest) {
   const user = await getCurrentUser();
   if (!user) return new Response("Unauthorized", { status: 401 });
   if (user.mustChangePassword) return new Response("Forbidden", { status: 403 });
-  // §5.2 管理画面ページへのアクセス権（①②のみ・④はダミー）と
-  // §5.1 Airisアカウントの「閲」（①②）を宣言的マップで判定する（§3.2）。
+  // 管理画面CSV（棚卸 / 監査ログ / アクセスログ）は **①②のみ**（§7.1 / §7.2）。
+  // ③は管理画面に入れる（発注者指示 OWN-014）が、監査記録には到達させない
+  // （発注者指示 2026-08-06）。判定は canViewAuditRecords() に集約する（§3.2）。
   // ④はダミー表示のため実データのエクスポートを許可しない。
-  if (!canAccess(user.role, "admin") || !can(user.role, "airis-account", "view")) {
-    await audit(user.loginId, "csv_export", "admin", "denied");
+  if (!canAccess(user.role, "admin") || !canViewAuditRecords(user.role)) {
+    await audit(
+      user.loginId,
+      "csv_export",
+      `admin type=${req.nextUrl.searchParams.get("type") ?? "inventory"} role=${user.role}`,
+      "denied"
+    );
     return new Response("Forbidden", { status: 403 });
   }
   // 管理系エンドポイントのIP許可リスト（§10.1）。ページ（/admin）と同じ制御を必ず適用する。
