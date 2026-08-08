@@ -57,6 +57,78 @@ const MENU_ALL = [
   "ドキュメント",
 ] as const;
 
+/**
+ * そのロールで**実際にログインできるアカウント**を本番DBから決める。
+ *
+ * 経緯（QA loop5・発注者確認済み）:
+ *   本番は実運用に入っており、シード済みデモアカウントが業務操作で停止されることがある。
+ *   実測: `110001C001`（⑨）は 2026-08-07 11:10 JST に⑦`airis_1110001_003` が
+ *   **意図的に停止**（StatusHistory: sales_staff / suspend / registered→suspended）。
+ *   その結果このスモークが「ログイン後の遷移待ちタイムアウト」で落ちていたが、
+ *   原因はアプリではなく本番データの状態だった。
+ *
+ * 候補は **`prisma/seed.ts` が作るデモアカウントに限定**する。理由:
+ *   - `Account.role` で同ロールを検索すると、**運用者が承認して作った販売員アカウント**も
+ *     混ざる。それらのパスワードは発行時の一時パスワードで、この検証からは分からない。
+ *   - ⑩は実効ロール（稼働終了代理店の⑦）で、DB上の `role` は `"R7"`。
+ *     `role="R10"` で検索しても目的のアカウントは見つからない。
+ *   デモアカウントならロール別の既定パスワード（PW_ADMIN / PW_GENERAL）が分かっている。
+ *
+ * MFA未登録のアカウントを選ぶとこの検証がMFAを本登録してしまい、
+ * 発注者が配布したQR登録の運用を壊す。そのため**既にMFA登録済みを優先**する。
+ *
+ * 候補が1件も使えない場合は前提不成立として**明示的に失敗**させる（skip しない）。
+ */
+async function pickLoginId(role: string, candidates: string[]): Promise<string> {
+  const rows = await db().account.findMany({
+    where: {
+      loginId: { in: candidates },
+      status: "active",
+      mustChangePassword: false,
+      deletedAt: null,
+      anonymizedAt: null,
+    },
+    select: { loginId: true, mfaSecret: true },
+  });
+  const usable = candidates.filter((id) => rows.some((r) => r.loginId === id));
+  expect(
+    usable.length,
+    `${role}: ログイン可能なデモアカウントが本番に1件もありません（前提不成立）。` +
+      `候補=${candidates.join(", ")}`
+  ).toBeGreaterThan(0);
+
+  const preferred = candidates[0];
+  if (usable.includes(preferred)) return preferred;
+  const withMfa = usable.find((id) => rows.find((r) => r.loginId === id)?.mfaSecret);
+  const picked = withMfa ?? usable[0];
+  console.log(
+    `[prod-smoke] ${role}: 既定の ${preferred} が使用不可のため ${picked} で検証します` +
+      `（本番の業務操作で停止・削除された可能性。アプリの不具合ではありません）`
+  );
+  return picked;
+}
+
+/** 発注者指示 2026-08-05 で追加したMFAデモ用アカウント（②〜⑩ 各10件）を候補に加える */
+function demoCandidates(primary: string): string[] {
+  const seq = (prefix: string, pad: number, from: number, to: number) =>
+    Array.from(
+      { length: to - from + 1 },
+      (_, i) => `${prefix}${String(from + i).padStart(pad, "0")}`
+    );
+  const extra: Record<string, string[]> = {
+    airis_snc_adm_001: seq("airis_snc_adm_", 3, 2, 11),
+    airis_snc_ops_0001: seq("airis_snc_ops_", 4, 2, 11),
+    airis_snc_vew_001: seq("airis_snc_vew_", 3, 2, 11),
+    airis_snc_spt1_001: seq("airis_snc_spt1_", 3, 2, 11),
+    airis_snc_spt2_001: seq("airis_snc_spt2_", 3, 2, 11),
+    airis_1110001_001: seq("airis_1110001_", 3, 2, 11),
+    airis_2210001_001: seq("airis_2210001_", 3, 2, 11),
+    "110001C001": seq("110001C", 3, 101, 110),
+    airis_1190001_001: seq("airis_1190001_", 3, 2, 11),
+  };
+  return [primary, ...(extra[primary] ?? [])];
+}
+
 const CASES: {
   role: string;
   loginId: string;
@@ -190,11 +262,14 @@ for (const c of CASES) {
     const consoleErrors: string[] = [];
     page.on("pageerror", (e) => consoleErrors.push(String(e)));
 
+    // 固定IDではなく「使用可能なデモアカウント」で検証する（理由は pickLoginId 参照）
+    const loginId = await pickLoginId(c.role, demoCandidates(c.loginId));
+
     await page.goto("/login");
-    await page.locator('input[name="loginId"]').fill(c.loginId);
+    await page.locator('input[name="loginId"]').fill(loginId);
     await page.locator('input[name="password"]').fill(c.pw);
     await page.getByRole("button", { name: "ログイン" }).click();
-    await completeMfaIfNeeded(page, c.loginId); // §4.2 MFA（①〜⑧⑩は必須 / ⑨は任意）
+    await completeMfaIfNeeded(page, loginId); // §4.2 MFA（①〜⑧⑩は必須 / ⑨は任意）
     await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "ダッシュボード" })).toBeVisible();
 
