@@ -3,45 +3,18 @@
 // 読み取り＋UI表示の確認のみ。**本番データを書き換える操作は一切行わない**
 // （リセット・停止・削除などの実行はしない。ボタンが出ないことの確認に留める）。
 // 認証情報とMFA通過の手順は prod-smoke.spec.ts と同じ方式（秘密鍵は本番DBから読む）。
-import { test, expect, Page } from "@playwright/test";
-import { generateSync } from "otplib";
-import { PrismaClient } from "@prisma/client";
-import fs from "fs";
+// 接続・ログイン・MFA通過は e2e-prod/helpers.ts に集約する。
+// 以前ここに複製を持っていたため、prod-smoke 側だけMFA登録をやめる修正をした結果、
+// この複製が残って本番アカウント2件（②③）を新たに登録してしまった（QA loop5）。
+import { test, expect } from "@playwright/test";
+import { PW_ADMIN, db, disconnectDb, login } from "./helpers";
 
-const PW_ADMIN = "Airis-Demo-Admin-2026!x";
 const R1_LOGIN = "airis_slb_sys_001";
 const R3_LOGIN = "airis_snc_ops_0001";
 
-let _db: PrismaClient | null = null;
-function db(): PrismaClient {
-  if (!_db) {
-    // 本番の接続情報は .env.deploy から読む（prod-smoke.spec.ts と同じ方針。BUG-OPS01 の再発防止）
-    const raw = fs.readFileSync(".env.deploy", "utf8");
-    const m = raw.match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m);
-    if (!m)
-      throw new Error(".env.deploy に DATABASE_URL_UNPOOLED がありません（本番接続情報の置き場）");
-    _db = new PrismaClient({ datasourceUrl: m[1] });
-  }
-  return _db;
-}
-
 test.afterAll(async () => {
-  await _db?.$disconnect();
+  await disconnectDb();
 });
-
-async function login(page: Page, loginId: string, pw: string) {
-  await page.goto("/login");
-  await page.locator('input[name="loginId"]').fill(loginId);
-  await page.locator('input[name="password"]').fill(pw);
-  await page.getByRole("button", { name: "ログイン" }).click();
-  await page.waitForURL(/\/(dashboard|password|mfa)/, { timeout: 30_000 });
-  if (!page.url().includes("/mfa")) return;
-  const acc = await db().account.findUnique({ where: { loginId } });
-  expect(acc?.mfaSecret, `${loginId}: 秘密鍵が発行済みであること`).toBeTruthy();
-  await page.locator('input[name="code"]').fill(generateSync({ secret: acc!.mfaSecret! }));
-  await page.getByRole("button", { name: /登録して続行|認証する/ }).click();
-  await page.waitForURL(/\/(dashboard|password)/, { timeout: 30_000 });
-}
 
 test("本番: ③は①アカウントのリセットボタンが見えない（critical BUG-L01 の是正確認）", async ({
   page,

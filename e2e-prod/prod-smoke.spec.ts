@@ -1,46 +1,17 @@
-import { test, expect, Page } from "@playwright/test";
-import { generateSync } from "otplib";
-import { PrismaClient } from "@prisma/client";
-import fs from "fs";
+import { test, expect } from "@playwright/test";
+import { PW_ADMIN, PW_GENERAL, db, disconnectDb, passMfaOrFail } from "./helpers";
 
 // 本番スモーク: 全10ロールのログイン + サイドメニュー構成（§11.1 / §5.2）+ ダッシュボード表示
-// 業務データは変更しない（MFAの登録状態のみ、実際の登録フローを通じて更新される）。
+//
+// **本番のデータを一切変更しない**（ログインに伴うセッション作成・アクセスログ記録を除く）。
+// 特に **MFAの登録は行わない**。以前は未登録アカウントに対して初回登録を完了させており、
+// 利用者が知らない秘密鍵でMFAが本登録されて本人がログインできなくなる事故を起こした
+// （QA loop5。詳細は e2e-prod/helpers.ts の passMfaOrFail を参照）。
 // スクリーンショットを証拠として保存。
 
-const PW_ADMIN = "Airis-Demo-Admin-2026!x";
-const PW_GENERAL = "Airis-Demo-2026!";
-
-// MFA（§4.2）: 秘密鍵は本番が発行したものをDBから読み、コードを生成して実フローを通す
-// （既知の鍵を本番へ書き込まない）。
-let _db: PrismaClient | null = null;
-function db(): PrismaClient {
-  if (!_db) {
-    // 本番の接続情報は .env.deploy から読む（Next.js が読み込まないファイル）。
-    // .env.local に本番URLを置くと Next.js がそれを優先し、ローカルの
-    // `npm run dev` / `npm run seed` / 日次バッチが本番DBへ書き込む（BUG-OPS01 の再発防止）。
-    const raw = fs.readFileSync(".env.deploy", "utf8");
-    const m = raw.match(/^DATABASE_URL_UNPOOLED="?([^"\r\n]+)/m);
-    if (!m)
-      throw new Error(".env.deploy に DATABASE_URL_UNPOOLED がありません（本番接続情報の置き場）");
-    _db = new PrismaClient({ datasourceUrl: m[1] });
-  }
-  return _db;
-}
-
 test.afterAll(async () => {
-  await _db?.$disconnect();
+  await disconnectDb();
 });
-
-// ログイン後にMFA画面（登録 or 検証）が出たら通過する。⑨未登録などMFA無しならそのまま返る。
-async function completeMfaIfNeeded(page: Page, loginId: string) {
-  await page.waitForURL(/\/(dashboard|password|mfa)/, { timeout: 30_000 });
-  if (!page.url().includes("/mfa")) return;
-  const acc = await db().account.findUnique({ where: { loginId } });
-  expect(acc?.mfaSecret, `${loginId}: 秘密鍵が発行済みであること`).toBeTruthy();
-  await page.locator('input[name="code"]').fill(generateSync({ secret: acc!.mfaSecret! }));
-  await page.getByRole("button", { name: /登録して続行|認証する/ }).click();
-  await page.waitForURL(/\/(dashboard|password)/, { timeout: 30_000 });
-}
 
 const MENU_ALL = [
   "ダッシュボード",
@@ -74,8 +45,9 @@ const MENU_ALL = [
  *     `role="R10"` で検索しても目的のアカウントは見つからない。
  *   デモアカウントならロール別の既定パスワード（PW_ADMIN / PW_GENERAL）が分かっている。
  *
- * MFA未登録のアカウントを選ぶとこの検証がMFAを本登録してしまい、
- * 発注者が配布したQR登録の運用を壊す。そのため**既にMFA登録済みを優先**する。
+ * この検証は**本番のMFA登録状態を変更しない**（passMfaOrFail（e2e-prod/helpers.ts） 参照）。
+ * MFA未登録のアカウントを選ぶと検証できずに失敗するため、**MFA登録済みを優先**して選ぶ。
+ * ⑨はMFA任意なので未登録でもそのままログインできる。
  *
  * 候補が1件も使えない場合は前提不成立として**明示的に失敗**させる（skip しない）。
  */
@@ -88,7 +60,7 @@ async function pickLoginId(role: string, candidates: string[]): Promise<string> 
       deletedAt: null,
       anonymizedAt: null,
     },
-    select: { loginId: true, mfaSecret: true },
+    select: { loginId: true, mfaEnabled: true },
   });
   const usable = candidates.filter((id) => rows.some((r) => r.loginId === id));
   expect(
@@ -97,13 +69,23 @@ async function pickLoginId(role: string, candidates: string[]): Promise<string> 
       `候補=${candidates.join(", ")}`
   ).toBeGreaterThan(0);
 
+  // MFA登録済みを最優先（未登録だと /mfa/setup に落ちて検証できない）。
+  // 既定アカウントが登録済みならそれを使う。
+  const enrolled = usable.filter((id) => rows.find((r) => r.loginId === id)?.mfaEnabled);
   const preferred = candidates[0];
-  if (usable.includes(preferred)) return preferred;
-  const withMfa = usable.find((id) => rows.find((r) => r.loginId === id)?.mfaSecret);
-  const picked = withMfa ?? usable[0];
+  if (enrolled.includes(preferred)) return preferred;
+  if (enrolled.length > 0) {
+    console.log(
+      `[prod-smoke] ${role}: 既定の ${preferred} は使用不可またはMFA未登録のため ${enrolled[0]} で検証します`
+    );
+    return enrolled[0];
+  }
+  // MFA登録済みが1件も無い場合。⑨（MFA任意）はこのままログインできるので続行する。
+  // ①〜⑧⑩は passMfaOrFail（e2e-prod/helpers.ts） が前提不成立として明示的に失敗させる。
+  const picked = usable.includes(preferred) ? preferred : usable[0];
   console.log(
-    `[prod-smoke] ${role}: 既定の ${preferred} が使用不可のため ${picked} で検証します` +
-      `（本番の業務操作で停止・削除された可能性。アプリの不具合ではありません）`
+    `[prod-smoke] ${role}: MFA登録済みのデモアカウントがありません（${picked} で試行）。` +
+      `MFA必須ロールでは前提不成立として失敗します（本番のMFA状態は変更しません）`
   );
   return picked;
 }
@@ -269,7 +251,7 @@ for (const c of CASES) {
     await page.locator('input[name="loginId"]').fill(loginId);
     await page.locator('input[name="password"]').fill(c.pw);
     await page.getByRole("button", { name: "ログイン" }).click();
-    await completeMfaIfNeeded(page, loginId); // §4.2 MFA（①〜⑧⑩は必須 / ⑨は任意）
+    await passMfaOrFail(page, loginId); // §4.2 MFA（①〜⑧⑩は必須 / ⑨は任意）
     await page.waitForURL(/\/dashboard/, { timeout: 30_000 });
     await expect(page.getByRole("heading", { name: "ダッシュボード" })).toBeVisible();
 
