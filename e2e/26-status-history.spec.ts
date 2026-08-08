@@ -4,8 +4,10 @@
 // 検証方針:
 //   - 実ブラウザで実際に画面操作 → 実DBの StatusHistory を直接読み、行が存在することを確認する
 //     （コードを読んでPASSにしない。監査要件なので「記録された事実」を証拠にする）
-//   - 対象は StatusHistory.entityType の6種のうち、案件（case）・提出物（submission）以外の4種:
-//     account / account_request / sales_staff / field_agent
+//   - 対象は StatusHistory.entityType の6種のうち、案件（case）以外の5種:
+//     account / account_request / sales_staff / field_agent / submission
+//     ※ submission は長く記録経路が無く（宣言だけで1行も記録されていなかった）、
+//       このコメントも「対象外」と書いて追認していた。QA loop5 / 監査計画 C6 で是正し検証対象に加えた。
 //   - 破壊的操作を伴うため、対象は各テストが自分で作った使い捨てデータのみ（BUG-Q11 の再発防止）
 import { test, expect } from "@playwright/test";
 import { login, db, fieldAgentScope } from "./helpers";
@@ -273,5 +275,98 @@ test("account: 停止・再開が StatusHistory に記録される（§4.1）", 
       await db().account.deleteMany({ where: { id: acctId } });
     }
     await db().auditLog.deleteMany({ where: { target: { contains: LOGIN_ID } } });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 5. 稼働提出物（submission）: 提出 → 1次承認 → 最終承認 / 差戻し / 削除
+//
+// 監査計画 C6 の是正確認。`submission` は STATUS_ENTITY_TYPES に宣言され
+// schema.prisma も「本テーブルを正の追跡元とする」と書いていたのに、
+// reports/actions.ts が @/lib/status を import すらしておらず**1行も記録されていなかった**。
+// ---------------------------------------------------------------------------
+test("submission: 提出〜承認・差戻し・削除が StatusHistory に記録される（§4.1 / C6）", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const MEMO = `${TAG}sub_${Date.now().toString(36).slice(-5)}`;
+  const MONTH = "2026-03";
+  // 提出種別は src/lib/roles.ts の SUBMISSION_KINDS の実在値を使う
+  // （存在しない値だと selectOption がタイムアウトする）
+  const KIND = "【アライアンス申請書】";
+
+  const submitted: string[] = [];
+  try {
+    // --- ⑧（2次店）が提出 → 1次店確認中（pending_first）
+    await login(page, "R8");
+    await page.goto("/reports?tab=submissions");
+    const form = page.locator("form").filter({ has: page.locator('input[name="memo"]') });
+    await form.locator('select[name="kind"]').selectOption(KIND);
+    await form.locator('input[name="targetMonth"]').fill(MONTH);
+    await form.locator('input[name="file"]').setInputFiles({
+      name: `${MEMO}.xlsx`,
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      buffer: Buffer.from(`QA26 dummy payload ${MEMO}`),
+    });
+    await form.locator('input[name="memo"]').fill(MEMO);
+    await form.getByRole("button", { name: "提出する" }).click();
+    await expect(page.getByText(`「${KIND}」（${MONTH}）を提出しました`)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const sub = await db().submission.findFirst({ where: { memo: MEMO } });
+    expect(sub, "提出物が作成されていない").not.toBeNull();
+    submitted.push(sub!.id);
+
+    // 新規提出が requested として記録されること（ここが従来0件だった）
+    expect(
+      await events("submission", sub!.id),
+      "新規提出が StatusHistory に記録されていない（C6 未是正）"
+    ).toContain("requested");
+
+    const first = (await historyRows("submission", sub!.id))[0];
+    expect(first.toStatus, "遷移先ステータスが記録されていない").toBe(sub!.status);
+    expect(first.changedBy, "実行者が記録されていない").toBeTruthy();
+
+    // --- ⑦（1次店）が1次承認 → SNC確認中
+    await login(page, "R7");
+    await page.goto("/reports?tab=submissions");
+    const row = page.locator("tr", { hasText: MEMO }).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.getByRole("button", { name: "1次承認" }).click();
+    // 画面全体の文言で待つと他行の「SNC確認中」と衝突するため、対象行のみを見る
+    await expect(page.locator("tr", { hasText: MEMO }).first()).toContainText("SNC確認中", {
+      timeout: 15_000,
+    });
+
+    expect(await events("submission", sub!.id)).toContain("approve_first");
+
+    // --- ②（SNC）が最終承認
+    await login(page, "R2");
+    await page.goto("/reports?tab=submissions");
+    const row2 = page.locator("tr", { hasText: MEMO }).first();
+    await expect(row2).toBeVisible({ timeout: 15_000 });
+    await row2.getByRole("button", { name: "最終承認" }).click();
+    await expect(page.locator("tr", { hasText: MEMO }).first()).toContainText("承認済", {
+      timeout: 15_000,
+    });
+
+    const evts = await events("submission", sub!.id);
+    expect(evts).toContain("final_approve");
+    // 遷移の順序が保たれること（監査の追跡元として使えること）
+    expect(evts.indexOf("requested")).toBeLessThan(evts.indexOf("approve_first"));
+    expect(evts.indexOf("approve_first")).toBeLessThan(evts.indexOf("final_approve"));
+
+    // 最終承認の行に from/to が入っていること
+    const rows = await historyRows("submission", sub!.id);
+    const fin = rows.find((r) => r.event === "final_approve")!;
+    expect(fin.fromStatus).toBe("pending_snc");
+    expect(fin.toStatus).toBe("approved");
+  } finally {
+    for (const id of submitted) {
+      await db().statusHistory.deleteMany({ where: { entityType: "submission", entityId: id } });
+      await db().submission.deleteMany({ where: { id } });
+    }
+    await db().submission.deleteMany({ where: { memo: MEMO } });
   }
 });

@@ -66,7 +66,10 @@ npm run test:e2e         # Playwright（別ターミナルで port3100 のサー
 # その他
 npm run migrate:status   # マイグレーション適用状況
 npm run migrate:deploy   # 本番へマイグレーション適用
-npm run rls              # RLSポリシー適用（Neonは RLS_DATABASE_URL=<非プールURL>）
+npm run rls              # RLSポリシー適用
+#   本番へ適用するときは APP_DB_PASSWORD が必須（未指定だと airis_app のパスワードが
+#   リポジトリ既知の開発既定値 airis_app_test で上書きされる。apply-rls.ts が中断させる）:
+#   ALLOW_REMOTE_DB=1 RLS_DATABASE_URL=<非プールURL> APP_DB_PASSWORD=<本番値> npm run rls
 ```
 
 E2E用サーバーの起動（ローカルDB + RLS有効）:

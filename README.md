@@ -73,7 +73,8 @@ npm run dev
 - セッション変数 `app.bypass`（SNC系ロール）/ `app.scope`（代理店IDリスト）を、Prisma拡張（`src/lib/prisma.ts`）がクエリ毎に `set_config + クエリ` のトランザクションで注入する
 - コンテキストが無い接続からは保護テーブルは**0件（既定拒否）**
 - 本番はBYPASSRLSを持たない専用ロール **airis_app** で接続（`APP_DATABASE_URL`）。マイグレーション/シードはオーナー接続（`DATABASE_URL`）のまま
-- ポリシー適用: `npm run rls`（Neonへは `RLS_DATABASE_URL=<非プールURL> npm run rls`）
+- ポリシー適用: `npm run rls`（Neonへは `ALLOW_REMOTE_DB=1 RLS_DATABASE_URL=<非プールURL> APP_DB_PASSWORD=<本番値> npm run rls`）
+  - **本番では `APP_DB_PASSWORD` が必須**。未指定だと `airis_app` のパスワードがリポジトリ既知の開発既定値で上書きされる（ガードが中断させる）
 - 注意: RLS拡張の都合で `prisma.$transaction` は使用しない（逐次実行にする）
 
 ## 日次バッチ（Vercel Cron）

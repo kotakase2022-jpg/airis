@@ -576,10 +576,22 @@ export async function deleteStaffAction(
       },
     });
     if (staff.accountId) {
+      // 販売員IDに紐づくログインアカウント（⑨）も**削除済**にする。
+      //
+      // 以前は `status: "suspended"` だけで `deletedAt` を打っていなかった。
+      // 日次の匿名化バッチ（src/app/api/cron/daily/route.ts）の対象条件は
+      // `status="deleted" AND deletedAt < 1年前 AND anonymizedAt IS NULL` なので、
+      // suspended のままだと **アカウントの氏名・メールが永久に匿名化されない**（§3.4 違反）。
+      // このアカウントの name / email は販売員の姓名・メールから生成されるため、
+      // 実在の個人情報がそのまま残り続けていた（QA loop5 / 監査計画 C5）。
+      // テナント一括削除（src/lib/erasure.ts）は同じ対象を deleted + deletedAt にしており、
+      // 2経路で扱いが矛盾していた。こちらを合わせる。
       await prisma.account.update({
         where: { id: staff.accountId },
-        data: { status: "suspended" },
+        data: { status: "deleted", deletedAt: new Date() },
       });
+      // 削除済みアカウントでの操作を続けさせない（停止・削除と同じ扱い）
+      await prisma.session.deleteMany({ where: { accountId: staff.accountId } });
     }
   } catch {
     await audit(user.loginId, "sales_staff_delete", staff.id, "failure");
@@ -624,6 +636,16 @@ export async function restoreStaffAction(
         history: pushHistory(staff.history, "restore", user.loginId) as never,
       },
     });
+    if (staff.accountId) {
+      // 削除時にアカウントも deleted + deletedAt にしているので、復旧も対称に戻す。
+      // 戻し先が「停止中」なのは販売員側と揃えるため（復旧＝即ログイン可ではない §3.4 / 要件1-5）。
+      // 匿名化済み（anonymizedAt あり）のアカウントは個人情報が失われており復旧しても運用できないため、
+      // ステータスだけを戻して個人情報は復元しない（匿名化は不可逆 §3.4）。
+      await prisma.account.update({
+        where: { id: staff.accountId },
+        data: { status: "suspended", deletedAt: null },
+      });
+    }
   } catch {
     await audit(user.loginId, "sales_staff_restore", staff.id, "failure");
     return rowFail("復旧処理に失敗しました。時間をおいて再度お試しください");

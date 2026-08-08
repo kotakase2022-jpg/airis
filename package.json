@@ -11,7 +11,7 @@
     "seed": "node scripts/assert-local-db.cjs && tsx prisma/seed.ts",
     "rls": "node scripts/assert-local-db.cjs && tsx scripts/apply-rls.ts",
     "test:unit": "vitest run",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/assert-local-db.cjs && playwright test",
     "test:e2e:prod": "playwright test --config playwright.prod.config.ts",
     "test:e2e:proxy": "node scripts/test-e2e-proxy.cjs",
     "migrate": "node scripts/assert-local-db.cjs && prisma migrate dev",

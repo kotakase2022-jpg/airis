@@ -451,7 +451,14 @@ test("削除→deleted+deletedAt設定（論理削除・Account停止）→復�
   let staff = await d.salesStaff.findFirst({ where: { lastName } });
   expect(staff!.status).toBe("deleted");
   expect(staff!.deletedAt).not.toBeNull(); // 論理削除（物理削除しない）
-  expect((await d.account.findUnique({ where: { loginId } }))!.status).toBe("suspended");
+  // 紐づくログインアカウント（⑨）も**削除済 + deletedAt** になること。
+  // 以前この行は `toBe("suspended")` で、deletedAt を打たない誤った実装を仕様として固定していた。
+  // suspended のままだと日次の匿名化バッチ（status="deleted" AND deletedAt < 1年前）に
+  // 到達せず、販売員の姓名・メールから生成されたアカウントの個人情報が永久に残る（§3.4 違反）。
+  // テナント一括削除（src/lib/erasure.ts）は同じ対象を deleted にしており、2経路で矛盾していた。
+  const accAfterDelete = (await d.account.findUnique({ where: { loginId } }))!;
+  expect(accAfterDelete.status, "紐づくアカウントが削除済になっていない").toBe("deleted");
+  expect(accAfterDelete.deletedAt, "deletedAt が無いと匿名化バッチの対象にならない").not.toBeNull();
   expect(JSON.stringify(staff!.history)).toContain("delete");
 
   // 復旧（deleted → 復旧後は削除済でなくなり deletedAt が解除される）
@@ -461,6 +468,11 @@ test("削除→deleted+deletedAt設定（論理削除・Account停止）→復�
   expect(staff!.status).not.toBe("deleted");
   expect(staff!.deletedAt).toBeNull();
   expect(JSON.stringify(staff!.history)).toContain("restore");
+  // アカウント側も対称に戻ること（削除で deleted にした以上、復旧で解除しないと
+  // 「復旧したのに1年後に匿名化される」という取り残しになる）
+  const accAfterRestore = (await d.account.findUnique({ where: { loginId } }))!;
+  expect(accAfterRestore.status, "復旧後もアカウントが削除済のまま").toBe("suspended");
+  expect(accAfterRestore.deletedAt, "復旧後も deletedAt が残っている").toBeNull();
 });
 
 // =====================================================================

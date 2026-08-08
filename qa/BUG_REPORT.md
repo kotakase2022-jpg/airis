@@ -670,3 +670,94 @@ CIの seed ステップにこの指定が無かったため、全シードアカ
   **前提不成立として失敗**する（登録しない）。13 passed / 6 failed（すべて前提不成立）。
 - **未対応（発注者作業）**: 二次事故で登録された ②`airis_snc_adm_001` /
   ③`airis_snc_ops_0001` は秘密鍵がDBにしか無いため、**管理画面からMFAリセットが必要**。
+
+## BUG-L21（重大）: 本番へのRLS適用でアプリロールのパスワードがリポジトリ既知の値に上書きされる（C3）
+
+- **要求**: §10.3（シークレットをコードに含めない）/ §3.1 / docs/OPERATIONS.md §5
+- **症状**: `prisma/rls.sql` の DO ブロックは、`airis_app` ロールが既に存在する場合に
+  `ALTER ROLE airis_app LOGIN PASSWORD %L` を**無条件で実行**する。
+  `scripts/apply-rls.ts` は `APP_DB_PASSWORD` 未指定時に開発既定 `airis_app_test`
+  （**リポジトリに書かれている値**）を使う。
+  本番の `airis_app` は既に存在するため、本番へ `npm run rls` を打つと必ず上書きが走る。
+- **文書側の欠落（これが実害の入口）**: `rls.sql` と `apply-rls.ts` は
+  「**本番では必ず `APP_DB_PASSWORD` を指定すること**」と書いているのに、
+  `docs/OPERATIONS.md` / `README.md` / `AGENTS.md` を `APP_DB_PASSWORD` で検索して**全て0件**。
+  手順書どおりに `RLS_DATABASE_URL=<非プールURL> npm run rls` を実行すると必ず事故る状態だった。
+- **帰結**: 本番アプリロールのパスワードが公開値になる（§10.3 違反）うえ、
+  Vercel の `APP_DATABASE_URL` と食い違って**アプリがDBへ接続できなくなる**（全機能停止）。
+- **対処**:
+  1. `scripts/apply-rls.ts` に `assertAppPasswordForRemote()` を追加。
+     接続先が非ローカル かつ `APP_DB_PASSWORD` が未指定/空なら**実行前に中断**する（fail-closed）。
+  2. 判定は `scripts/db-target.cjs`（新設）に集約し、`assert-local-db.cjs` と共有する。
+  3. `docs/OPERATIONS.md` の手順3・所在表・PowerShell版、`README.md`、`AGENTS.md` に
+     `APP_DB_PASSWORD` を明記（`APP_DB_PASSWORD` は**Vercelに置かない**実行者が手で渡す秘密）。
+- **検証**: `tests/unit/db-guards.test.ts`（16件）でローカル通過・リモート中断・空文字も中断・
+  指定済みなら通過を確認。CI はローカルホストのため影響しない（E2E 433件で回帰確認）。
+
+## BUG-L22（重大）: 破壊的作業のガードが env ファイル経由の本番接続を素通しする（C4）
+
+- **要求**: §10.5（環境分離）/ qa/BUG_REPORT.md BUG-OPS01 の再発防止
+- **症状**: `scripts/assert-local-db.cjs` は `process.env` **しか見ていなかった**。
+  Prisma も Next.js も `.env` / `.env.local` を読むため、
+  **`.env` に本番URLを書けば `seed` / `migrate` / `rls` はガードを黙って通過して本番へ書き込む**。
+  さらに回帰テストが「接続先が未設定なら通過する」としてこの fail-open を仕様に固定していた
+  （その"未設定"はファイル由来の値を見ていないだけだった）。
+- **加えて**: ガードは4スクリプトにしか掛かっておらず、**`npm run test:e2e` には未適用**だった。
+  `e2e/global-setup.ts` は `QA_DATABASE_URL ?? localhost` で接続し全シードIDに
+  既知のTOTP秘密鍵を**書き込む**（本番に向いたら重大）。
+- **対処**:
+  1. `scripts/db-target.cjs` が `.env.local` → `.env` を自力パースし、
+     **ファイル由来の値も同じ判定に掛ける**（優先順は process.env > .env.local > .env）。
+  2. 検査キーに `QA_DATABASE_URL` を追加。
+  3. `package.json` の `test:e2e` にもガードを追加。
+- **検証**: `tests/unit/db-guards.test.ts` が一時ディレクトリに本番URLの `.env` を置き、
+  環境変数を空にしてガードを**実際に起動**して非ゼロ終了を確認（旧実装では必ず通過していた）。
+  開発者のローカル `.env`（localhost）を誤検出しないことも確認。
+
+## BUG-L23（重大）: 販売員ID削除で紐づくアカウントが匿名化バッチに到達しない（C5）
+
+- **要求**: §3.4（要件1-4, 2-3, 3-3 削除後1年で個人情報カラムを匿名化）/ §10.3
+- **症状**: `src/app/(app)/sales-staff/actions.ts` の削除は、販売員を `deleted` + `deletedAt`
+  にする一方、**紐づくログインアカウント（⑨）は `status:"suspended"` のみ**で `deletedAt` を
+  打っていなかった。日次バッチの対象条件は
+  `status="deleted" AND deletedAt < 1年前 AND anonymizedAt IS NULL` なので、
+  **アカウントの氏名・メールが永久に匿名化されない**。
+  このアカウントの `name` / `email` は販売員の姓名・メールから生成されるため、
+  実在の個人情報がそのまま残り続けていた。
+  同じ対象をテナント一括削除（`src/lib/erasure.ts`）は `deleted` + `deletedAt` にしており、
+  **2経路で扱いが矛盾**していた。
+- **誤った期待値の固定**: `e2e/05-sales-staff.spec.ts` が
+  `expect(account.status).toBe("suspended")` でこの誤りを**仕様として回帰テスト化**していた。
+- **対処**: 削除時に `{ status: "deleted", deletedAt: new Date() }` にし、セッションも破棄。
+  復旧時は `{ status: "suspended", deletedAt: null }` に戻す（片道にしない）。
+  E2Eの期待値を §3.4 に合わせて更新し、復旧後の対称性も検証に追加した。
+- **再発防止**: `tests/unit/soft-delete-consistency.test.ts`（6件）。
+  `status:"deleted"` を書く箇所に `deletedAt` が伴うことを静的検査する。
+  対象モデルは**許可リストではなく schema.prisma の `deletedAt` 列の有無から導出**する
+  （列を持たない `Announcement` は保持期間の管理外なので対象にしない）。
+
+## BUG-L24（重大）: 稼働提出物の状態遷移が StatusHistory に1行も記録されない（C6）
+
+- **要求**: §4.1「状態遷移はサーバ側で厳密に制御し、遷移イベントを履歴テーブルに記録」/ §6.4 / §7.6
+- **症状**: `submission` は `src/lib/status.ts` の `STATUS_ENTITY_TYPES` に宣言され、
+  `prisma/schema.prisma` も StatusHistory を「本テーブルを正の追跡元とする」と書いているのに、
+  `src/app/(app)/reports/actions.ts` は **`@/lib/status` を import すらしておらず**、
+  7つの遷移（新規提出・再提出・差し替え・1次承認・最終承認・差戻し・削除）が
+  1行も記録されていなかった。JSON列 `history` と監査ログにしか残らず、他4エンティティと
+  追跡方法が食い違っていた。
+- **文書・判定も揃って誤っていた**:
+  - `qa/REQUIREMENTS_TRACEABILITY.csv` の R-022 が「case / submission は既存」として **PASS**
+  - `e2e/26-status-history.spec.ts` が冒頭コメントで自ら「submission は対象外」と宣言
+
+  宣言・文書・判定・テストの4つが揃って実態と食い違っていた。
+- **対処**: `reports/actions.ts` に他4エンティティと同形の `track()`（`entityType:"submission"`）を
+  追加し7箇所へ挿入。JSON履歴の `submitted` / `resubmit` は `STATUS_EVENTS` に無いため
+  `requested` / `update` へ正規化。物理削除は**削除前**に記録する。
+  R-022 の判定根拠を訂正（虚偽 PASS だった旨を明記）。
+- **検証**: `e2e/26-status-history.spec.ts` に実機テストを追加し、
+  ⑧提出 → ⑦1次承認 → ②最終承認 を実ブラウザで操作して実DBを読み、
+  `requested → approve_first → final_approve` が**順序どおり**記録され、
+  最終承認行の `fromStatus=pending_snc` / `toStatus=approved` / `changedBy` が入ることを確認。
+- **再発防止**: `tests/unit/status-history-coverage.test.ts`（5件）。
+  `STATUS_ENTITY_TYPES` の全種別に記録経路が存在すること、提出物は7箇所以上、
+  使用イベント名が `STATUS_EVENTS` の値であることを機械検証する。

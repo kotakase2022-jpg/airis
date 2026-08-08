@@ -12,6 +12,40 @@ import { parseCsv } from "@/lib/csv";
 import { can } from "@/lib/permissions";
 import { SNC_ADMIN_ROLES, SUBMISSION_KINDS, SUBMISSION_STATUS_LABELS } from "@/lib/roles";
 import { isCalendarDate } from "@/lib/date-input";
+import { recordStatusHistory, type StatusEvent } from "@/lib/status";
+
+/**
+ * 稼働提出物の状態遷移を StatusHistory（§4.1「遷移イベントを履歴テーブルに記録」）へ記録する。
+ *
+ * 経緯（QA loop5 / 監査計画 C6）:
+ *   `submission` は `src/lib/status.ts` の `STATUS_ENTITY_TYPES` に宣言され、
+ *   `schema.prisma` も StatusHistory を「正の追跡元とする」と書いているのに、
+ *   このファイルは `@/lib/status` を **import すらしておらず**、7つの遷移
+ *   （新規提出・再提出・差し替え・1次承認・最終承認・差戻し・削除）が1行も記録されていなかった。
+ *   JSON列 `history` と監査ログにしか残らず、他4エンティティと追跡方法が食い違っていた。
+ *
+ * JSON履歴の `submitted` / `resubmit` は `STATUS_EVENTS` に無いため、
+ * 遷移イベントとしては `requested`（新規提出）/ `update`（再提出・差し替え）に正規化する。
+ * 他機能（sales-staff / admin / field-agents）と同じ形。
+ */
+function track(
+  entityId: string,
+  event: StatusEvent,
+  fromStatus: string | null,
+  toStatus: string | null,
+  changedBy: string,
+  reason?: string | null
+) {
+  return recordStatusHistory({
+    entityType: "submission",
+    entityId,
+    event,
+    fromStatus,
+    toStatus,
+    reason,
+    changedBy,
+  });
+}
 import {
   VISIT_CSV_HEADERS,
   TELE_CSV_HEADERS,
@@ -557,6 +591,14 @@ export async function createSubmission(
         history: pushHistory(duplicate.history, "resubmit", user.loginId) as never,
       },
     });
+    await track(
+      duplicate.id,
+      "update",
+      duplicate.status,
+      status,
+      user.loginId,
+      "再提出による上書き"
+    );
     await audit(
       user.loginId,
       "submission_update",
@@ -590,6 +632,7 @@ export async function createSubmission(
     },
   });
 
+  await track(sub.id, "requested", null, status, user.loginId);
   await audit(user.loginId, "submission_create", `${kind} ${targetMonth} (${sub.id})`);
   await notifySubmissionRouted(
     status,
@@ -656,6 +699,7 @@ export async function updateSubmissionAction(
     },
   });
 
+  await track(sub.id, "update", sub.status, status, user.loginId, "ファイル差し替え");
   await audit(
     user.loginId,
     "submission_update",
@@ -696,6 +740,7 @@ export async function approveSubmissionFirst(formData: FormData): Promise<void> 
       history: pushHistory(sub.history, "approve_first", user.loginId) as never,
     },
   });
+  await track(id, "approve_first", sub.status, "pending_snc", user.loginId);
   await audit(user.loginId, "submission_approve_first", id);
   await notifyRole(
     ["R3"],
@@ -720,6 +765,7 @@ export async function approveSubmissionFinal(formData: FormData): Promise<void> 
       history: pushHistory(sub.history, "final_approve", user.loginId) as never,
     },
   });
+  await track(id, "final_approve", sub.status, "approved", user.loginId);
   await audit(user.loginId, "submission_final_approve", id);
   await notifyAgencyAccounts(
     sub.submitterAgencyId,
@@ -766,6 +812,7 @@ export async function rejectSubmission(formData: FormData): Promise<void> {
       history: pushHistory(sub.history, "reject", user.loginId) as never,
     },
   });
+  await track(id, "reject", sub.status, "rejected", user.loginId, reason);
   await audit(user.loginId, "submission_reject", `${id} (${reason})`);
   await notifyAgencyAccounts(
     sub.submitterAgencyId,
@@ -793,6 +840,9 @@ export async function deleteSubmission(formData: FormData): Promise<void> {
     await audit(user.loginId, "submission_delete", id, "denied");
     return;
   }
+  // 物理削除なので**削除前**に記録する（§3.4 の物理削除禁止は「アカウント系」限定で、
+  // 稼働提出物は対象外。ただし遷移の追跡は必要 §4.1）
+  await track(id, "delete", sub.status, null, user.loginId);
   await prisma.submission.delete({ where: { id } });
   await audit(user.loginId, "submission_delete", `${sub.kind} ${sub.targetMonth} (${id})`);
   revalidatePath("/reports");

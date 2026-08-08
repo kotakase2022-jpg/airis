@@ -4,6 +4,11 @@
 import { PrismaClient } from "@prisma/client";
 import fs from "fs";
 import path from "path";
+// ローカル判定は scripts/db-target.cjs に集約（assert-local-db.cjs と同じ判定を使う）
+const { isLocalHost, hostOf } = require("./db-target.cjs") as {
+  isLocalHost: (host: string) => boolean;
+  hostOf: (url: string) => string;
+};
 
 const url = process.env.RLS_DATABASE_URL || process.env.DATABASE_URL;
 if (!url) {
@@ -69,11 +74,52 @@ export function splitStatements(sql: string): string[] {
   return statements.filter((s) => s.length > 0);
 }
 
+/**
+ * 本番に対して `npm run rls` を実行するとき、`APP_DB_PASSWORD` の指定を必須にする（C3 の是正）。
+ *
+ * `prisma/rls.sql` の DO ブロックは、ロールが既に存在する場合に
+ * `ALTER ROLE airis_app LOGIN PASSWORD %L` を**無条件で実行**する。
+ * `APP_DB_PASSWORD` 未指定だと開発既定 `airis_app_test`（リポジトリに書かれている値）で
+ * 上書きされ、**本番のアプリロールのパスワードが公開値になる**うえ、
+ * Vercel 側の `APP_DATABASE_URL` と食い違ってアプリがDBに接続できなくなる。
+ *
+ * ローカル（localhost 等）では従来どおり既定値で動く。CI もローカルホストなので影響しない。
+ */
+export function assertAppPasswordForRemote(
+  url: string,
+  appPassword: string | undefined,
+  isLocal: (host: string) => boolean,
+  hostOf: (u: string) => string
+): void {
+  const host = hostOf(url);
+  if (!host || isLocal(host)) return; // ローカルは既定値で可
+  if (appPassword && appPassword.trim() !== "") return;
+  throw new Error(
+    [
+      "",
+      `  ✖ 中断しました: 本番等のリモートDB（${host}）に対して APP_DB_PASSWORD が未指定です。`,
+      "",
+      "  このまま実行すると prisma/rls.sql が airis_app のパスワードを",
+      "  リポジトリに書かれた開発既定値 'airis_app_test' で**上書き**します。",
+      "  本番のアプリロールのパスワードが公開値になり、Vercel の APP_DATABASE_URL とも",
+      "  食い違ってアプリがDBへ接続できなくなります。",
+      "",
+      "  対処: 本番と同じ値を指定して実行してください。",
+      "    ALLOW_REMOTE_DB=1 RLS_DATABASE_URL=<非プールURL> APP_DB_PASSWORD=<本番値> npm run rls",
+      "",
+      "  パスワードを変更する場合は、Vercel の APP_DATABASE_URL も同じ作業で更新すること",
+      "  （docs/OPERATIONS.md §2.4）。",
+      "",
+    ].join("\n")
+  );
+}
+
 async function main() {
   const raw = fs.readFileSync(path.join(__dirname, "..", "prisma", "rls.sql"), "utf8");
   // アプリロール（airis_app）のパスワードを rls.sql のプレースホルダへ埋め込む（§3.1）。
   // セッション変数（SET LOCAL）は接続プールをまたぐと失われるため文字列置換にしている。
-  // 未指定なら開発既定（airis_app_test）。**本番では必ず APP_DB_PASSWORD を指定すること**。
+  // ローカルは開発既定（airis_app_test）。**リモートでは APP_DB_PASSWORD 必須**（上のガード）。
+  assertAppPasswordForRemote(url!, process.env.APP_DB_PASSWORD, isLocalHost, hostOf);
   const appPassword = process.env.APP_DB_PASSWORD ?? "airis_app_test";
   const sql = raw.replaceAll("__APP_DB_PASSWORD__", appPassword.replace(/'/g, "''"));
   const statements = splitStatements(sql);

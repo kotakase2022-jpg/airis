@@ -693,3 +693,42 @@ mfa_reset 監査ログ: 2026-08-08 02:49:37 / 02:50:06 by airis_slb_sys_001
 | PASS | **574（96.6%）** |
 | FAIL | 16 / NOT_IMPLEMENTED 3 / BLOCKED 1 |
 | 単体テスト | 573 passed / 0 failed（31ファイル） |
+
+## 監査計画 critical C3〜C6 の是正（2026-08-08）
+
+停止していた監査ループのうち、未着手だった critical 4件に着手し完了した。
+4件とも**「宣言はあるが実際には効いていない」**という同じ欠陥型で、
+うち2件（C3 / C4）は**手順書どおりに操作した瞬間に発現する**性質のものだった。
+
+| ID | 内容 | 実害 | 是正 |
+|---|---|---|---|
+| **C3** | 本番へ `npm run rls` を打つと `airis_app` のパスワードがリポジトリ既知の `airis_app_test` に上書きされる。しかも `APP_DB_PASSWORD` は手順書3ファイルすべてで**0件** | 本番のアプリロールのパスワードが公開値になり、Vercel の `APP_DATABASE_URL` と食い違って**全機能停止** | リモート接続時は `APP_DB_PASSWORD` 必須の fail-closed ガードを追加。手順書・所在表・PowerShell版を整備 |
+| **C4** | 破壊的作業のガードが `process.env` しか見ず、`.env` に本番URLを書けば `seed`/`migrate`/`rls` を**素通し**。回帰テストがこの fail-open を仕様化していた | ローカル作業で本番DBを破壊（BUG-OPS01 の再発） | `.env.local` → `.env` も解決対象に。`QA_DATABASE_URL` を検査キーに追加し、`test:e2e` にもガードを適用 |
+| **C5** | 販売員ID削除時、紐づく⑨アカウントが `suspended` 止まりで `deletedAt` が無く、匿名化バッチに永久に到達しない | 実在の氏名・メールが**恒久保持**（§3.4 違反）。誤った期待値がE2Eで仕様化されていた | 削除を `deleted`+`deletedAt` に、復旧を対称に。E2Eの期待値を仕様へ戻した |
+| **C6** | `submission` は宣言済みなのに `StatusHistory` へ**1行も記録されず**、R-022 は PASS、E2Eは「対象外」と自認していた | §4.1 の追跡が成立しない。宣言・文書・判定・テストの4つが揃って実態と食い違い | 7遷移すべてに記録を追加。R-022 の虚偽 PASS を訂正 |
+
+### 判定ロジックの集約（C3 / C4 共通）
+
+C3 と C4 は同じ「ローカルか本番か」の判定を使う。複製すると片方だけ直して事故を起こす
+（QA loop5 で e2e-prod のMFA処理が複製されていて実際にそれが起きた）ため、
+`scripts/db-target.cjs` に集約し、両者がこれを使うことをテストで固定した。
+
+### 追加した検出テスト（いずれも自己検査つき）
+
+| テスト | 検出する乖離 | 件数 |
+|---|---|---|
+| `tests/unit/db-guards.test.ts` | env ファイル経由の本番接続 / リモートでの `APP_DB_PASSWORD` 未指定 / 判定の複製 | 16 |
+| `tests/unit/soft-delete-consistency.test.ts` | `status:"deleted"` に `deletedAt` が伴わない（対象は schema の列有無から導出） | 6 |
+| `tests/unit/status-history-coverage.test.ts` | `STATUS_ENTITY_TYPES` に宣言があるのに記録経路が無い | 5 |
+
+### 検証結果（実測）
+
+| 項目 | 値 |
+|---|---|
+| 単体テスト | **600 passed / 0 failed**（34ファイル） |
+| E2E（既定構成） | **433 passed / 0 failed / 2 skipped**（9.5分・実ブラウザ・実DB・RLS有効） |
+| lint / format / tsc | 0 error / 0 warning / 0 error |
+
+C5 は `e2e/05-sales-staff.spec.ts` の削除・復旧テストで、
+C6 は `e2e/26-status-history.spec.ts` の新規テスト（⑧提出→⑦1次承認→②最終承認）で
+**実ブラウザ操作→実DB読み取り**により確認した。

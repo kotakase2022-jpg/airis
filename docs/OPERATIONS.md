@@ -38,6 +38,7 @@
 | `PASSWORD_PEPPER_V1` / `PASSWORD_PEPPER_V2` … | Vercel（**ダッシュボードから設定**） | Vercel Preview | `.env` |
 | `CURRENT_PEPPER_KEY` | Vercel | Vercel Preview | `.env` |
 | `CRON_SECRET` | Vercel | — | `.env` |
+| `APP_DB_PASSWORD`（RLS適用時のみ・**Vercelには置かない**） | 実行者が手で渡す秘密 | 同 | 未設定可（開発既定 `airis_app_test`） |
 | `SMTP_*` / `MAIL_FROM` / `APP_URL` | Vercel | Vercel Preview | `.env`（未設定ならコンソール出力） |
 | `ADMIN_IP_ALLOWLIST` | Vercel or 管理画面の設定（DBが優先） | 同 | `.env` |
 | `TRUST_PROXY` / `TRUST_VERCEL_HEADERS` / `TRUSTED_PROXY_HOPS` | Vercel（`VERCEL=1` で自動） | 同 | `.env` |
@@ -130,10 +131,20 @@ npm run lint && npm run format:check && npx tsc --noEmit && npm run test:unit &&
 npm run test:e2e          # 別ターミナルで port3100 のサーバーを起動しておく
 
 # 2. 本番へマイグレーション適用（スキーマ変更がある場合）
-DATABASE_URL=<Neonの非プールURL> npm run migrate:deploy
+ALLOW_REMOTE_DB=1 DATABASE_URL=<Neonの非プールURL> npm run migrate:deploy
 
 # 3. RLSポリシー適用（ポリシー変更がある場合）
-RLS_DATABASE_URL=<Neonの非プールURL> npm run rls
+#    APP_DB_PASSWORD は必須。未指定だと rls.sql が airis_app のパスワードを
+#    リポジトリ既知の開発既定値 airis_app_test で上書きし、Vercel の APP_DATABASE_URL と
+#    食い違ってアプリがDBへ接続できなくなる（scripts/apply-rls.ts のガードが中断させる）。
+ALLOW_REMOTE_DB=1 RLS_DATABASE_URL=<Neonの非プールURL> APP_DB_PASSWORD=<本番値> npm run rls
+
+# PowerShell の場合（インライン指定は使えない）
+#   $env:ALLOW_REMOTE_DB = "1"
+#   $env:RLS_DATABASE_URL = "<Neonの非プールURL>"
+#   $env:APP_DB_PASSWORD = "<本番値>"
+#   npm run rls
+#   Remove-Item Env:ALLOW_REMOTE_DB, Env:RLS_DATABASE_URL, Env:APP_DB_PASSWORD
 
 # 4. デプロイ
 vercel deploy --prod
